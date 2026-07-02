@@ -14,8 +14,9 @@ import json
 import os
 import sys
 
-from _bootstrap import plugin_root
+from _bootstrap import plugin_root, reexec_if_pinned
 
+reexec_if_pinned()
 plugin_root()
 
 
@@ -41,11 +42,11 @@ def main() -> int:
         cfg = get_config()
         project = resolve_project(cwd, cfg.markers)
 
+        # Prefer the warm daemon (avoids per-prompt model load); fall back in-process.
         block = None
-        if os.environ.get("LTM_DAEMON", "").lower() in ("1", "true", "yes"):
-            resp = request(cfg.sock_path, {"op": "recall", "cwd": cwd, "prompt": prompt})
-            if resp is not None and "block" in resp:
-                block = resp["block"]
+        resp = request(cfg.sock_path, {"op": "recall", "cwd": cwd, "prompt": prompt})
+        if resp is not None and "block" in resp:
+            block = resp["block"]
 
         if block is None:
             store = Store(cfg.db_path)

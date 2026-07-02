@@ -1,7 +1,7 @@
 {
   "name": "ltm",
   "displayName": "Long-Term Memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -12,13 +12,19 @@
     "embedding": {
       "type": "string",
       "title": "Embedding backend",
-      "description": "hash = dependency-free lexical stub (zero installs); fastembed = real local semantic model (requires: pip install fastembed).",
+      "description": "hash = dependency-free lexical stub (zero installs); fastembed = real semantic model. On first use, fastembed self-provisions a private venv under the plugin data dir — no manual pip needed.",
       "default": "hash"
     },
     "embedding_model": {
       "type": "string",
       "title": "Embedding model (fastembed)",
       "description": "fastembed model id. Blank uses BAAI/bge-base-en-v1.5 (best measured recall). BAAI/bge-small-en-v1.5 is lighter/faster.",
+      "default": ""
+    },
+    "python": {
+      "type": "string",
+      "title": "Pinned interpreter (advanced)",
+      "description": "Absolute path to a Python with fastembed, used for all hooks. Leave blank to use the auto-provisioned managed venv.",
       "default": ""
     },
     "distiller": {

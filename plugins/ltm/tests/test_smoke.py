@@ -93,6 +93,41 @@ class DistillerTests(unittest.TestCase):
         self.assertTrue(all(isinstance(r, DistilledFact) for r in records))
 
 
+class ProvisionTests(unittest.TestCase):
+    def test_find_base_python_returns_valid_or_none(self):
+        from core.provision import find_base_python
+
+        exe = find_base_python()
+        self.assertTrue(exe is None or os.path.exists(exe))
+
+    def test_not_provisioned_on_empty_dir(self):
+        from core.provision import is_provisioned, venv_python
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(is_provisioned(tmp))
+            self.assertIn("python", str(venv_python(tmp)).lower())
+
+    def test_requirements_declared(self):
+        from core.provision import requirements
+
+        reqs = requirements()
+        self.assertTrue(reqs)
+        self.assertTrue(any("fastembed" in r for r in reqs))
+
+    def test_reexec_is_noop_without_pin(self):
+        sys.path.insert(0, str(ROOT / "bin"))
+        import _bootstrap
+
+        os.environ.pop("CLAUDE_PLUGIN_OPTION_python", None)
+        os.environ.pop("LTM_PYTHON", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["LTM_DATA_DIR"] = tmp  # no managed venv here
+            try:
+                _bootstrap.reexec_if_pinned()  # must return without exec/raise
+            finally:
+                os.environ.pop("LTM_DATA_DIR", None)
+
+
 class ProjectTests(unittest.TestCase):
     def test_marker_walk_finds_root_from_subdir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,6 +237,21 @@ class LoopTests(unittest.TestCase):
         self.assertNotIn("stale detail about a temporary experiment", active)
         self.assertIn("fresh note about the current task", active)
         self.assertIn("durable convention seen across many sessions", active)
+
+    def test_search_skips_mismatched_embedding_dims(self):
+        # A row from a different embedder (wrong dim) must be ignored, not crash.
+        good = "the deployment pipeline runs on github actions"
+        service.add_facts(self.store, self.embedder, self.cfg, self.project, "s1", [good])
+        stray = [0.1] * 8
+        blob, scale = quantize_int8(stray)
+        self.store.add(
+            project=self.project, session_id="s2", kind="fact", text="stray wrong-dim row",
+            vec_int8=blob, scale=scale, dim=8, vec_bits=pack_bits(stray), importance=0.5,
+        )
+        hits = search(self.store, self.embedder, self.project, "deployment pipeline", self.cfg, k=10, min_sim=-1.0)
+        texts = [r["text"] for _s, r in hits]
+        self.assertIn(good, texts)
+        self.assertNotIn("stray wrong-dim row", texts)
 
     def test_recall_respects_char_budget(self):
         facts = [f"fact number {i} about compact memory storage systems" for i in range(20)]

@@ -13,9 +13,10 @@ import json
 import os
 import sys
 
-from _bootstrap import plugin_root
+from _bootstrap import plugin_root, reexec_if_pinned
 
-plugin_root()
+reexec_if_pinned()
+ROOT = plugin_root()
 
 
 def main() -> int:
@@ -32,6 +33,25 @@ def main() -> int:
         from core.store import Store
 
         cfg = get_config()
+        if cfg.embedding != "hash":
+            from core.provision import is_provisioned
+
+            if is_provisioned(cfg.data_dir):
+                # Warm the resident daemon once per session so per-prompt recall is fast.
+                from core.daemon_client import ensure_daemon
+
+                ensure_daemon(cfg.sock_path, str(ROOT))
+            else:
+                # First run: build the fastembed venv in the background (non-blocking).
+                import subprocess
+
+                subprocess.Popen(
+                    [sys.executable, str(ROOT / "bin" / "ltm"), "setup"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
         if cfg.core_size <= 0:
             return 0
         project = resolve_project(cwd, cfg.markers)

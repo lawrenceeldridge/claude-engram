@@ -20,6 +20,9 @@ import os
 import sys
 from pathlib import Path
 
+import _bootstrap  # noqa: E402
+
+_bootstrap.reexec_if_pinned()
 ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(ROOT))
 
@@ -125,6 +128,13 @@ def cmd_sweep(args) -> int:
     return 0
 
 
+def cmd_setup(_args) -> int:
+    from core.provision import provision
+
+    cfg = get_config()
+    return 0 if provision(cfg.data_dir) else 1
+
+
 def cmd_daemon(_args) -> int:
     import runpy
 
@@ -207,6 +217,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--days", type=float, default=0, help="TTL in days (default: config ttl_days)")
     p.add_argument("--all", action="store_true", help="sweep every project, not just the current one")
     p.set_defaults(func=cmd_sweep)
+
+    p = sub.add_parser("setup", help="provision the private fastembed venv (one-time)")
+    p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("daemon", help="run the resident daemon")
     p.set_defaults(func=cmd_daemon)

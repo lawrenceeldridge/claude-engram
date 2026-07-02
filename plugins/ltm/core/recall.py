@@ -28,7 +28,10 @@ def _row_vec(row: sqlite3.Row) -> list[float]:
 
 def _score(rows, query_vec, cfg: Config, now: float, min_sim: float, penalty: float):
     out = []
+    qdim = len(query_vec)
     for row in rows:
+        if row["dim"] and row["dim"] != qdim:
+            continue  # different embedder — vectors aren't comparable
         sim = cosine(query_vec, _row_vec(row))
         if sim < min_sim:
             continue

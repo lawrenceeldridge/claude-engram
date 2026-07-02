@@ -25,3 +25,24 @@ def request(sock_path: Path | str, payload: dict, timeout: float = 2.0) -> dict 
         return json.loads(line) if line else None
     except (OSError, ValueError):
         return None
+
+
+def ensure_daemon(sock_path: Path | str, plugin_root: str) -> None:
+    """Start the resident daemon if it isn't already answering. No-op if up."""
+    import os
+    import subprocess
+    import sys
+
+    if request(sock_path, {"op": "ping"}, timeout=1) is not None:
+        return
+    daemon = os.path.join(plugin_root, "bin", "daemon.py")
+    try:
+        subprocess.Popen(
+            [sys.executable, daemon],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass

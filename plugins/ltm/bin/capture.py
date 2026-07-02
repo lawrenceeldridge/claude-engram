@@ -17,8 +17,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _bootstrap import plugin_root
+from _bootstrap import plugin_root, reexec_if_pinned
 
+reexec_if_pinned()
 plugin_root()
 
 

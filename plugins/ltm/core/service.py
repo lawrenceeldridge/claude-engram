@@ -25,6 +25,8 @@ def _find_superseded(store: Store, project_key: str, vec: list[float], threshold
         return []
     victims = []
     for row in store.active_rows_for_project(project_key):
+        if row["dim"] and row["dim"] != len(vec):
+            continue
         if cosine(vec, dequantize_int8(row["vec_int8"], row["scale"])) >= threshold:
             victims.append(row["id"])
     return victims
