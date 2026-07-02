@@ -103,23 +103,53 @@ def _content_lines(content, role: str) -> list[str]:
     return lines
 
 
-def extract_text(transcript_path: str) -> str:
+def _lines_to_parts(lines) -> list[str]:
     parts: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = obj.get("message") or {}
+        role = obj.get("type") or message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        parts.extend(_content_lines(message.get("content", obj.get("content")), role))
+    return parts
+
+
+def extract_text(transcript_path: str) -> str:
     try:
         with open(transcript_path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                message = obj.get("message") or {}
-                role = obj.get("type") or message.get("role")
-                if role not in ("user", "assistant"):
-                    continue
-                parts.extend(_content_lines(message.get("content", obj.get("content")), role))
+            return "\n".join(_lines_to_parts(fh))
     except FileNotFoundError:
         return ""
-    return "\n".join(parts)
+
+
+def extract_incremental(transcript_path: str, start_offset: int = 0) -> tuple[str, int]:
+    """Extract only the transcript appended since ``start_offset`` bytes.
+
+    Returns ``(text, end_offset)``. JSONL is append-only and newline-delimited, so
+    a stored end-of-content byte offset always lands on a line boundary — the next
+    call reads just the new turns. If the file shrank (rotated/truncated) the
+    offset is reset to 0 so nothing is silently skipped. Read in binary and split,
+    because a text-mode file can't be seeked-then-line-iterated with a valid tell.
+    """
+    try:
+        size = os.path.getsize(transcript_path)
+    except OSError:
+        return "", start_offset
+    if start_offset > size:
+        start_offset = 0
+    try:
+        with open(transcript_path, "rb") as fh:
+            fh.seek(start_offset)
+            data = fh.read()
+    except OSError:
+        return "", start_offset
+    end_offset = start_offset + len(data)
+    lines = data.decode("utf-8", errors="ignore").splitlines()
+    return "\n".join(_lines_to_parts(lines)), end_offset

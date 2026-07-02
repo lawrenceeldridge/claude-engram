@@ -36,7 +36,7 @@ def _run_worker(payload_path: str) -> None:
     from core.config import get_config
     from core.embedding import get_embedder
     from core.project import resolve_project
-    from core.service import capture_transcript
+    from core.service import capture_transcript_incremental
     from core.store import Store
 
     cfg = get_config()
@@ -45,7 +45,7 @@ def _run_worker(payload_path: str) -> None:
     if not transcript_path or not Path(transcript_path).exists():
         return
     store = Store(cfg.db_path)
-    capture_transcript(store, get_embedder(cfg), cfg, project, payload.get("session_id", ""), transcript_path)
+    capture_transcript_incremental(store, get_embedder(cfg), cfg, project, payload.get("session_id", ""), transcript_path)
     if cfg.ttl_days > 0:
         import time
 

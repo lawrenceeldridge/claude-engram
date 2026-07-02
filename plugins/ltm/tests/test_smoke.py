@@ -82,7 +82,7 @@ class DistillerTests(unittest.TestCase):
 
     def test_get_distiller_selects_backend(self):
         cfg = get_config()
-        self.assertIsInstance(get_distiller(cfg), ClaudeCliDistiller)  # default is now claude/haiku
+        self.assertIsInstance(get_distiller(replace(cfg, distiller="claude")), ClaudeCliDistiller)
         self.assertIsInstance(get_distiller(replace(cfg, distiller="heuristic")), HeuristicDistiller)
         self.assertIsInstance(get_distiller(replace(cfg, distiller="ollama")), HTTPDistiller)
 

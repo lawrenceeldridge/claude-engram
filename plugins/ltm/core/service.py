@@ -19,7 +19,7 @@ from core.project import Project
 from core.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.recall import render_block, search, search_fused
 from core.store import Store
-from core.transcript import extract_text
+from core.transcript import extract_incremental, extract_text
 
 
 def _find_superseded(store: Store, project_key: str, vec: list[float], threshold: float) -> list[str]:
@@ -120,6 +120,32 @@ def capture_transcript(
     transcript_path: str,
 ) -> int:
     return capture_text(store, embedder, cfg, project, session_id, extract_text(transcript_path))
+
+
+def capture_transcript_incremental(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    transcript_path: str,
+) -> int:
+    """Distil only the transcript appended since this session was last captured.
+
+    The per-turn Stop hook fires repeatedly on a growing transcript; re-distilling
+    the whole thing each time is slow and — for a small local model — degrades into
+    narration or hallucination. Reading just the new turns keeps each capture small,
+    fast and crisp, and cheap enough to run every turn. The cursor advances even
+    when the delta yields no facts, so nothing is reprocessed.
+    """
+    cursor_key = f"{project['key']}:{session_id or transcript_path}"
+    start = store.get_capture_cursor(cursor_key)
+    text, end = extract_incremental(transcript_path, start)
+    if end == start:
+        return 0
+    inserted = capture_text(store, embedder, cfg, project, session_id, text) if text.strip() else 0
+    store.set_capture_cursor(cursor_key, end)
+    return inserted
 
 
 def recall_prompt_block(

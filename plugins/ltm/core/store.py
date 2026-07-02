@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS recall_events (
   verdict     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_recall_project ON recall_events(project_key);
+
+CREATE TABLE IF NOT EXISTS capture_cursors (
+  cursor_key  TEXT PRIMARY KEY,
+  offset      INTEGER NOT NULL,
+  updated_at  REAL
+);
 """
 
 _MIGRATIONS = [
@@ -249,3 +255,18 @@ class Store:
     def data_version(self) -> int:
         """SQLite change counter — bumps on every commit by another connection (cache-invalidation signal)."""
         return self.db.execute("PRAGMA data_version").fetchone()[0]
+
+    def get_capture_cursor(self, cursor_key: str) -> int:
+        """Byte offset already distilled for this session, so incremental capture reads only new turns."""
+        row = self.db.execute(
+            "SELECT offset FROM capture_cursors WHERE cursor_key = ?", (cursor_key,)
+        ).fetchone()
+        return row["offset"] if row else 0
+
+    def set_capture_cursor(self, cursor_key: str, offset: int, now: float | None = None) -> None:
+        self.db.execute(
+            "INSERT INTO capture_cursors (cursor_key, offset, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(cursor_key) DO UPDATE SET offset = excluded.offset, updated_at = excluded.updated_at",
+            (cursor_key, offset, now if now is not None else time.time()),
+        )
+        self.db.commit()
