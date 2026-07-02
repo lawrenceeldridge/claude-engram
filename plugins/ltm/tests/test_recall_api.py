@@ -271,7 +271,10 @@ class McpServerTests(unittest.TestCase):
 
         listed = self.mcp._handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {t["name"] for t in listed["result"]["tools"]}
-        self.assertEqual(names, {"recall", "list_projects"})
+        self.assertEqual(
+            names,
+            {"recall", "list_projects", "search_docs", "get_doc_section", "doc_outline", "index_docs"},
+        )
 
     def test_notification_gets_no_response(self):
         self.assertIsNone(self.mcp._handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))

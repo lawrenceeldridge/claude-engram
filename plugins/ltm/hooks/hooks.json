@@ -8,6 +8,12 @@
             "command": "python3",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/recall_session_start.py"],
             "timeout": 8
+          },
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/index_docs.py"],
+            "timeout": 8
           }
         ]
       }

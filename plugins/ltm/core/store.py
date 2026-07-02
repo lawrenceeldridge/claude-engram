@@ -102,6 +102,66 @@ END;
 """
 
 
+# Code/docs index (Phase 1: doc sections). Separate tables in the same DB — never
+# mixed into `facts`, so recall of learned memory is never polluted by raw source
+# chunks. Vectors live inline (dim/scale/vec_int8) exactly as facts store them, and
+# `chunk_sources` records a per-file hash+mtime so re-indexing skips unchanged files.
+_CHUNK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chunks (
+  id            TEXT PRIMARY KEY,
+  project_key   TEXT NOT NULL,
+  source_path   TEXT NOT NULL,
+  kind          TEXT,
+  anchor        TEXT,
+  title         TEXT,
+  heading_path  TEXT,
+  level         INTEGER,
+  summary       TEXT,
+  body          TEXT,
+  byte_start    INTEGER,
+  byte_end      INTEGER,
+  content_hash  TEXT,
+  dim           INTEGER,
+  scale         REAL,
+  vec_int8      BLOB,
+  indexed_at    REAL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_key);
+CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(project_key, source_path);
+
+CREATE TABLE IF NOT EXISTS chunk_sources (
+  project_key  TEXT NOT NULL,
+  source_path  TEXT NOT NULL,
+  file_hash    TEXT,
+  mtime_ns     INTEGER,
+  indexed_at   REAL,
+  PRIMARY KEY (project_key, source_path)
+);
+"""
+
+# External-content FTS5 over the chunk's searchable columns, weighted at query time
+# (title > heading_path > summary > body) in the bm25() call. Triggers keep it in sync.
+_CHUNK_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+  title, heading_path, summary, body, content='chunks', content_rowid='rowid', tokenize='porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+  INSERT INTO chunks_fts(rowid, title, heading_path, summary, body)
+  VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.heading_path,''), COALESCE(new.summary,''), COALESCE(new.body,''));
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, title, heading_path, summary, body)
+  VALUES ('delete', old.rowid, COALESCE(old.title,''), COALESCE(old.heading_path,''), COALESCE(old.summary,''), COALESCE(old.body,''));
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+  INSERT INTO chunks_fts(chunks_fts, rowid, title, heading_path, summary, body)
+  VALUES ('delete', old.rowid, COALESCE(old.title,''), COALESCE(old.heading_path,''), COALESCE(old.summary,''), COALESCE(old.body,''));
+  INSERT INTO chunks_fts(rowid, title, heading_path, summary, body)
+  VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.heading_path,''), COALESCE(new.summary,''), COALESCE(new.body,''));
+END;
+"""
+
+
 def _add_columns(db: sqlite3.Connection, specs: list[tuple[str, str]]) -> None:
     existing = {row[1] for row in db.execute("PRAGMA table_info(facts)")}
     for name, ddl in specs:
@@ -161,11 +221,25 @@ def _v6_fts_widen(db: sqlite3.Connection) -> None:
     db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
 
 
+def _v7_index(db: sqlite3.Connection) -> None:
+    # Code/docs index tables + their FTS. Additive and idempotent; the facts store is
+    # untouched. 'rebuild' backfills the FTS from any chunks written before it existed.
+    existed = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts'"
+    ).fetchone()
+    db.executescript(_CHUNK_SCHEMA)
+    db.executescript(_CHUNK_FTS_SCHEMA)
+    if not existed:
+        db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
 # including the legacy FTS flag of 1 — converges by running the rest as no-ops.
-_MIGRATIONS = [_v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle, _v6_fts_widen]
+_MIGRATIONS = [
+    _v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle, _v6_fts_widen, _v7_index
+]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -466,3 +540,129 @@ class Store:
             (cursor_key, offset, now if now is not None else time.time()),
         )
         self.db.commit()
+
+    # ---- Code/docs index (chunks) -------------------------------------------------
+
+    @staticmethod
+    def chunk_id(project_key: str, source_path: str, anchor: str) -> str:
+        basis = f"{project_key}\x00{source_path}\x00{anchor}"
+        return hashlib.sha256(basis.encode()).hexdigest()[:24]
+
+    def source_state(self, project_key: str, source_path: str) -> tuple[str, int] | None:
+        """(file_hash, mtime_ns) last indexed for a file, or None — drives the re-index short-circuit."""
+        row = self.db.execute(
+            "SELECT file_hash, mtime_ns FROM chunk_sources WHERE project_key = ? AND source_path = ?",
+            (project_key, source_path),
+        ).fetchone()
+        return (row["file_hash"], row["mtime_ns"]) if row else None
+
+    def indexed_sources(self, project_key: str) -> set[str]:
+        rows = self.db.execute(
+            "SELECT source_path FROM chunk_sources WHERE project_key = ?", (project_key,)
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def replace_source_chunks(
+        self, project_key: str, source_path: str, chunks: list[dict], file_hash: str, mtime_ns: int,
+        now: float | None = None,
+    ) -> int:
+        """Atomically swap a file's chunks for a freshly-parsed set and stamp its source state.
+
+        Delete-then-insert keeps the index in step with the file even when sections are
+        removed or renamed; the whole swap is one transaction so a crash can't leave a
+        half-indexed file. Returns the number of chunks written.
+        """
+        stamp = now if now is not None else time.time()
+        with self.db:
+            self.db.execute(
+                "DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path)
+            )
+            self.db.executemany(
+                "INSERT OR REPLACE INTO chunks "
+                "(id, project_key, source_path, kind, anchor, title, heading_path, level, "
+                " summary, body, byte_start, byte_end, content_hash, dim, scale, vec_int8, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        c["id"], project_key, source_path, c.get("kind", "doc_section"), c["anchor"],
+                        c["title"], c["heading_path"], c["level"], c.get("summary") or None, c["body"],
+                        c["byte_start"], c["byte_end"], c["content_hash"], c["dim"], c["scale"],
+                        c["vec_int8"], stamp,
+                    )
+                    for c in chunks
+                ],
+            )
+            self.db.execute(
+                "INSERT INTO chunk_sources (project_key, source_path, file_hash, mtime_ns, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_key, source_path) DO UPDATE SET "
+                "file_hash = excluded.file_hash, mtime_ns = excluded.mtime_ns, indexed_at = excluded.indexed_at",
+                (project_key, source_path, file_hash, mtime_ns, stamp),
+            )
+        return len(chunks)
+
+    def delete_source(self, project_key: str, source_path: str) -> None:
+        """Drop a vanished file's chunks and source row (called for files gone since last index)."""
+        with self.db:
+            self.db.execute(
+                "DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path)
+            )
+            self.db.execute(
+                "DELETE FROM chunk_sources WHERE project_key = ? AND source_path = ?",
+                (project_key, source_path),
+            )
+
+    def get_chunk(self, project_key: str, ref: str) -> sqlite3.Row | None:
+        """Fetch one chunk by its id or its human-readable anchor slug."""
+        return self.db.execute(
+            "SELECT * FROM chunks WHERE project_key = ? AND (id = ? OR anchor = ?) LIMIT 1",
+            (project_key, ref, ref),
+        ).fetchone()
+
+    def chunk_outline(
+        self, project_key: str, source_path: str | None = None
+    ) -> list[sqlite3.Row]:
+        """Ordered skeleton (no body): anchor/title/heading_path/level/summary per chunk."""
+        sql = (
+            "SELECT id, source_path, kind, anchor, title, heading_path, level, summary "
+            "FROM chunks WHERE project_key = ?"
+        )
+        params: list = [project_key]
+        if source_path is not None:
+            sql += " AND source_path = ?"
+            params.append(source_path)
+        sql += " ORDER BY source_path, byte_start"
+        return self.db.execute(sql, params).fetchall()
+
+    def chunk_rows(self, project_key: str) -> list[sqlite3.Row]:
+        """All chunk rows for a project (vector-channel scan input)."""
+        return self.db.execute("SELECT * FROM chunks WHERE project_key = ?", (project_key,)).fetchall()
+
+    def chunk_fts_search(self, project_key: str, query: str, limit: int = 50) -> list[str]:
+        """Chunk ids matching an FTS5 keyword query, best-ranked first (weighted columns)."""
+        match = _fts_match_expr(query)
+        if not match:
+            return []
+        rows = self.db.execute(
+            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.rowid = chunks_fts.rowid "
+            "WHERE chunks_fts MATCH ? AND c.project_key = ? "
+            "ORDER BY bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0) LIMIT ?",
+            (match, project_key, limit),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def chunk_projects(self) -> list[sqlite3.Row]:
+        return self.db.execute(
+            "SELECT project_key, COUNT(*) AS c, COUNT(DISTINCT source_path) AS files, "
+            "MAX(indexed_at) AS last FROM chunks GROUP BY project_key ORDER BY last DESC"
+        ).fetchall()
+
+    def chunk_count(self, project_key: str) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM chunks WHERE project_key = ?", (project_key,)
+        ).fetchone()[0]
+
+    def prune_chunks(self, project_key: str) -> int:
+        with self.db:
+            self.db.execute("DELETE FROM chunk_sources WHERE project_key = ?", (project_key,))
+            cur = self.db.execute("DELETE FROM chunks WHERE project_key = ?", (project_key,))
+        return cur.rowcount

@@ -28,7 +28,7 @@ reexec_if_pinned()
 ROOT = plugin_root()
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "ltm-memory", "version": "0.5.0"}
+SERVER_INFO = {"name": "ltm-memory", "version": "0.6.0"}
 
 TOOLS = [
     {
@@ -58,6 +58,71 @@ TOOLS = [
         "name": "list_projects",
         "description": "List every project in the global memory store with its active-fact count. Use to discover project labels for `recall`.",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "search_docs",
+        "description": (
+            "Search this project's INDEXED DOCUMENTATION (markdown) for sections relevant to a "
+            "query. Call this BEFORE Grep/Glob/Read over docs: it returns ranked section outlines "
+            "(heading breadcrumb + one-line summary + anchor + freshness), not file contents, so it "
+            "is a cheap lookup instead of reading whole files. Then call `get_doc_section` on the "
+            "anchor you want to read its full text. `freshness` is fresh|edited|gone per file."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What you want to find in the docs."},
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+                "k": {"type": "integer", "description": "Max sections to return (default 10)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_doc_section",
+        "description": (
+            "Fetch one documentation section's full text by its `anchor` (or id) from `search_docs` "
+            "/ `doc_outline`. Returns the section body plus a section-precise `freshness` "
+            "(fresh|edited|stale|gone) verified against the live file. Cheaper than Read — one "
+            "section, not the whole document."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The section anchor (e.g. 'installation/prerequisites') or id."},
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "doc_outline",
+        "description": (
+            "List the section skeleton of this project's indexed docs — heading breadcrumbs, anchors "
+            "and one-line summaries, with NO bodies. Use to understand what documentation exists "
+            "before searching or reading. Optionally scope to one file via `source_path`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+                "source_path": {"type": "string", "description": "Optional repo-relative file to scope the outline to."},
+            },
+        },
+    },
+    {
+        "name": "index_docs",
+        "description": (
+            "Build or refresh the documentation index for this project (markdown files). Incremental: "
+            "unchanged files are skipped via a content-hash short-circuit, so re-running is cheap. "
+            "Runs automatically on session start; call this to force a refresh after editing docs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+            },
+        },
     },
 ]
 
@@ -166,6 +231,37 @@ class _Engine:
         ]
         return {"projects": projects, "count": len(projects)}
 
+    def search_docs(self, args: dict) -> dict:
+        self._init()
+        from core.index_recall import search_index
+
+        project = self._project(args.get("project"))
+        return search_index(
+            self.store, self.embedder, self.cfg, project, args.get("query") or "", k=args.get("k")
+        )
+
+    def get_doc_section(self, args: dict) -> dict:
+        self._init()
+        from core.index_recall import get_chunk
+
+        project = self._project(args.get("project"))
+        return get_chunk(self.store, project, args.get("ref") or "")
+
+    def doc_outline(self, args: dict) -> dict:
+        self._init()
+        from core.index_recall import get_outline
+
+        project = self._project(args.get("project"))
+        return get_outline(self.store, project, args.get("source_path"))
+
+    def index_docs(self, args: dict) -> dict:
+        self._init()
+        from core.indexer import index_project
+
+        project = self._project(args.get("project"))
+        stats = index_project(self.store, self.embedder, self.cfg, project, project["path"])
+        return {"project": project["label"], **stats}
+
 
 ENGINE = _Engine()
 
@@ -175,6 +271,14 @@ def _tool_call(name: str, args: dict) -> dict:
         payload = ENGINE.recall(args)
     elif name == "list_projects":
         payload = ENGINE.list_projects(args)
+    elif name == "search_docs":
+        payload = ENGINE.search_docs(args)
+    elif name == "get_doc_section":
+        payload = ENGINE.get_doc_section(args)
+    elif name == "doc_outline":
+        payload = ENGINE.doc_outline(args)
+    elif name == "index_docs":
+        payload = ENGINE.index_docs(args)
     else:
         raise ValueError(f"unknown tool {name!r}")
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}

@@ -1,0 +1,222 @@
+"""Code/docs index tests — chunking, chunk store, indexer, and index recall.
+
+Uses the dependency-free HashEmbedding, so no fastembed venv is required. The indexer
+and recall paths run against a real temp directory of markdown so freshness — which
+re-reads the live file — is exercised for real.
+
+Run: python3 -m unittest discover -s plugins/ltm/tests
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "bin"))
+
+from core.chunking import make_slug, split_markdown  # noqa: E402
+from core.config import get_config  # noqa: E402
+from core.embedding import HashEmbedding  # noqa: E402
+from core.indexer import index_project  # noqa: E402
+from core.index_recall import get_chunk, get_outline, search_index  # noqa: E402
+from core.store import Store, _SCHEMA_VERSION  # noqa: E402
+
+
+class ChunkingTests(unittest.TestCase):
+    def test_atx_hierarchy_and_slugs(self):
+        secs = split_markdown("# Setup\nx\n\n## Database\ny\n\n### Ports\nz\n", "doc")
+        by_title = {s.title: s for s in secs}
+        self.assertEqual(by_title["Database"].slug, "setup/database")
+        self.assertEqual(by_title["Ports"].slug, "setup/database/ports")
+        self.assertEqual(by_title["Ports"].heading_path, "Setup › Database › Ports")
+
+    def test_frontmatter_stripped_from_root(self):
+        secs = split_markdown("---\ntitle: T\n---\nlead prose\n\n# H\nbody\n", "doc")
+        root = secs[0]
+        self.assertEqual(root.level, 0)
+        self.assertEqual(root.body, "lead prose")
+
+    def test_fenced_hash_comment_is_not_a_heading(self):
+        secs = split_markdown("# Real\n```bash\n# not a heading\n```\n", "doc")
+        self.assertEqual([s.title for s in secs], ["Real"])
+
+    def test_setext_heading_detected(self):
+        secs = split_markdown("Title Here\n=====\nbody\n", "doc")
+        self.assertTrue(any(s.title == "Title Here" and s.level == 1 for s in secs))
+
+    def test_byte_offsets_reproduce_body(self):
+        text = "# A\nalpha\n\n## B\nbeta\n"
+        cb = text.encode("utf-8")
+        for s in split_markdown(text, "doc"):
+            self.assertEqual(cb[s.byte_start : s.byte_end].decode("utf-8", "ignore").strip(), s.body)
+
+    def test_headingless_file_is_one_root(self):
+        secs = split_markdown("just prose, no headings\n", "readme")
+        self.assertEqual(len(secs), 1)
+        self.assertEqual(secs[0].title, "readme")
+
+    def test_sibling_slug_collision_disambiguated(self):
+        secs = split_markdown("## Notes\na\n\n## Notes\nb\n", "doc")
+        slugs = [s.slug for s in secs if s.level == 2]
+        self.assertEqual(len(set(slugs)), 2)
+
+    def test_make_slug_normalises(self):
+        self.assertEqual(make_slug("Hello, World!"), "hello-world")
+
+
+class ChunkStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LTM_DATA_DIR"] = self.tmp.name
+        self.cfg = get_config()
+        self.store = Store(self.cfg.db_path)
+        self.pk = "proj"
+
+    def tearDown(self):
+        self.store.close()
+        os.environ.pop("LTM_DATA_DIR", None)
+        self.tmp.cleanup()
+
+    def _chunk(self, anchor: str, title: str, body: str, summary: str = "") -> dict:
+        return {
+            "id": self.store.chunk_id(self.pk, "d.md", anchor),
+            "anchor": anchor, "title": title, "heading_path": title, "level": 1,
+            "summary": summary, "body": body, "byte_start": 0, "byte_end": len(body),
+            "content_hash": "h", "dim": 8, "scale": 1.0, "vec_int8": b"\x00" * 8,
+        }
+
+    def test_migration_created_chunk_tables(self):
+        self.assertEqual(self.store.db.execute("PRAGMA user_version").fetchone()[0], _SCHEMA_VERSION)
+        names = {r[0] for r in self.store.db.execute("SELECT name FROM sqlite_master")}
+        self.assertTrue({"chunks", "chunk_sources", "chunks_fts"} <= names)
+
+    def test_replace_and_fetch(self):
+        self.store.replace_source_chunks(
+            self.pk, "d.md", [self._chunk("intro", "Intro", "hello postgres")], "fh", 1
+        )
+        row = self.store.get_chunk(self.pk, "intro")
+        self.assertEqual(row["title"], "Intro")
+        self.assertEqual(self.store.chunk_count(self.pk), 1)
+        self.assertEqual(self.store.source_state(self.pk, "d.md"), ("fh", 1))
+
+    def test_replace_swaps_out_removed_sections(self):
+        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("a", "A", "x"), self._chunk("b", "B", "y")], "h1", 1)
+        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("a", "A", "x")], "h2", 2)
+        self.assertEqual(self.store.chunk_count(self.pk), 1)
+        self.assertIsNone(self.store.get_chunk(self.pk, "b"))
+
+    def test_fts_search_matches_body_term(self):
+        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("db", "Database", "uses postgres on 5432")], "h", 1)
+        self.assertIn(self.store.chunk_id(self.pk, "d.md", "db"), self.store.chunk_fts_search(self.pk, "postgres"))
+
+    def test_delete_source(self):
+        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("a", "A", "x")], "h", 1)
+        self.store.delete_source(self.pk, "d.md")
+        self.assertEqual(self.store.chunk_count(self.pk), 0)
+        self.assertNotIn("d.md", self.store.indexed_sources(self.pk))
+
+    def test_prune_chunks(self):
+        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("a", "A", "x")], "h", 1)
+        self.store.prune_chunks(self.pk)
+        self.assertEqual(self.store.chunk_count(self.pk), 0)
+
+
+class IndexerAndRecallTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LTM_DATA_DIR"] = self.tmp.name
+        self.cfg = get_config()
+        self.store = Store(self.cfg.db_path)
+        self.embedder = HashEmbedding(dim=self.cfg.dim)
+        self.repo = tempfile.TemporaryDirectory()
+        self.project = {"key": "p", "path": self.repo.name, "label": "p"}
+        self._write("guide.md", "# Setup\nInstall it.\n\n## Database\nUse Postgres on port 5432.\n\n## Auth\nHeader based only.\n")
+
+    def tearDown(self):
+        self.store.close()
+        os.environ.pop("LTM_DATA_DIR", None)
+        self.tmp.cleanup()
+        self.repo.cleanup()
+
+    def _write(self, rel: str, text: str) -> None:
+        path = Path(self.repo.name) / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _index(self) -> dict:
+        return index_project(self.store, self.embedder, self.cfg, self.project, self.repo.name)
+
+    def test_index_creates_chunks(self):
+        stats = self._index()
+        self.assertEqual(stats["files"], 1)
+        self.assertEqual(stats["chunks"], 3)
+
+    def test_reindex_short_circuits_unchanged(self):
+        self._index()
+        stats = self._index()
+        self.assertEqual(stats["files"], 0)
+        self.assertEqual(stats["skipped"], 1)
+
+    def test_edited_file_reindexes(self):
+        self._index()
+        self._write("guide.md", "# Setup\nInstall it.\n\n## Database\nUse Postgres on port 5432 now clustered.\n")
+        stats = self._index()
+        self.assertEqual(stats["files"], 1)
+
+    def test_deleted_file_pruned(self):
+        self._write("extra.md", "# Extra\ngone soon\n")
+        self._index()
+        os.unlink(Path(self.repo.name) / "extra.md")
+        stats = self._index()
+        self.assertEqual(stats["deleted"], 1)
+        self.assertIsNone(self.store.get_chunk(self.project["key"], "extra"))
+
+    def test_search_returns_outline_rows(self):
+        self._index()
+        res = search_index(self.store, self.embedder, self.cfg, self.project, "postgres port", k=3)
+        self.assertTrue(res["results"])
+        top = res["results"][0]
+        self.assertIn("anchor", top)
+        self.assertNotIn("body", top)  # search never returns bodies
+        self.assertEqual(top["freshness"], "fresh")
+
+    def test_search_diversity_cap_limits_one_file(self):
+        # Many sections in one file — the per-file cap keeps the result set from being flooded.
+        big = "# Root\n" + "".join(f"## S{i}\npostgres text {i}\n\n" for i in range(10))
+        self._write("big.md", big)
+        self._index()
+        res = search_index(self.store, self.embedder, self.cfg, self.project, "postgres", k=20)
+        from collections import Counter
+
+        per_file = Counter(r["source_path"] for r in res["results"])
+        self.assertLessEqual(per_file["big.md"], 3)
+
+    def test_get_chunk_freshness_transitions(self):
+        self._index()
+        self.assertEqual(get_chunk(self.store, self.project, "setup/database")["freshness"], "fresh")
+        # edit only the Auth section: database stays fresh, auth becomes edited
+        self._write("guide.md", "# Setup\nInstall it.\n\n## Database\nUse Postgres on port 5432.\n\n## Auth\nHeader based only. Plus tokens.\n")
+        self.assertEqual(get_chunk(self.store, self.project, "setup/database")["freshness"], "fresh")
+        self.assertEqual(get_chunk(self.store, self.project, "setup/auth")["freshness"], "edited")
+        # remove the heading entirely: anchor is now stale
+        self._write("guide.md", "# Setup\nInstall it.\n")
+        self.assertEqual(get_chunk(self.store, self.project, "setup/database")["freshness"], "stale")
+
+    def test_get_chunk_missing_ref(self):
+        self._index()
+        self.assertFalse(get_chunk(self.store, self.project, "no/such/anchor")["found"])
+
+    def test_outline_has_no_bodies(self):
+        self._index()
+        outline = get_outline(self.store, self.project)
+        self.assertEqual(outline["count"], 3)
+        self.assertTrue(all("body" not in s for s in outline["sections"]))
+
+
+if __name__ == "__main__":
+    unittest.main()
