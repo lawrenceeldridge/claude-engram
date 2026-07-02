@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from core.chunking import split_markdown
+from core.code_symbols import extract_symbols
 from core.config import Config
 from core.distill import get_distiller
 from core.embedding import EmbeddingGateway
@@ -28,6 +29,8 @@ from core.quantize import quantize_int8
 from core.store import Store
 
 _DOC_EXTENSIONS = {".md", ".markdown", ".mdx", ".mdc"}
+_CODE_EXTENSIONS = {".py"}
+_INDEX_EXTENSIONS = _DOC_EXTENSIONS | _CODE_EXTENSIONS
 _SKIP_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next",
     "target", ".mypy_cache", ".pytest_cache", ".ruff_cache", "site-packages", ".tox",
@@ -44,7 +47,7 @@ def _discover(root: Path) -> list[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
         for name in filenames:
-            if Path(name).suffix.lower() in _DOC_EXTENSIONS:
+            if Path(name).suffix.lower() in _INDEX_EXTENSIONS:
                 found.append(Path(dirpath) / name)
     return found
 
@@ -120,6 +123,41 @@ def index_project(
     return stats
 
 
+def _doc_units(source_path: str, text: str) -> list[dict]:
+    """Normalise markdown sections into index units."""
+    units = []
+    for s in split_markdown(text, Path(source_path).stem):
+        if not s.body.strip():
+            continue
+        units.append(
+            {
+                "kind": "doc_section", "anchor": s.slug, "title": s.title,
+                "heading_path": s.heading_path, "level": s.level, "body": s.body,
+                "byte_start": s.byte_start, "byte_end": s.byte_end,
+                "summary": _section_summary(s.title, s.body),
+            }
+        )
+    return units
+
+
+def _code_units(text: str) -> list[dict]:
+    """Normalise Python symbols into index units. Anchor is the dotted qualname."""
+    units = []
+    for sym in extract_symbols(text, ""):
+        if not sym.body.strip():
+            continue
+        summary = f"{sym.signature} — {sym.docstring}" if sym.docstring else sym.signature
+        units.append(
+            {
+                "kind": "code_symbol", "anchor": sym.qualname, "title": sym.name,
+                "heading_path": sym.qualname, "level": sym.level, "body": sym.body,
+                "byte_start": sym.byte_start, "byte_end": sym.byte_end,
+                "summary": summary[:_SUMMARY_CHARS],
+            }
+        )
+    return units
+
+
 def _build_chunks(
     store: Store,
     embedder: EmbeddingGateway,
@@ -128,29 +166,28 @@ def _build_chunks(
     source_path: str,
     text: str,
 ) -> list[dict]:
-    stem = Path(source_path).stem
+    is_code = Path(source_path).suffix.lower() in _CODE_EXTENSIONS
+    units = _code_units(text) if is_code else _doc_units(source_path, text)
     records: list[dict] = []
-    for section in split_markdown(text, stem):
-        if not section.body.strip():
-            continue
-        summary = _section_summary(section.title, section.body)
-        if distiller is not None:
-            summary = _llm_summary(distiller, section.heading_path, section.body) or summary
-        vec = embedder.embed_one(_embed_text(section.title, section.heading_path, summary, section.body))
+    for unit in units:
+        summary = unit["summary"]
+        if distiller is not None and not is_code:  # LLM summaries only add value for prose
+            summary = _llm_summary(distiller, unit["heading_path"], unit["body"]) or summary
+        vec = embedder.embed_one(_embed_text(unit["title"], unit["heading_path"], summary, unit["body"]))
         blob, scale = quantize_int8(vec)
         records.append(
             {
-                "id": store.chunk_id(project["key"], source_path, section.slug),
-                "kind": "doc_section",
-                "anchor": section.slug,
-                "title": section.title,
-                "heading_path": section.heading_path,
-                "level": section.level,
+                "id": store.chunk_id(project["key"], source_path, unit["anchor"]),
+                "kind": unit["kind"],
+                "anchor": unit["anchor"],
+                "title": unit["title"],
+                "heading_path": unit["heading_path"],
+                "level": unit["level"],
                 "summary": summary,
-                "body": section.body,
-                "byte_start": section.byte_start,
-                "byte_end": section.byte_end,
-                "content_hash": hashlib.sha256(section.body.encode()).hexdigest(),
+                "body": unit["body"],
+                "byte_start": unit["byte_start"],
+                "byte_end": unit["byte_end"],
+                "content_hash": hashlib.sha256(unit["body"].encode()).hexdigest(),
                 "dim": len(vec),
                 "scale": scale,
                 "vec_int8": blob,

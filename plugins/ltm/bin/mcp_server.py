@@ -111,11 +111,62 @@ TOOLS = [
         },
     },
     {
+        "name": "search_code",
+        "description": (
+            "Search this project's INDEXED PYTHON CODE for symbols (functions, classes, methods) "
+            "relevant to a query. Call this BEFORE Grep/Glob/Read over source: it returns ranked "
+            "symbol outlines (qualified name + signature/docstring summary + anchor + freshness), "
+            "not file contents. Then call `get_symbol` on the anchor to read its full source. The "
+            "anchor is the dotted qualname (e.g. 'Store.chunk_id')."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What you want to find in the code."},
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+                "k": {"type": "integer", "description": "Max symbols to return (default 10)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_symbol",
+        "description": (
+            "Fetch one Python symbol's full source by its `anchor` (dotted qualname, e.g. "
+            "'Store.chunk_id') or id, from `search_code` / `code_outline`. Returns the symbol body "
+            "plus a symbol-precise `freshness` (fresh|edited|stale|gone) verified against the live "
+            "file. Cheaper than Read — one symbol, not the whole file."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The symbol anchor (dotted qualname) or id."},
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "code_outline",
+        "description": (
+            "List the symbol skeleton of this project's indexed Python — qualified names, signatures "
+            "and docstring summaries, with NO bodies. Use to understand a module's public surface "
+            "before searching or reading. Optionally scope to one file via `source_path`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+                "source_path": {"type": "string", "description": "Optional repo-relative .py file to scope to."},
+            },
+        },
+    },
+    {
         "name": "index_docs",
         "description": (
-            "Build or refresh the documentation index for this project (markdown files). Incremental: "
-            "unchanged files are skipped via a content-hash short-circuit, so re-running is cheap. "
-            "Runs automatically on session start; call this to force a refresh after editing docs."
+            "Build or refresh the code/docs index for this project (markdown + Python files). "
+            "Incremental: unchanged files are skipped via a content-hash short-circuit, so re-running "
+            "is cheap. Runs automatically on session start; call this to force a refresh after edits."
         ),
         "inputSchema": {
             "type": "object",
@@ -237,10 +288,28 @@ class _Engine:
 
         project = self._project(args.get("project"))
         return search_index(
-            self.store, self.embedder, self.cfg, project, args.get("query") or "", k=args.get("k")
+            self.store, self.embedder, self.cfg, project, args.get("query") or "",
+            k=args.get("k"), kind="doc_section",
+        )
+
+    def search_code(self, args: dict) -> dict:
+        self._init()
+        from core.index_recall import search_index
+
+        project = self._project(args.get("project"))
+        return search_index(
+            self.store, self.embedder, self.cfg, project, args.get("query") or "",
+            k=args.get("k"), kind="code_symbol",
         )
 
     def get_doc_section(self, args: dict) -> dict:
+        self._init()
+        from core.index_recall import get_chunk
+
+        project = self._project(args.get("project"))
+        return get_chunk(self.store, project, args.get("ref") or "")
+
+    def get_symbol(self, args: dict) -> dict:
         self._init()
         from core.index_recall import get_chunk
 
@@ -252,7 +321,14 @@ class _Engine:
         from core.index_recall import get_outline
 
         project = self._project(args.get("project"))
-        return get_outline(self.store, project, args.get("source_path"))
+        return get_outline(self.store, project, args.get("source_path"), kind="doc_section")
+
+    def code_outline(self, args: dict) -> dict:
+        self._init()
+        from core.index_recall import get_outline
+
+        project = self._project(args.get("project"))
+        return get_outline(self.store, project, args.get("source_path"), kind="code_symbol")
 
     def index_docs(self, args: dict) -> dict:
         self._init()
@@ -273,10 +349,16 @@ def _tool_call(name: str, args: dict) -> dict:
         payload = ENGINE.list_projects(args)
     elif name == "search_docs":
         payload = ENGINE.search_docs(args)
+    elif name == "search_code":
+        payload = ENGINE.search_code(args)
     elif name == "get_doc_section":
         payload = ENGINE.get_doc_section(args)
+    elif name == "get_symbol":
+        payload = ENGINE.get_symbol(args)
     elif name == "doc_outline":
         payload = ENGINE.doc_outline(args)
+    elif name == "code_outline":
+        payload = ENGINE.code_outline(args)
     elif name == "index_docs":
         payload = ENGINE.index_docs(args)
     else:

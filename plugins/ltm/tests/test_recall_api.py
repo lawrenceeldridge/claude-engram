@@ -273,7 +273,11 @@ class McpServerTests(unittest.TestCase):
         names = {t["name"] for t in listed["result"]["tools"]}
         self.assertEqual(
             names,
-            {"recall", "list_projects", "search_docs", "get_doc_section", "doc_outline", "index_docs"},
+            {
+                "recall", "list_projects", "index_docs",
+                "search_docs", "get_doc_section", "doc_outline",
+                "search_code", "get_symbol", "code_outline",
+            },
         )
 
     def test_notification_gets_no_response(self):

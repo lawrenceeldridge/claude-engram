@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bin"))
 
 from core.chunking import make_slug, split_markdown  # noqa: E402
+from core.code_symbols import extract_symbols  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.embedding import HashEmbedding  # noqa: E402
 from core.indexer import index_project  # noqa: E402
@@ -216,6 +217,95 @@ class IndexerAndRecallTests(unittest.TestCase):
         outline = get_outline(self.store, self.project)
         self.assertEqual(outline["count"], 3)
         self.assertTrue(all("body" not in s for s in outline["sections"]))
+
+
+class CodeSymbolTests(unittest.TestCase):
+    SRC = (
+        "import os\n\n"
+        "def top_level(a, b: int = 3) -> str:\n"
+        '    """Does a thing."""\n'
+        "    return str(a)\n\n"
+        "class Widget:\n"
+        "    def method(self, x):\n"
+        "        return x\n\n"
+        "    async def afetch(self):\n"
+        "        return 1\n"
+    )
+
+    def test_extracts_functions_classes_methods(self):
+        syms = {s.qualname: s for s in extract_symbols(self.SRC, "m")}
+        self.assertEqual(syms["top_level"].kind, "function")
+        self.assertEqual(syms["Widget"].kind, "class")
+        self.assertEqual(syms["Widget.method"].kind, "method")
+        self.assertEqual(syms["Widget.afetch"].kind, "async_method")
+
+    def test_signature_and_docstring(self):
+        syms = {s.qualname: s for s in extract_symbols(self.SRC, "m")}
+        self.assertEqual(syms["top_level"].signature, "def top_level(a, b: int=3) -> str:")
+        self.assertEqual(syms["top_level"].docstring, "Does a thing.")
+
+    def test_byte_spans_reproduce_body(self):
+        cb = self.SRC.encode("utf-8")
+        for s in extract_symbols(self.SRC, "m"):
+            self.assertEqual(cb[s.byte_start : s.byte_end].decode("utf-8", "ignore").rstrip(), s.body)
+
+    def test_syntax_error_yields_nothing(self):
+        self.assertEqual(extract_symbols("def broken(:\n", "m"), [])
+
+
+class CodeIndexingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LTM_DATA_DIR"] = self.tmp.name
+        self.cfg = get_config()
+        self.store = Store(self.cfg.db_path)
+        self.embedder = HashEmbedding(dim=self.cfg.dim)
+        self.repo = tempfile.TemporaryDirectory()
+        self.project = {"key": "p", "path": self.repo.name, "label": "p"}
+        self._write("app.py", "def connect_db(url):\n    return url\n\nclass Server:\n    def start(self):\n        return 1\n")
+        self._write("readme.md", "# Overview\nProse about the server.\n")
+
+    def tearDown(self):
+        self.store.close()
+        os.environ.pop("LTM_DATA_DIR", None)
+        self.tmp.cleanup()
+        self.repo.cleanup()
+
+    def _write(self, rel: str, text: str) -> None:
+        (Path(self.repo.name) / rel).write_text(text, encoding="utf-8")
+
+    def test_indexes_both_code_and_docs(self):
+        stats = index_project(self.store, self.embedder, self.cfg, self.project, self.repo.name)
+        self.assertEqual(stats["files"], 2)
+        # 3 code symbols (connect_db, Server, Server.start) + 1 doc section
+        self.assertEqual(stats["chunks"], 4)
+
+    def test_search_code_isolates_code_symbols(self):
+        index_project(self.store, self.embedder, self.cfg, self.project, self.repo.name)
+        res = search_index(self.store, self.embedder, self.cfg, self.project, "connect db", k=5, kind="code_symbol")
+        self.assertTrue(res["results"])
+        self.assertTrue(all(r["kind"] == "code_symbol" for r in res["results"]))
+
+    def test_search_docs_excludes_code(self):
+        index_project(self.store, self.embedder, self.cfg, self.project, self.repo.name)
+        res = search_index(self.store, self.embedder, self.cfg, self.project, "server", k=5, kind="doc_section")
+        self.assertTrue(all(r["kind"] == "doc_section" for r in res["results"]))
+
+    def test_get_symbol_full_source_and_freshness(self):
+        index_project(self.store, self.embedder, self.cfg, self.project, self.repo.name)
+        c = get_chunk(self.store, self.project, "Server.start")
+        self.assertTrue(c["found"])
+        self.assertIn("def start", c["body"])
+        self.assertEqual(c["freshness"], "fresh")
+        # edit the symbol -> edited
+        self._write("app.py", "def connect_db(url):\n    return url\n\nclass Server:\n    def start(self):\n        return 2\n")
+        self.assertEqual(get_chunk(self.store, self.project, "Server.start")["freshness"], "edited")
+
+    def test_code_outline_scoped(self):
+        index_project(self.store, self.embedder, self.cfg, self.project, self.repo.name)
+        outline = get_outline(self.store, self.project, kind="code_symbol")
+        anchors = {s["anchor"] for s in outline["sections"]}
+        self.assertEqual(anchors, {"connect_db", "Server", "Server.start"})
 
 
 if __name__ == "__main__":

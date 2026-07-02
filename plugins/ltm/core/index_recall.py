@@ -28,12 +28,14 @@ _PER_FILE_CAP = 3
 _FRESH_WEIGHTS = {"similarity": 1.0, "fts": 0.8}
 
 
-def _cosine_ranked(store: Store, embedder: EmbeddingGateway, project_key: str, query: str, k: int) -> list[str]:
+def _cosine_ranked(
+    store: Store, embedder: EmbeddingGateway, project_key: str, query: str, k: int, kind: str | None
+) -> list[str]:
     """Chunk ids ranked by cosine to the query, dropping vectors of a different dimension."""
     qvec = embedder.embed_one(query)
     qdim = len(qvec)
     scored: list[tuple[float, str]] = []
-    for row in store.chunk_rows(project_key):
+    for row in store.chunk_rows(project_key, kind=kind):
         if not row["vec_int8"] or (row["dim"] and row["dim"] != qdim):
             continue
         sim = cosine(qvec, dequantize_int8(row["vec_int8"], row["scale"]))
@@ -86,8 +88,13 @@ def search_index(
     *,
     k: int | None = None,
     max_chars: int | None = None,
+    kind: str | None = None,
 ) -> dict:
-    """Hybrid keyword+semantic search over indexed doc sections. Returns outline rows only."""
+    """Hybrid keyword+semantic search over indexed chunks. Returns outline rows only.
+
+    ``kind`` scopes the search to one chunk kind (``doc_section`` / ``code_symbol``);
+    None searches the whole index.
+    """
     k = k or 10
     max_chars = cfg.recall_max_chars if max_chars is None else max_chars
     query = (query or "").strip()
@@ -95,13 +102,13 @@ def search_index(
         return {"query": query, "project": project["label"], "results": [], "returned": 0, "matched": 0}
 
     pool = max(k * 4, 40)
-    fts_ids = store.chunk_fts_search(project["key"], query, limit=pool)
-    cos_ids = _cosine_ranked(store, embedder, project["key"], query, k=pool)
+    fts_ids = store.chunk_fts_search(project["key"], query, limit=pool, kind=kind)
+    cos_ids = _cosine_ranked(store, embedder, project["key"], query, k=pool, kind=kind)
     fused = fuse(
         [Channel("fts", fts_ids), Channel("similarity", cos_ids)],
         weights=_FRESH_WEIGHTS,
     )
-    rows = {r["id"]: r for r in store.chunk_rows(project["key"])}
+    rows = {r["id"]: r for r in store.chunk_rows(project["key"], kind=kind)}
     packed = _diverse_pack(fused, rows, max_chars)[:k]
 
     fresh_cache: dict[str, str] = {}
@@ -114,6 +121,7 @@ def search_index(
             {
                 "anchor": row["anchor"],
                 "title": row["title"],
+                "kind": row["kind"],
                 "heading_path": row["heading_path"],
                 "source_path": sp,
                 "summary": row["summary"] or "",
@@ -152,24 +160,35 @@ def get_chunk(store: Store, project: Project, ref: str) -> dict:
 
 
 def _section_freshness(project_root: str, row) -> str:
-    """Section-precise freshness: re-split the live file and compare this anchor's hash."""
-    from core.chunking import split_markdown
-
+    """Anchor-precise freshness: re-parse the live file and compare this unit's body hash."""
     path = Path(project_root) / row["source_path"]
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return "gone"
-    for section in split_markdown(text, path.stem):
-        if section.slug == row["anchor"]:
-            live = hashlib.sha256(section.body.encode()).hexdigest()
+    for anchor, body in _live_units(row["kind"], text, path.stem):
+        if anchor == row["anchor"]:
+            live = hashlib.sha256(body.encode()).hexdigest()
             return "fresh" if live == row["content_hash"] else "edited"
-    return "stale"  # the heading this anchor named no longer exists
+    return "stale"  # the heading/symbol this anchor named no longer exists
 
 
-def get_outline(store: Store, project: Project, source_path: str | None = None) -> dict:
+def _live_units(kind: str, text: str, stem: str):
+    """(anchor, body) pairs from the live file, parsed the same way the indexer did."""
+    if kind == "code_symbol":
+        from core.code_symbols import extract_symbols
+
+        return [(s.qualname, s.body) for s in extract_symbols(text, stem)]
+    from core.chunking import split_markdown
+
+    return [(s.slug, s.body) for s in split_markdown(text, stem)]
+
+
+def get_outline(
+    store: Store, project: Project, source_path: str | None = None, kind: str | None = None
+) -> dict:
     """Repo/file skeleton — anchors, titles, breadcrumbs, summaries; zero bodies."""
-    rows = store.chunk_outline(project["key"], source_path)
+    rows = store.chunk_outline(project["key"], source_path, kind=kind)
     return {
         "project": project["label"],
         "source_path": source_path,

@@ -619,7 +619,7 @@ class Store:
         ).fetchone()
 
     def chunk_outline(
-        self, project_key: str, source_path: str | None = None
+        self, project_key: str, source_path: str | None = None, kind: str | None = None
     ) -> list[sqlite3.Row]:
         """Ordered skeleton (no body): anchor/title/heading_path/level/summary per chunk."""
         sql = (
@@ -630,25 +630,39 @@ class Store:
         if source_path is not None:
             sql += " AND source_path = ?"
             params.append(source_path)
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind)
         sql += " ORDER BY source_path, byte_start"
         return self.db.execute(sql, params).fetchall()
 
-    def chunk_rows(self, project_key: str) -> list[sqlite3.Row]:
-        """All chunk rows for a project (vector-channel scan input)."""
-        return self.db.execute("SELECT * FROM chunks WHERE project_key = ?", (project_key,)).fetchall()
+    def chunk_rows(self, project_key: str, kind: str | None = None) -> list[sqlite3.Row]:
+        """All chunk rows for a project (vector-channel scan input), optionally one kind."""
+        sql = "SELECT * FROM chunks WHERE project_key = ?"
+        params: list = [project_key]
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind)
+        return self.db.execute(sql, params).fetchall()
 
-    def chunk_fts_search(self, project_key: str, query: str, limit: int = 50) -> list[str]:
+    def chunk_fts_search(
+        self, project_key: str, query: str, limit: int = 50, kind: str | None = None
+    ) -> list[str]:
         """Chunk ids matching an FTS5 keyword query, best-ranked first (weighted columns)."""
         match = _fts_match_expr(query)
         if not match:
             return []
-        rows = self.db.execute(
+        sql = (
             "SELECT c.id FROM chunks_fts JOIN chunks c ON c.rowid = chunks_fts.rowid "
-            "WHERE chunks_fts MATCH ? AND c.project_key = ? "
-            "ORDER BY bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0) LIMIT ?",
-            (match, project_key, limit),
-        ).fetchall()
-        return [row[0] for row in rows]
+            "WHERE chunks_fts MATCH ? AND c.project_key = ?"
+        )
+        params: list = [match, project_key]
+        if kind is not None:
+            sql += " AND c.kind = ?"
+            params.append(kind)
+        sql += " ORDER BY bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0) LIMIT ?"
+        params.append(limit)
+        return [row[0] for row in self.db.execute(sql, params).fetchall()]
 
     def chunk_projects(self) -> list[sqlite3.Row]:
         return self.db.execute(
