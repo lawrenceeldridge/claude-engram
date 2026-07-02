@@ -164,14 +164,16 @@ TOOLS = [
     {
         "name": "index_docs",
         "description": (
-            "Build or refresh the code/docs index for this project (markdown + Python files). "
-            "Incremental: unchanged files are skipped via a content-hash short-circuit, so re-running "
-            "is cheap. Runs automatically on session start; call this to force a refresh after edits."
+            "Build or refresh the code/docs index (markdown + Python/TS/JS). Incremental: unchanged "
+            "files are skipped via a content-hash short-circuit, so re-running is cheap. Auto-index on "
+            "session start skips very large trees (e.g. a whole monorepo); pass `path` to index a "
+            "specific subtree unbounded (e.g. one app inside a monorepo)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+                "path": {"type": "string", "description": "Optional absolute subtree to index (unbounded); defaults to the project root."},
             },
         },
     },
@@ -335,8 +337,9 @@ class _Engine:
         from core.indexer import index_project
 
         project = self._project(args.get("project"))
-        stats = index_project(self.store, self.embedder, self.cfg, project, project["path"])
-        return {"project": project["label"], **stats}
+        root = args.get("path") or project["path"]
+        stats = index_project(self.store, self.embedder, self.cfg, project, root)
+        return {"project": project["label"], "root": root, **stats}
 
 
 ENGINE = _Engine()

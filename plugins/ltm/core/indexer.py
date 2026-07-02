@@ -77,17 +77,33 @@ def index_project(
     root: str | Path,
     *,
     summarize: bool = False,
+    max_files: int | None = None,
 ) -> dict:
-    """Index (or incrementally refresh) the markdown docs under ``root`` for a project."""
+    """Index (or incrementally refresh) the code/docs under ``root`` for a project.
+
+    ``max_files`` bounds an *unattended* run: if the tree has more eligible files than
+    the cap the index is skipped whole, so auto-indexing a huge monorepo git-root never
+    turns into a runaway embed. An explicit, user-scoped index passes None (unbounded).
+    """
     root = Path(root)
+    # Store paths relative to the PROJECT root (git root), not the index root, so a
+    # scoped subtree index (e.g. one app in a monorepo) still resolves against the
+    # project path at recall/freshness time. Falls back to the index root for files
+    # somehow outside the project.
+    project_root = Path(project["path"]) if project.get("path") else root
     distiller = get_distiller(cfg) if summarize else None
     seen: set[str] = set()
     now = time.time()
     stats = {"files": 0, "skipped": 0, "chunks": 0, "deleted": 0}
 
-    for path in _discover(root):
+    discovered = _discover(root)
+    if max_files is not None and len(discovered) > max_files:
+        return {**stats, "skipped_too_large": len(discovered), "max_files": max_files}
+
+    for path in discovered:
         try:
-            source_path = str(path.relative_to(root))
+            base = project_root if path.is_relative_to(project_root) else root
+            source_path = str(path.relative_to(base))
             mtime_ns = path.stat().st_mtime_ns
         except (OSError, ValueError):
             continue

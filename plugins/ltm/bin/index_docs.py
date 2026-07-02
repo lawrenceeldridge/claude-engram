@@ -21,6 +21,43 @@ from _bootstrap import plugin_root, reexec_if_pinned
 reexec_if_pinned()
 plugin_root()
 
+# Unattended refresh caps eligible files: resolving to a monorepo git-root can surface
+# tens of thousands of files, and embedding those on session start is never wanted. A
+# tree over the cap is skipped whole — index the subtree you care about explicitly via
+# the index_docs tool (which is unbounded). Keeps auto-index safe on huge repos.
+_AUTO_MAX_FILES = 4000
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _acquire_lock(path) -> bool:
+    """Single-flight lock: only one index worker runs at a time (a dead holder is stolen)."""
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        try:
+            holder = int(path.read_text().strip() or 0)
+        except (OSError, ValueError):
+            holder = 0
+        if holder and _alive(holder):
+            return False  # another worker is already indexing — don't pile on
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        return _acquire_lock(path)
+
 
 def _run_worker(payload_path: str) -> None:
     try:
@@ -39,12 +76,21 @@ def _run_worker(payload_path: str) -> None:
     from core.store import Store
 
     cfg = get_config()
-    root = payload.get("cwd") or os.getcwd()
-    project = resolve_project(root, cfg.markers)
-    embedder = get_embedder(cfg)
-    store = Store(cfg.db_path)
-    index_project(store, embedder, cfg, project, project["path"] or root)
-    store.close()
+    lock = Path(cfg.data_dir) / ".index.lock"
+    if not _acquire_lock(lock):
+        return
+    try:
+        root = payload.get("cwd") or os.getcwd()
+        project = resolve_project(root, cfg.markers)
+        embedder = get_embedder(cfg)
+        store = Store(cfg.db_path)
+        index_project(store, embedder, cfg, project, project["path"] or root, max_files=_AUTO_MAX_FILES)
+        store.close()
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
 
 
 def main() -> int:
