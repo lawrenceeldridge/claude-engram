@@ -19,13 +19,7 @@ import sys
 from pathlib import Path
 
 
-def managed_python(data_dir: str | os.PathLike | None = None) -> str | None:
-    if data_dir is None:
-        data_dir = (
-            os.environ.get("LTM_DATA_DIR")
-            or os.environ.get("CLAUDE_PLUGIN_DATA")
-            or os.path.join(os.path.expanduser("~"), ".claude", "plugins", "data", "ltm")
-        )
+def _venv_exe(data_dir: str | os.PathLike) -> str | None:
     venv = os.path.join(str(data_dir), "venv")
     exe = (
         os.path.join(venv, "Scripts", "python.exe")
@@ -33,6 +27,28 @@ def managed_python(data_dir: str | os.PathLike | None = None) -> str | None:
         else os.path.join(venv, "bin", "python")
     )
     return exe if os.path.exists(exe) else None
+
+
+def managed_python(data_dir: str | os.PathLike | None = None) -> str | None:
+    if data_dir is not None:
+        return _venv_exe(data_dir)
+    explicit = os.environ.get("LTM_DATA_DIR") or os.environ.get("CLAUDE_PLUGIN_DATA")
+    if explicit:
+        return _venv_exe(explicit)
+    base = os.path.join(os.path.expanduser("~"), ".claude", "plugins", "data")
+    exe = _venv_exe(os.path.join(base, "ltm"))
+    if exe:
+        return exe
+    # No default venv — a standalone run (no CLAUDE_PLUGIN_DATA) must still find the
+    # venv Claude Code provisioned under a marketplace-qualified sibling, or recall
+    # falls back to the ambient python's hash stub and can't read fastembed vectors.
+    import glob
+
+    for cand in sorted(glob.glob(os.path.join(base, "ltm-*")), reverse=True):
+        exe = _venv_exe(cand)
+        if exe:
+            return exe
+    return None
 
 
 def reexec_if_pinned() -> None:

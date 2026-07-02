@@ -77,6 +77,19 @@ class RecallStructuredTests(unittest.TestCase):
         self.assertEqual(result["facts"], [])
         self.assertIn("do not assume prior context", result["guidance"])
 
+    def test_dim_divergence_returns_embedding_mismatch(self):
+        service.add_facts(
+            self.store, self.embedder, self.cfg, self.project, "s1",
+            ["The deployment pipeline runs on github actions."],
+        )
+        other_space = HashEmbedding(dim=self.cfg.dim // 2)
+        result = service.recall_structured(
+            self.store, other_space, self.cfg, self.project, "deployment pipeline"
+        )
+        self.assertEqual(result["verdict"], "embedding_mismatch")
+        self.assertEqual(result["facts"], [])
+        self.assertIn("configuration problem", result["guidance"])
+
     def test_relevant_recall_is_ok(self):
         service.add_facts(
             self.store, self.embedder, self.cfg, self.project, "s1",

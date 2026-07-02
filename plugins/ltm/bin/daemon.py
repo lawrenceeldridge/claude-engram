@@ -27,7 +27,7 @@ def serve() -> None:
     from core.config import get_config
     from core.embedding import get_embedder
     from core.project import resolve_project
-    from core.service import recall_core_block, recall_prompt_block
+    from core.service import recall_core_block, recall_prompt_block, recall_structured
     from core.store import Store
 
     cfg = get_config()
@@ -63,6 +63,10 @@ def serve() -> None:
                 elif op == "core":
                     project = resolve_project(req.get("cwd"), cfg.markers)
                     resp = {"block": recall_core_block(store, cfg, project)}
+                elif op == "recall_structured":
+                    # MCP delegates here so recall shares the daemon's warm embedder — no write/read space drift.
+                    project = req.get("project") or resolve_project(req.get("cwd"), cfg.markers)
+                    resp = recall_structured(store, embedder, cfg, project, req.get("query", ""), k=req.get("k"))
                 else:
                     resp = {"error": f"unknown op {op!r}"}
             except Exception as exc:

@@ -172,6 +172,20 @@ class Store:
     def active_rows(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM facts WHERE status = 'active'").fetchall()
 
+    def stored_dims(self, project_key: str) -> set[int]:
+        """Distinct embedding dimensions of a project's active facts.
+
+        Lets recall detect a write/read embedding-space divergence: if the query
+        embedder's dimension is absent here, every candidate was silently skipped
+        by the dim gate and the result would otherwise masquerade as 'no memory'.
+        """
+        rows = self.db.execute(
+            "SELECT DISTINCT dim FROM facts "
+            "WHERE project_key = ? AND status = 'active' AND dim IS NOT NULL",
+            (project_key,),
+        ).fetchall()
+        return {row[0] for row in rows}
+
     def recent(self, project_key: str, limit: int) -> list[sqlite3.Row]:
         return self.db.execute(
             "SELECT * FROM facts WHERE project_key = ? AND status = 'active' "

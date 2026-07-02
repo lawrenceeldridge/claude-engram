@@ -120,8 +120,6 @@ class _Engine:
         return current
 
     def recall(self, args: dict) -> dict:
-        from core.service import recall_structured
-
         self._init()
         query = (args.get("query") or "").strip()
         if not query:
@@ -132,9 +130,33 @@ class _Engine:
         cached = self._cache_get(key)
         if cached is not None:
             return cached
-        result = recall_structured(self.store, self.embedder, self.cfg, project, query, k=k)
+        result = self._recall_via_daemon(project, query, k)
+        if result is None:
+            from core.service import recall_structured
+
+            result = recall_structured(self.store, self.embedder, self.cfg, project, query, k=k)
         self._cache_put(key, result)
         return result
+
+    def _recall_via_daemon(self, project, query: str, k) -> dict | None:
+        """Delegate recall to the resident daemon's warm embedder, or None if unreachable.
+
+        This is the primary path: the daemon holds the same embedder capture writes
+        through, so query and stored vectors share one space. Falling back to the
+        MCP process's own embedder (which may resolve a different backend from a
+        thinner env) is what silently returns 'no memory' against a full store; the
+        dim guard in recall_structured turns that fallback failure loud.
+        """
+        from core.daemon_client import request
+
+        resp = request(
+            self.cfg.sock_path,
+            {"op": "recall_structured", "project": dict(project), "query": query, "k": k},
+            timeout=5,
+        )
+        if not isinstance(resp, dict) or "error" in resp or "verdict" not in resp:
+            return None
+        return resp
 
     def list_projects(self, _args: dict) -> dict:
         self._init()

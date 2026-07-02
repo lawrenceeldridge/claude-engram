@@ -36,13 +36,29 @@ def ensure_daemon(sock_path: Path | str, plugin_root: str) -> None:
     if request(sock_path, {"op": "ping"}, timeout=1) is not None:
         return
     daemon = os.path.join(plugin_root, "bin", "daemon.py")
+
+    # Pin the daemon to the managed venv, not the caller's interpreter: a spawner
+    # re-exec'd into a transient venv would otherwise leave the daemon running under
+    # a soon-deleted python. Drop LTM_REEXECED so the daemon re-pins from scratch.
+    interpreter = sys.executable
+    try:
+        from core.config import get_config
+        from core.provision import venv_python
+
+        managed = venv_python(get_config().data_dir)
+        if os.path.exists(managed):
+            interpreter = str(managed)
+    except Exception:
+        pass
+    env = {key: value for key, value in os.environ.items() if key != "LTM_REEXECED"}
     try:
         subprocess.Popen(
-            [sys.executable, daemon],
+            [interpreter, daemon],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
     except OSError:
         pass

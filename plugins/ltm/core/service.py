@@ -173,7 +173,29 @@ _GUIDANCE = {
     "ok": "Strong recall — trust these facts; a broad code search is likely unnecessary.",
     "low_confidence": "Weak recall — treat these as hints only; widen to Grep/Glob if they don't answer the question.",
     "no_memory": "No stored memory for this query — do not assume prior context; proceed with a normal search.",
+    "embedding_mismatch": (
+        "The recall embedder's vector space does not match the stored facts, so none "
+        "could be compared — this is a configuration problem, NOT an empty store. The "
+        "process serving recall resolved a different `embedding` backend/model than the "
+        "one that wrote these facts. Align the embedding config across capture and "
+        "recall (e.g. set LTM_EMBEDDING globally) and retry."
+    ),
 }
+
+
+def _embedding_mismatch(store: Store, embedder: EmbeddingGateway, project_key: str) -> bool:
+    """True when the query embedder can't compare against any stored vector.
+
+    ``search_fused`` silently drops rows whose stored ``dim`` differs from the query
+    vector's — correct for mixed stores, but indistinguishable from 'nothing stored'
+    to the caller. When the project HAS active facts and none share the embedder's
+    dimension, the two embedding spaces have diverged; we surface that explicitly.
+    """
+    qdim = getattr(embedder, "dim", None)
+    if qdim is None:
+        return False
+    stored = store.stored_dims(project_key)
+    return bool(stored) and qdim not in stored
 
 
 def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int]:
@@ -222,7 +244,7 @@ def recall_structured(
     confidence = compute_confidence(sims, has_identity_match=identity)["confidence"]
 
     if not hits:
-        verdict = "no_memory"
+        verdict = "embedding_mismatch" if _embedding_mismatch(store, embedder, project["key"]) else "no_memory"
     elif confidence < cfg.recall_min_confidence:
         verdict = "low_confidence"
     else:

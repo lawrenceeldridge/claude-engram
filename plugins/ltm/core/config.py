@@ -44,7 +44,16 @@ def _data_dir() -> Path:
             return Path(val)
     # Match Claude Code's documented per-plugin data dir; fall back to tmp so the
     # tool still runs (and tests pass) outside a plugin context.
-    home_default = Path.home() / ".claude" / "plugins" / "data" / "ltm"
+    base = Path.home() / ".claude" / "plugins" / "data"
+    home_default = base / "ltm"
+    # Without CLAUDE_PLUGIN_DATA (a standalone CLI/viewer run), the bare default can
+    # miss the live store that Claude Code keeps under a marketplace-qualified
+    # sibling (data/ltm-<marketplace>). Adopt the newest sibling that holds a real
+    # memory.db rather than silently opening an empty default.
+    if not (home_default / "memory.db").exists():
+        siblings = [p for p in base.glob("ltm-*") if (p / "memory.db").is_file()]
+        if siblings:
+            return max(siblings, key=lambda p: (p / "memory.db").stat().st_mtime)
     try:
         home_default.mkdir(parents=True, exist_ok=True)
         return home_default
