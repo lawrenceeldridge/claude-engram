@@ -65,8 +65,8 @@ PAGE = """<!doctype html>
   .facts { margin:0; padding-inline-start:18px; }
   .facts li { margin:3px 0; }
   .narr { color:#adbac7; white-space:pre-wrap; }
-  .card .narr, .card[data-view=narr] .facts { display:none; }
-  .card[data-view=narr] .narr { display:block; }
+  .facts, .narr { display:none; }            /* collapsed by default — title/text first */
+  .facts.open, .narr.open { display:block; }
   .files { margin-top:10px; display:flex; flex-wrap:wrap; gap:5px; }
   .file { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:#161b22;
           border:1px solid var(--border); border-radius:5px; padding:2px 7px; }
@@ -137,7 +137,7 @@ function cardHTML(c, flash) {
   }
   const facts = `<ul class="facts">${(c.facts||[]).map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
   const narr = c.narrative ? `<div class="narr">${esc(c.narrative)}</div>` : '';
-  const toggles = `<div class="toggles"><button class="toggle active" data-v="facts">facts</button>`
+  const toggles = `<div class="toggles"><button class="toggle" data-v="facts">facts</button>`
     + (c.narrative ? `<button class="toggle" data-v="narr">narrative</button>` : '') + `</div>`;
   return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="chead">${badge(c)}${toggles}</div>${title}${facts}${narr}${filesHTML(c)}${meta}</div>`;
 }
@@ -167,12 +167,13 @@ async function loadMore() {
   if (rows.length) $('#list').insertAdjacentHTML('beforeend', rows.map(r => cardHTML(r, false)).join(''));
   loading = false;
 }
-// facts/narrative toggle (event delegation over the whole list)
+// facts/narrative toggles — independent on/off, both collapsed by default
 $('#list').addEventListener('click', e => {
   const btn = e.target.closest('.toggle'); if (!btn) return;
   const card = btn.closest('.card');
-  card.setAttribute('data-view', btn.dataset.v);
-  card.querySelectorAll('.toggle').forEach(b => b.classList.toggle('active', b === btn));
+  const section = card.querySelector(btn.dataset.v === 'narr' ? '.narr' : '.facts');
+  if (!section) return;
+  btn.classList.toggle('active', section.classList.toggle('open'));
 });
 $('#project').addEventListener('change', () => reload());
 let t; $('#q').addEventListener('input', () => { clearTimeout(t); t=setTimeout(() => reload(),180); });
