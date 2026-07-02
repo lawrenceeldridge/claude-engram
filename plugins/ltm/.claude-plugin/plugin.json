@@ -1,0 +1,109 @@
+{
+  "name": "ltm",
+  "displayName": "Long-Term Memory",
+  "version": "0.1.0",
+  "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
+  "author": {
+    "name": "Lawrence Eldridge"
+  },
+  "license": "MIT",
+  "keywords": ["memory", "ltm", "recall", "embeddings", "hooks", "cross-project", "semantic-search"],
+  "userConfig": {
+    "embedding": {
+      "type": "string",
+      "title": "Embedding backend",
+      "description": "hash = dependency-free lexical stub (zero installs); fastembed = real local semantic model (requires: pip install fastembed).",
+      "default": "hash"
+    },
+    "embedding_model": {
+      "type": "string",
+      "title": "Embedding model (fastembed)",
+      "description": "fastembed model id. Blank uses BAAI/bge-base-en-v1.5 (best measured recall). BAAI/bge-small-en-v1.5 is lighter/faster.",
+      "default": ""
+    },
+    "distiller": {
+      "type": "string",
+      "title": "Distiller",
+      "description": "heuristic = dependency-free line extraction; claude = headless claude -p (defaults to Haiku, costs a little); ollama = local OpenAI-compatible server (zero tokens, offline).",
+      "default": "heuristic"
+    },
+    "distiller_model": {
+      "type": "string",
+      "title": "Distiller model",
+      "description": "For claude: model alias/id (blank = haiku). For ollama: model name (blank = qwen2.5:3b).",
+      "default": ""
+    },
+    "distiller_base_url": {
+      "type": "string",
+      "title": "Distiller base URL (ollama/http)",
+      "description": "OpenAI-compatible endpoint for the ollama/http distiller. Default is a local Ollama server.",
+      "default": "http://localhost:11434/v1"
+    },
+    "ttl_days": {
+      "type": "number",
+      "title": "Memory TTL (days)",
+      "description": "Archive facts unseen for this many days on capture. 0 disables hard expiry (recency decay still de-ranks old facts).",
+      "default": 0,
+      "min": 0
+    },
+    "ttl_keep_frequency": {
+      "type": "number",
+      "title": "TTL keep-frequency",
+      "description": "Facts reinforced at least this many times are never expired by the TTL sweep.",
+      "default": 3,
+      "min": 1
+    },
+    "top_k": {
+      "type": "number",
+      "title": "Recall results per prompt",
+      "description": "Max facts injected just-in-time on each prompt.",
+      "default": 3,
+      "min": 1,
+      "max": 10
+    },
+    "min_sim": {
+      "type": "number",
+      "title": "Similarity threshold",
+      "description": "Minimum cosine similarity for a fact to be injected. Higher = stricter (fewer, more relevant).",
+      "default": 0.12,
+      "min": 0,
+      "max": 1
+    },
+    "core_size": {
+      "type": "number",
+      "title": "Session core size",
+      "description": "Facts injected once at session start (cache-friendly). Set 0 to disable.",
+      "default": 5,
+      "min": 0,
+      "max": 20
+    },
+    "max_chars": {
+      "type": "number",
+      "title": "Max injected characters",
+      "description": "Hard cap on characters injected per hook — the token budget guard.",
+      "default": 800,
+      "min": 100
+    },
+    "cross_project": {
+      "type": "boolean",
+      "title": "Cross-project fallback",
+      "description": "If in-project recall is weak, fall back to other projects' memory (slightly penalised).",
+      "default": false
+    },
+    "half_life_days": {
+      "type": "number",
+      "title": "Recency half-life (days)",
+      "description": "A memory's recency weight halves every this-many days unless reinforced. Lower = forgets faster.",
+      "default": 30,
+      "min": 1
+    },
+    "supersede_threshold": {
+      "type": "number",
+      "title": "Supersession similarity",
+      "description": "A new fact this similar (cosine) to an older one archives the older (newest wins). 1.0 disables. Keep high to avoid retiring distinct facts.",
+      "default": 0.85,
+      "min": 0,
+      "max": 1
+    }
+  }
+}

@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""ltm — inspect and drive claude-ltm memory from the terminal.
+
+Subcommands:
+  doctor      show resolved config, project identity and fact count
+  capture     capture memory from stdin / --file / --transcript
+  recall      run a just-in-time recall query for the current project
+  core        show the stable session-start memory block
+  projects    list every project in the global store
+  prune       delete all memory for the current project
+  daemon      run the resident daemon (keeps the embedder warm)
+  viewer      launch the localhost viewer
+  demo        capture sample facts, then recall against them (end-to-end proof)
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
+sys.path.insert(0, str(ROOT))
+
+from core.config import get_config  # noqa: E402
+from core.embedding import get_embedder  # noqa: E402
+from core.project import resolve_project  # noqa: E402
+from core.store import Store  # noqa: E402
+from core import service  # noqa: E402
+
+
+def _project(cfg, args):
+    return resolve_project(getattr(args, "cwd", None) or os.getcwd(), cfg.markers)
+
+
+def cmd_doctor(args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    project = _project(cfg, args)
+    print(f"data dir  : {cfg.data_dir}")
+    print(f"db        : {cfg.db_path}")
+    print(f"embedding : {cfg.embedding} (dim={cfg.dim})")
+    print(f"top_k={cfg.top_k}  min_sim={cfg.min_sim}  core_size={cfg.core_size}  max_chars={cfg.max_chars}")
+    print(f"project   : {project['label']}  [{project['key']}]")
+    print(f"            {project['path']}")
+    print(f"facts     : {store.count()} total / {len(store.rows_for_project(project['key']))} in this project")
+    store.close()
+    return 0
+
+
+def cmd_capture(args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    embedder = get_embedder(cfg)
+    project = _project(cfg, args)
+    session = args.session or "cli"
+    if args.transcript:
+        n = service.capture_transcript(store, embedder, cfg, project, session, args.transcript)
+    elif args.file:
+        text = Path(args.file).read_text(encoding="utf-8")
+        n = service.capture_text(store, embedder, cfg, project, session, text)
+    else:
+        n = service.capture_text(store, embedder, cfg, project, session, sys.stdin.read())
+    print(f"captured {n} new fact(s) into {project['label']}")
+    store.close()
+    return 0
+
+
+def cmd_recall(args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    project = _project(cfg, args)
+    block = service.recall_prompt_block(store, get_embedder(cfg), cfg, project, args.query)
+    print(block or "(no relevant memory)")
+    store.close()
+    return 0
+
+
+def cmd_core(args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    project = _project(cfg, args)
+    print(service.recall_core_block(store, cfg, project) or "(no core memory)")
+    store.close()
+    return 0
+
+
+def cmd_projects(_args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    rows = store.projects()
+    if not rows:
+        print("(no memory yet)")
+    for row in rows:
+        print(f"{row['c']:5d}  {row['project_label']:24s}  {row['project_path']}")
+    store.close()
+    return 0
+
+
+def cmd_prune(args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    project = _project(cfg, args)
+    n = store.prune_project(project["key"])
+    print(f"pruned {n} fact(s) from {project['label']}")
+    store.close()
+    return 0
+
+
+def cmd_sweep(args) -> int:
+    import time
+
+    cfg = get_config()
+    days = args.days if args.days else cfg.ttl_days
+    if days <= 0:
+        print("TTL disabled — set ttl_days > 0 in config or pass --days N")
+        return 0
+    store = Store(cfg.db_path)
+    scope = None if args.all else _project(cfg, args)["key"]
+    n = store.sweep(time.time(), days * 86400, cfg.ttl_keep_frequency, scope)
+    where = "all projects" if args.all else _project(cfg, args)["label"]
+    print(f"expired {n} fact(s) older than {days:g}d (kept frequency >= {cfg.ttl_keep_frequency}) in {where}")
+    store.close()
+    return 0
+
+
+def cmd_daemon(_args) -> int:
+    import runpy
+
+    runpy.run_path(str(ROOT / "bin" / "daemon.py"), run_name="__main__")
+    return 0
+
+
+def cmd_viewer(args) -> int:
+    from viewer.serve import serve
+
+    serve(port=args.port, open_browser=not args.no_open)
+    return 0
+
+
+def cmd_eval(args) -> int:
+    from bench.run_eval import main as run_eval
+
+    return run_eval([b.strip() for b in args.backends.split(",") if b.strip()])
+
+
+def cmd_demo(_args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    embedder = get_embedder(cfg)
+    project = _project(cfg, _args)
+    sample = "\n".join(
+        [
+            "The recall hook injects memory just-in-time via additionalContext.",
+            "Capture runs in a detached worker so it costs zero interactive tokens.",
+            "Embeddings are quantised to int8 to keep the store compact.",
+            "Project identity uses marker-walk, not basename of the working directory.",
+            "SessionStart injects a small stable core that stays cache-friendly.",
+        ]
+    )
+    n = service.capture_text(store, embedder, cfg, project, "demo", sample)
+    print(f"captured {n} demo fact(s) into {project['label']}\n")
+    query = "how does recall inject memory into context"
+    print(f"recall query: {query!r}\n")
+    print(service.recall_prompt_block(store, embedder, cfg, project, query) or "(no hit)")
+    store.close()
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ltm", description="claude-ltm memory CLI")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    def add_cwd(p):
+        p.add_argument("--cwd", help="project working directory (default: current)")
+
+    p = sub.add_parser("doctor", help="show config and status")
+    add_cwd(p)
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("capture", help="capture memory")
+    add_cwd(p)
+    p.add_argument("--file", help="capture from a text file")
+    p.add_argument("--transcript", help="capture from a Claude Code JSONL transcript")
+    p.add_argument("--session", help="session id label")
+    p.set_defaults(func=cmd_capture)
+
+    p = sub.add_parser("recall", help="run a recall query")
+    add_cwd(p)
+    p.add_argument("query")
+    p.set_defaults(func=cmd_recall)
+
+    p = sub.add_parser("core", help="show the session-start core block")
+    add_cwd(p)
+    p.set_defaults(func=cmd_core)
+
+    p = sub.add_parser("projects", help="list all projects")
+    p.set_defaults(func=cmd_projects)
+
+    p = sub.add_parser("prune", help="delete this project's memory")
+    add_cwd(p)
+    p.set_defaults(func=cmd_prune)
+
+    p = sub.add_parser("sweep", help="archive stale facts (TTL expiry)")
+    add_cwd(p)
+    p.add_argument("--days", type=float, default=0, help="TTL in days (default: config ttl_days)")
+    p.add_argument("--all", action="store_true", help="sweep every project, not just the current one")
+    p.set_defaults(func=cmd_sweep)
+
+    p = sub.add_parser("daemon", help="run the resident daemon")
+    p.set_defaults(func=cmd_daemon)
+
+    p = sub.add_parser("viewer", help="launch the localhost viewer")
+    p.add_argument("--port", type=int, default=7801)
+    p.add_argument("--no-open", action="store_true", help="do not open a browser")
+    p.set_defaults(func=cmd_viewer)
+
+    p = sub.add_parser("eval", help="benchmark embedding backends on a labelled recall set")
+    p.add_argument("--backends", default="hash", help="comma-separated: hash,fastembed")
+    p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("demo", help="capture sample facts then recall")
+    p.set_defaults(func=cmd_demo)
+
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

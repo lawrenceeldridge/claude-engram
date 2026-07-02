@@ -1,0 +1,39 @@
+{
+  "description": "Labelled recall set. Queries are paraphrased away from the fact wording so lexical matching is stressed; facts 16-17 are hard-negative distractors. relevant = indices into facts.",
+  "facts": [
+    "The project deploys to AWS Lambda using the Serverless Framework.",
+    "Database migrations are managed with Alembic and run in CI before every deploy.",
+    "The API authenticates requests using short-lived JWT access tokens.",
+    "Frontend state is handled by Zustand rather than Redux.",
+    "Secrets are stored in AWS Secrets Manager and never committed to git.",
+    "The team runs a two-week sprint cadence with a demo every other Friday.",
+    "Unit tests use pytest and end-to-end tests use Playwright.",
+    "The primary database is PostgreSQL 16 hosted on Amazon RDS.",
+    "Background jobs are processed by a Celery worker pool backed by Redis.",
+    "Arabic is the default locale so layouts must be right-to-left.",
+    "Images are optimised and served through a CloudFront CDN.",
+    "The mobile app is built with React Native and Expo.",
+    "Merging code requires at least one approving review.",
+    "Rate limiting is enforced at the API gateway at 100 requests per minute.",
+    "Shared UI components live in a package called ui-kit.",
+    "Application logs are shipped to Datadog as structured JSON.",
+    "The onboarding document explains how to request database credentials.",
+    "A quick reference of common shell commands is pinned in the wiki."
+  ],
+  "queries": [
+    {"q": "how is the service shipped to production", "relevant": [0]},
+    {"q": "what keeps track of schema changes over time", "relevant": [1]},
+    {"q": "how do we verify who is calling the api", "relevant": [2]},
+    {"q": "which library holds client-side ui state", "relevant": [3]},
+    {"q": "where do we keep credentials and api keys", "relevant": [4]},
+    {"q": "how frequently does the team show progress", "relevant": [5]},
+    {"q": "what tool do we use for browser end-to-end checks", "relevant": [6]},
+    {"q": "what is the main data store", "relevant": [7]},
+    {"q": "how are long-running tasks handled off the request path", "relevant": [8]},
+    {"q": "which text direction should the interface use", "relevant": [9]},
+    {"q": "how are static assets delivered quickly worldwide", "relevant": [10]},
+    {"q": "what framework powers the phone application", "relevant": [11]},
+    {"q": "what is needed before code can be merged", "relevant": [12]},
+    {"q": "how do we stop clients from overwhelming the endpoints", "relevant": [13]}
+  ]
+}

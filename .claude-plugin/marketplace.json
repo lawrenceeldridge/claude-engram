@@ -1,0 +1,17 @@
+{
+  "name": "claude-ltm",
+  "owner": {
+    "name": "Lawrence Eldridge"
+  },
+  "metadata": {
+    "description": "Marketplace hosting the Long-Term Memory (ltm) plugin for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "ltm",
+      "source": "./plugins/ltm",
+      "description": "Token-first, cross-project long-term memory: captures sessions, distils facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first.",
+      "version": "0.1.0"
+    }
+  ]
+}
