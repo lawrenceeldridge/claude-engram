@@ -48,6 +48,19 @@ _QUESTION_OPENERS = (
     "please ", "let's ", "lets ", "yes", "okay", "ok ", "one other", "note,", "note ",
 )
 
+# First-person / self-referential procedural narration the assistant emits while
+# working ("Let me check …", "I'll now …", "The assistant can now …"). These are
+# transient chatter, not durable project facts, and pollute recall when the
+# heuristic fallback stores them verbatim. Kept narrow so it doesn't eat genuine
+# declarative outcomes ("The delete dialog now uses an AlertDialog."): it only
+# matches planning/self-reference openers, not every sentence starting with "the".
+_NARRATION_OPENERS = (
+    "let me", "let us ", "i'll ", "i will ", "i'm going to", "i am going to",
+    "i've ", "i have ", "now i", "now let", "first, i", "first i", "next, i",
+    "next i", "then i", "here's ", "here is ", "the assistant ", "we now ",
+    "we can now",
+)
+
 
 @dataclass
 class DistilledFact:
@@ -84,6 +97,11 @@ def _is_user_ask(line: str) -> bool:
     return line.endswith("?") or lowered.startswith(_QUESTION_OPENERS)
 
 
+def _is_narration(line: str) -> bool:
+    """Transient assistant chatter (planning preambles, self-reference), not a durable fact."""
+    return line.endswith(":") or line.lower().startswith(_NARRATION_OPENERS)
+
+
 def _candidates(text: str):
     for raw in text.splitlines():
         line = raw.strip().strip("-*#• \t")
@@ -102,7 +120,7 @@ def heuristic_facts(text: str, max_facts: int = 12, min_len: int = 14) -> list[s
     facts: list[str] = []
     seen: set[str] = set()
     for line in _candidates(text):
-        if not (min_len <= len(line) <= 240) or _is_user_ask(line):
+        if not (min_len <= len(line) <= 240) or _is_user_ask(line) or _is_narration(line):
             continue
         key = " ".join(line.lower().split())
         if key in seen:

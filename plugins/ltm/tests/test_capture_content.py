@@ -102,6 +102,23 @@ class HeuristicBiasTests(unittest.TestCase):
         self.assertNotIn("<command-args></command-args>", facts)
         self.assertIn("Wrote mcp_server.py for the recall tool.", facts)
 
+    def test_assistant_narration_dropped_but_outcomes_kept(self):
+        text = "\n".join([
+            "Let me check what the auto-index already did, and the scale:",
+            "The assistant can now map Linear tickets to code.",
+            "I'll now update the tool description.",
+            "Now let me read the indexer.",
+            "The delete dialog now uses an in-app AlertDialog.",
+            "search_code indexes TypeScript via tree-sitter.",
+        ])
+        facts = heuristic_facts(text)
+        self.assertNotIn("The assistant can now map Linear tickets to code.", facts)
+        self.assertNotIn("I'll now update the tool description.", facts)
+        self.assertNotIn("Now let me read the indexer.", facts)
+        self.assertFalse(any(f.endswith(":") for f in facts))
+        self.assertIn("The delete dialog now uses an in-app AlertDialog.", facts)
+        self.assertIn("search_code indexes TypeScript via tree-sitter.", facts)
+
 
 class ClipTests(unittest.TestCase):
     def test_small_input_unchanged(self):
