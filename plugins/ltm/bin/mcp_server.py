@@ -113,11 +113,13 @@ TOOLS = [
     {
         "name": "search_code",
         "description": (
-            "Search this project's INDEXED PYTHON CODE for symbols (functions, classes, methods) "
-            "relevant to a query. Call this BEFORE Grep/Glob/Read over source: it returns ranked "
-            "symbol outlines (qualified name + signature/docstring summary + anchor + freshness), "
-            "not file contents. Then call `get_symbol` on the anchor to read its full source. The "
-            "anchor is the dotted qualname (e.g. 'Store.chunk_id')."
+            "Search this project's INDEXED CODE for symbols (functions, classes, methods, and — for "
+            "TypeScript/JavaScript — interfaces, types, enums, arrow-function consts) relevant to a "
+            "query. Covers Python plus TS/TSX/JS/JSX/MJS/CJS. Call this BEFORE Grep/Glob/Read over "
+            "source: it returns ranked symbol outlines (qualified name + signature/docstring summary "
+            "+ anchor + freshness), not file contents. Then call `get_symbol` on the anchor to read "
+            "its full source. The anchor is the dotted qualname (e.g. 'Store.chunk_id' or "
+            "'PartiesCard')."
         ),
         "inputSchema": {
             "type": "object",
@@ -132,8 +134,9 @@ TOOLS = [
     {
         "name": "get_symbol",
         "description": (
-            "Fetch one Python symbol's full source by its `anchor` (dotted qualname, e.g. "
-            "'Store.chunk_id') or id, from `search_code` / `code_outline`. Returns the symbol body "
+            "Fetch one code symbol's full source by its `anchor` (dotted qualname, e.g. "
+            "'Store.chunk_id') or id, from `search_code` / `code_outline`. Works for any indexed "
+            "language (Python, TS/JS/TSX/JSX). Returns the symbol body "
             "plus a symbol-precise `freshness` (fresh|edited|stale|gone) verified against the live "
             "file. Cheaper than Read — one symbol, not the whole file."
         ),
@@ -149,15 +152,16 @@ TOOLS = [
     {
         "name": "code_outline",
         "description": (
-            "List the symbol skeleton of this project's indexed Python — qualified names, signatures "
-            "and docstring summaries, with NO bodies. Use to understand a module's public surface "
-            "before searching or reading. Optionally scope to one file via `source_path`."
+            "List the symbol skeleton of this project's indexed code (Python + TS/JS/TSX/JSX) — "
+            "qualified names, signatures and docstring summaries, with NO bodies. Use to understand a "
+            "module's public surface before searching or reading. Optionally scope to one file via "
+            "`source_path`."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
-                "source_path": {"type": "string", "description": "Optional repo-relative .py file to scope to."},
+                "source_path": {"type": "string", "description": "Optional repo-relative source file (.py/.ts/.tsx/.js/.jsx) to scope to."},
             },
         },
     },

@@ -1,11 +1,12 @@
 """Extract Python symbols (functions, classes, methods) from source via stdlib ``ast``.
 
-Phase 2 of the index is deliberately Python-only: the portability analysis found
-tree-sitter (jcodemunch's multi-language parser) too heavy for a zero-dependency
-plugin, and stdlib ``ast`` covers Python precisely for free. Each symbol becomes a
-chunk whose body is its full source span (so ``get_symbol`` returns the real
-implementation and FTS can match any identifier inside it), while the searchable
-summary is the signature + docstring first line — the token-cheap outline view.
+This is the Python fallback extractor. Multi-language indexing (Python + TS/TSX/JS/JSX)
+runs through ``treesitter_symbols`` when tree-sitter is provisioned; ``extract_code_symbols``
+below prefers it and only falls back to this stdlib-``ast`` path for Python when tree-sitter
+is unavailable (so the plugin's own language never regresses on a zero-dependency install).
+Each symbol becomes a chunk whose body is its full source span (so ``get_symbol`` returns the
+real implementation and FTS can match any identifier inside it), while the searchable summary
+is the signature + docstring first line — the token-cheap outline view.
 
 Only top-level functions/classes and one level of class members are walked; nested
 function bodies are skipped as recall noise. Byte spans are line-based (from the
