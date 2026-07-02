@@ -106,6 +106,7 @@ const fmtWhen = ts => { const d = new Date(ts*1000);
   return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 const PAGE = 50;
 let offset = 0, loading = false, exhausted = false, mode = 'list';
+let seen = new Set();  // card keys currently rendered — used to flash only new arrivals
 
 async function loadProjects() {
   const rows = await (await fetch('/api/projects')).json();
@@ -164,14 +165,16 @@ async function fetchFacts(extra='') {
 }
 // Full re-render from the top: a query shows all ranked search hits; a blank query
 // shows the first (newest) page of the browse list, which grows via loadMore().
-async function reload(flash) {
+async function reload(flashNew) {
   const q = $('#q').value.trim();
   mode = q ? 'search' : 'list';
   offset = 0; exhausted = false;
   const rows = q ? await fetchFacts() : await fetchFacts(`&limit=${PAGE}&offset=0`);
   if (mode === 'list') { offset = rows.length; exhausted = rows.length < PAGE; }
+  const prev = seen;                        // only cards absent before flash
+  seen = new Set(rows.map(r => r.key));
   $('#list').innerHTML = rows.length
-    ? rows.map(r => cardHTML(r, flash)).join('')
+    ? rows.map(r => cardHTML(r, flashNew && !prev.has(r.key))).join('')
     : '<div class="empty">No facts.</div>';
 }
 // Infinite scroll: append the next page of the browse list. Inert during search.
@@ -180,7 +183,10 @@ async function loadMore() {
   loading = true;
   const rows = await fetchFacts(`&limit=${PAGE}&offset=${offset}`);
   offset += rows.length; exhausted = rows.length < PAGE;
-  if (rows.length) $('#list').insertAdjacentHTML('beforeend', rows.map(r => cardHTML(r, false)).join(''));
+  if (rows.length) {
+    $('#list').insertAdjacentHTML('beforeend', rows.map(r => cardHTML(r, false)).join(''));
+    rows.forEach(r => seen.add(r.key));     // paged-in cards aren't "new" on the next live update
+  }
   loading = false;
 }
 // facts/narrative toggles — independent on/off, both collapsed by default
@@ -239,6 +245,7 @@ def _card_from_rows(rows, score=None) -> dict:
     except (ValueError, TypeError):
         files = []
     return {
+        "key": head["observation_id"] or head["id"],
         "type": head["type"] or "",
         "title": head["title"],
         "subtitle": head["subtitle"],
