@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
 from core.embedding import get_embedder  # noqa: E402
+from core.index_recall import get_chunk, get_outline, search_index  # noqa: E402
 from core.recall import search_fused  # noqa: E402
 from core.store import Store  # noqa: E402
 
@@ -88,11 +89,35 @@ PAGE = """<!doctype html>
   #live.off .dot { background:var(--muted); box-shadow:none; }
   .card.flash { animation:flash 1.2s ease-out; }
   @keyframes flash { from { border-color:#3fb950; } to { border-color:var(--border); } }
+  .vtoggle { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:transparent;
+             border:1px solid var(--border2); border-radius:6px; padding:5px 10px; cursor:pointer; }
+  .vtoggle.active { color:var(--title); border-color:#58a6ff; background:#0f1b2d; }
+  #views { display:flex; gap:4px; }
+  .badge[data-type=code_symbol]{background:#1f6feb} .badge[data-type=doc_section]{background:#238636}
+  .fresh-pill { font:600 10px/1 ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.04em;
+                padding:3px 6px; border-radius:5px; margin-inline-start:6px; }
+  .fresh-pill[data-f=fresh]{color:#3fb950;border:1px solid #238636} .fresh-pill[data-f=edited]{color:#e3b341;border:1px solid #9e6a03}
+  .fresh-pill[data-f=stale],.fresh-pill[data-f=gone]{color:#f85149;border:1px solid #da3633}
+  .path { font:11px ui-monospace,Menlo,monospace; color:var(--muted); margin-top:8px; word-break:break-all; }
+  .cbody { display:none; margin-top:12px; background:#0b0f14; border:1px solid var(--border);
+           border-radius:8px; padding:12px 14px; overflow:auto; max-height:520px; }
+  .cbody.open { display:block; }
+  .cbody pre { margin:0; white-space:pre-wrap; font:12px/1.5 ui-monospace,Menlo,monospace; color:#c9d1d9; }
+  .card.ix { cursor:pointer; }
 </style></head>
 <body>
 <header>
   <h1>claude-ltm</h1>
+  <div id="views">
+    <button class="vtoggle active" data-view="memory">memory</button>
+    <button class="vtoggle" data-view="index">index</button>
+  </div>
   <select id="project"></select>
+  <select id="kind" style="display:none">
+    <option value="">all</option>
+    <option value="doc_section">docs</option>
+    <option value="code_symbol">code</option>
+  </select>
   <input id="q" placeholder="semantic search within project… (blank = list all)">
   <span id="live" class="off"><span class="dot"></span><span id="live-label">connecting…</span></span>
 </header>
@@ -106,10 +131,11 @@ const fmtWhen = ts => { const d = new Date(ts*1000);
   return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 const PAGE = 50;
 let offset = 0, loading = false, exhausted = false, mode = 'list';
+let view = 'memory';   // 'memory' = facts store, 'index' = code/docs chunk index
 let seen = new Set();  // card keys currently rendered — used to flash only new arrivals
 
 async function loadProjects() {
-  const rows = await (await fetch('/api/projects')).json();
+  const rows = await (await fetch(view === 'index' ? '/api/index_projects' : '/api/projects')).json();
   const sel = $('#project');
   const prev = sel.value;
   sel.innerHTML = rows.map(r =>
@@ -163,9 +189,33 @@ async function fetchFacts(extra='') {
   const url = `/api/facts?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}${extra}`;
   return await (await fetch(url)).json();
 }
+// One indexed chunk: kind badge + freshness pill, heading/qualname title, summary,
+// source path. The card is click-to-expand — the body is fetched lazily from /api/chunk.
+function indexCardHTML(c) {
+  const kind = c.kind || 'doc_section';
+  const fresh = c.freshness ? `<span class="fresh-pill" data-f="${esc(c.freshness)}">${esc(c.freshness)}</span>` : '';
+  const score = c.score==null ? '' : `<span class="score">${c.score}</span> · `;
+  const badge = `<span class="badge" data-type="${esc(kind)}">${kind==='code_symbol'?'code':'doc'}</span>`;
+  const title = `<div class="title">${esc(c.heading_path || c.title || c.anchor)}</div>`;
+  const summary = c.summary ? `<div class="subtitle">${esc(c.summary)}</div>` : '';
+  const meta = `<div class="path">${score}${esc(c.source_path||'')} · ${esc(c.anchor||'')}</div>`;
+  return `<div class="card ix" data-ref="${esc(c.anchor)}"><div class="chead">${badge}${fresh}</div>`
+    + `<div class="cinner">${title}${summary}${meta}<div class="cbody"></div></div></div>`;
+}
+async function reloadIndex() {
+  mode = 'search'; exhausted = true;   // index view has no infinite-scroll
+  const pk = $('#project').value, q = $('#q').value.trim(), kind = $('#kind').value;
+  const url = `/api/index?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}&kind=${encodeURIComponent(kind)}`;
+  const rows = await (await fetch(url)).json();
+  seen = new Set();
+  const what = kind==='code_symbol' ? 'code symbols' : kind==='doc_section' ? 'doc sections' : 'indexed chunks';
+  $('#list').innerHTML = rows.length ? rows.map(indexCardHTML).join('')
+    : `<div class="empty">No ${what}. Run the index_docs tool for this project.</div>`;
+}
 // Full re-render from the top: a query shows all ranked search hits; a blank query
 // shows the first (newest) page of the browse list, which grows via loadMore().
 async function reload(flashNew) {
+  if (view === 'index') return reloadIndex();
   const q = $('#q').value.trim();
   mode = q ? 'search' : 'list';
   offset = 0; exhausted = false;
@@ -189,14 +239,35 @@ async function loadMore() {
   }
   loading = false;
 }
-// facts/narrative toggles — independent on/off, both collapsed by default
-$('#list').addEventListener('click', e => {
-  const btn = e.target.closest('.toggle'); if (!btn) return;
-  const card = btn.closest('.card');
-  const section = card.querySelector(btn.dataset.v === 'narr' ? '.narr' : '.facts');
-  if (!section) return;
-  btn.classList.toggle('active', section.classList.toggle('open'));
+// facts/narrative toggles (memory), and click-to-expand a chunk's body (index).
+$('#list').addEventListener('click', async e => {
+  const btn = e.target.closest('.toggle');
+  if (btn) {
+    const section = btn.closest('.card').querySelector(btn.dataset.v === 'narr' ? '.narr' : '.facts');
+    if (section) btn.classList.toggle('active', section.classList.toggle('open'));
+    return;
+  }
+  const ix = e.target.closest('.card.ix'); if (!ix) return;
+  const body = ix.querySelector('.cbody');
+  if (body.classList.toggle('open') && !body.dataset.loaded) {
+    const pk = $('#project').value, ref = ix.dataset.ref;
+    const r = await (await fetch(`/api/chunk?project=${encodeURIComponent(pk)}&ref=${encodeURIComponent(ref)}`)).json();
+    body.innerHTML = r.found ? `<pre>${esc(r.body)}</pre>` : '<pre>(section not found)</pre>';
+    body.dataset.loaded = '1';
+  }
 });
+$('#views').addEventListener('click', async e => {
+  const b = e.target.closest('.vtoggle'); if (!b) return;
+  view = b.dataset.view;
+  document.querySelectorAll('.vtoggle').forEach(x => x.classList.toggle('active', x === b));
+  $('#kind').style.display = view === 'index' ? '' : 'none';
+  $('#q').value = '';
+  $('#q').placeholder = view === 'index'
+    ? 'search indexed code / docs… (blank = list)' : 'semantic search within project… (blank = list all)';
+  await loadProjects();
+  await reload();
+});
+$('#kind').addEventListener('change', () => reload());
 $('#project').addEventListener('change', () => reload());
 let t; $('#q').addEventListener('input', () => { clearTimeout(t); t=setTimeout(() => reload(),180); });
 window.addEventListener('scroll', () => {
@@ -211,7 +282,7 @@ function connectStream() {
   es.onopen = () => { badge.classList.remove('off'); label.textContent = 'live'; };
   es.addEventListener('change', async () => {
     await loadProjects();      // refresh counts + keep current project selected
-    await reload(true);        // newest-first: a fresh capture appears at the top with a highlight
+    if (view === 'memory') await reload(true);  // avoid churn re-rendering the index mid-build
   });
   es.onerror = () => { badge.classList.add('off'); label.textContent = 'reconnecting…'; };
 }
@@ -337,8 +408,52 @@ class Handler(BaseHTTPRequestHandler):
                 out = [_card_from_rows(rows) for rows in groups]
             store.close()
             self._send(200, json.dumps(out))
+        elif parsed.path == "/api/index_projects":
+            store = Store(cfg.db_path)
+            labels = {r["project_key"]: (r["project_label"], r["project_path"]) for r in store.projects()}
+            out = [
+                {
+                    "project_key": r["project_key"],
+                    "label": (labels.get(r["project_key"]) or (r["project_key"], ""))[0],
+                    "files": r["files"],
+                    "count": r["c"],
+                }
+                for r in store.chunk_projects()
+            ]
+            store.close()
+            self._send(200, json.dumps(out))
+        elif parsed.path == "/api/index":
+            params = parse_qs(parsed.query)
+            project_key = params.get("project", [""])[0]
+            query = params.get("q", [""])[0].strip()
+            kind = params.get("kind", [""])[0] or None
+            store = Store(cfg.db_path)
+            project = self._index_project(store, project_key)
+            if query:
+                res = search_index(store, get_embedder(cfg), cfg, project, query, k=200, kind=kind)
+                out = res["results"]
+            else:
+                out = get_outline(store, project, kind=kind)["sections"][:300]
+            store.close()
+            self._send(200, json.dumps(out))
+        elif parsed.path == "/api/chunk":
+            params = parse_qs(parsed.query)
+            project_key = params.get("project", [""])[0]
+            ref = params.get("ref", [""])[0]
+            store = Store(cfg.db_path)
+            out = get_chunk(store, self._index_project(store, project_key), ref)
+            store.close()
+            self._send(200, json.dumps(out))
         else:
             self._send(404, "{}")
+
+    @staticmethod
+    def _index_project(store, project_key: str) -> dict:
+        """Resolve a project dict (key/path/label) for index queries; path drives freshness."""
+        for row in store.projects():
+            if row["project_key"] == project_key:
+                return {"key": project_key, "path": row["project_path"] or "", "label": row["project_label"] or ""}
+        return {"key": project_key, "path": "", "label": ""}
 
     def log_message(self, *_args) -> None:  # silence request logging
         pass
