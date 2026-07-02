@@ -129,6 +129,23 @@ class RecallStructuredTests(unittest.TestCase):
         self.assertEqual(len(reopened.fts_search(self.project["key"], "viewer")), 1)
         reopened.close()
 
+    def test_legacy_version_flag_converges_to_head(self):
+        from core.distill import DistilledFact
+        from core.store import _SCHEMA_VERSION
+
+        service.add_records(
+            self.store, self.embedder, self.cfg, self.project, "s1",
+            [DistilledFact(text="uses github actions for ci")],
+        )
+        # Simulate a legacy install that only stamped the old FTS flag (=1).
+        self.store.db.execute("PRAGMA user_version = 1")
+        self.store.db.commit()
+        self.store.close()
+        reopened = Store(self.cfg.db_path)
+        self.assertEqual(reopened.db.execute("PRAGMA user_version").fetchone()[0], _SCHEMA_VERSION)
+        self.assertEqual(len(reopened.fts_search(self.project["key"], "github")), 1)
+        reopened.close()
+
     def test_session_summary_replaces_prior(self):
         from core.distill import DistilledFact
 

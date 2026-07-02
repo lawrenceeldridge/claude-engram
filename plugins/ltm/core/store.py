@@ -74,22 +74,10 @@ CREATE TABLE IF NOT EXISTS capture_cursors (
 );
 """
 
-_MIGRATIONS = [
-    ("last_seen", "last_seen REAL"),
-    ("frequency", "frequency INTEGER DEFAULT 1"),
-    ("status", "status TEXT DEFAULT 'active'"),
-    ("superseded_by", "superseded_by TEXT"),
-    ("title", "title TEXT"),
-    ("narrative", "narrative TEXT"),
-    ("files", "files TEXT"),
-]
-
 # Full-text index over the searchable columns. External-content FTS5 keyed on the
 # facts rowid, kept in sync by triggers so every insert/update/supersede/delete is
 # reflected without maintenance in Python. Complements the vector channel with
 # exact-term recall.
-_FTS_VERSION = 1
-
 _FTS_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
   text, title, narrative, content='facts', content_rowid='rowid', tokenize='porter unicode61'
@@ -111,6 +99,50 @@ END;
 """
 
 
+def _add_columns(db: sqlite3.Connection, specs: list[tuple[str, str]]) -> None:
+    existing = {row[1] for row in db.execute("PRAGMA table_info(facts)")}
+    for name, ddl in specs:
+        if name not in existing:
+            db.execute(f"ALTER TABLE facts ADD COLUMN {ddl}")
+
+
+def _v1_lifecycle(db: sqlite3.Connection) -> None:
+    _add_columns(
+        db,
+        [
+            ("last_seen", "last_seen REAL"),
+            ("frequency", "frequency INTEGER DEFAULT 1"),
+            ("status", "status TEXT DEFAULT 'active'"),
+            ("superseded_by", "superseded_by TEXT"),
+        ],
+    )
+    db.execute("UPDATE facts SET last_seen = created_at WHERE last_seen IS NULL")
+
+
+def _v2_structured(db: sqlite3.Connection) -> None:
+    _add_columns(db, [("title", "title TEXT"), ("narrative", "narrative TEXT"), ("files", "files TEXT")])
+
+
+def _v3_fts(db: sqlite3.Connection) -> None:
+    existed = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_fts'"
+    ).fetchone()
+    db.executescript(_FTS_SCHEMA)
+    if not existed:
+        # External-content FTS5 is populated with the 'rebuild' command (a manual
+        # INSERT...SELECT creates rows that don't match); run it once, when the index
+        # is first created, to backfill facts written before it existed.
+        db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
+
+
+# Ordered schema migrations. user_version marks how many have run; every step is
+# also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
+# EXISTS, rebuild only on first creation), so a database at any prior version —
+# including the legacy FTS flag of 1 — converges by running the rest as no-ops.
+_MIGRATIONS = [_v1_lifecycle, _v2_structured, _v3_fts]
+_SCHEMA_VERSION = len(_MIGRATIONS)
+
+
 class Store:
     def __init__(self, path: Path | str) -> None:
         self.path = str(path)
@@ -121,25 +153,17 @@ class Store:
         self._migrate()
 
     def _migrate(self) -> None:
-        existing = {row[1] for row in self.db.execute("PRAGMA table_info(facts)")}
-        for name, ddl in _MIGRATIONS:
-            if name not in existing:
-                self.db.execute(f"ALTER TABLE facts ADD COLUMN {ddl}")
-        self.db.execute("UPDATE facts SET last_seen = created_at WHERE last_seen IS NULL")
-        self.db.commit()
-        self._ensure_fts()
+        """Run the schema-migration ladder up to _SCHEMA_VERSION, then stamp it.
 
-    def _ensure_fts(self) -> None:
-        """Create the FTS index + triggers, and backfill rows written before it existed."""
-        self.db.executescript(_FTS_SCHEMA)
-        # Backfill exactly once, tracked via user_version. An emptiness probe is
-        # unreliable here: querying an external-content FTS5 table reflects the
-        # content table's rows even before the index is built. External-content
-        # FTS5 must be populated with the 'rebuild' command, not INSERT...SELECT.
-        version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version < _FTS_VERSION:
-            self.db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
-            self.db.execute(f"PRAGMA user_version = {_FTS_VERSION}")
+        user_version is the fast path: once stamped, opens are a single PRAGMA read.
+        Below the head we replay every step — cheap because each is idempotent — so
+        a fresh, partial, or legacy database all converge to the same schema.
+        """
+        if self.db.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION:
+            return
+        for step in _MIGRATIONS:
+            step(self.db)
+        self.db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self.db.commit()
 
     def close(self) -> None:
