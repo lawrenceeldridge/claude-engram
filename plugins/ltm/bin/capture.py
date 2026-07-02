@@ -48,7 +48,10 @@ def _run_worker(payload_path: str) -> None:
     embedder = get_embedder(cfg)
     store = Store(cfg.db_path)
     capture_transcript_incremental(store, embedder, cfg, project, session_id, transcript_path)
-    if payload.get("hook_event_name") == "SessionEnd":
+    # PreCompact as well as SessionEnd: SessionEnd fires unreliably (a closed
+    # tab/window may never emit one), and PreCompact is the checkpoint where
+    # pre-compaction context is about to be discarded. Idempotent per session.
+    if payload.get("hook_event_name") in ("SessionEnd", "PreCompact"):
         capture_session_summary(store, embedder, cfg, project, session_id, transcript_path)
     if cfg.ttl_days > 0:
         import time
