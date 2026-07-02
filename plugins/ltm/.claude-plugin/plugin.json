@@ -1,7 +1,7 @@
 {
   "name": "ltm",
   "displayName": "Long-Term Memory",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
