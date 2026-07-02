@@ -47,6 +47,12 @@ PAGE = """<!doctype html>
           margin-bottom:8px; }
   .meta { color:#8b949e; font-size:12px; margin-top:5px; }
   .score { color:#3fb950; }
+  .fact .title { font-weight:600; color:#e6edf3; margin-bottom:2px; }
+  .fact .narr { color:#adbac7; margin-top:5px; white-space:pre-wrap; }
+  .fact .files { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px; }
+  .fact .file { font-size:11px; color:#8b949e; background:#161b22; border:1px solid #21262d;
+                border-radius:5px; padding:1px 6px; }
+  .fact .kind { font-size:11px; color:#d29922; text-transform:uppercase; letter-spacing:.04em; }
   .empty { color:#8b949e; padding:20px 0; }
   #live { margin-inline-start:auto; font-size:12px; color:#8b949e; display:flex;
           align-items:center; gap:6px; }
@@ -66,6 +72,7 @@ PAGE = """<!doctype html>
 <main><div id="list" class="empty">Loading…</div></main>
 <script>
 const $ = s => document.querySelector(s);
+const esc = s => (s==null?'':String(s)).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const PAGE = 50;
 let offset = 0, loading = false, exhausted = false, mode = 'list';
 
@@ -81,7 +88,12 @@ async function loadProjects() {
 function factHTML(r, flash) {
   const when = new Date(r.created*1000).toISOString().slice(0,16).replace('T',' ');
   const score = r.score==null ? '' : `<span class="score">${r.score}</span> · `;
-  return `<div class="${flash?'fact flash':'fact'}">${r.text}<div class="meta">${score}${r.kind} · ${when}</div></div>`;
+  const kind = (r.kind && r.kind!=='fact') ? `<div class="kind">${esc(r.kind)}</div>` : '';
+  const title = r.title ? `<div class="title">${esc(r.title)}</div>` : '';
+  const narr = r.narrative ? `<div class="narr">${esc(r.narrative)}</div>` : '';
+  const files = (r.files&&r.files.length)
+    ? `<div class="files">${r.files.map(f=>`<span class="file">${esc(f)}</span>`).join('')}</div>` : '';
+  return `<div class="${flash?'fact flash':'fact'}">${kind}${title}<div class="text">${esc(r.text)}</div>${narr}${files}<div class="meta">${score}${esc(r.kind)} · ${when}</div></div>`;
 }
 async function fetchFacts(extra='') {
   const pk = $('#project').value, q = $('#q').value.trim();
@@ -143,6 +155,22 @@ def _int_param(params: dict, name: str) -> int | None:
         return int(params.get(name, [""])[0])
     except (TypeError, ValueError):
         return None
+
+
+def _fact_row(row, score) -> dict:
+    try:
+        files = json.loads(row["files"]) if row["files"] else []
+    except (ValueError, TypeError):
+        files = []
+    return {
+        "text": row["text"],
+        "score": score,
+        "kind": row["kind"],
+        "created": row["created_at"],
+        "title": row["title"],
+        "narrative": row["narrative"],
+        "files": files,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -215,18 +243,12 @@ class Handler(BaseHTTPRequestHandler):
                 # comprehensive regardless of how much the browse list has lazily loaded.
                 k = store.active_count(project_key) or 1
                 hits = search(store, get_embedder(cfg), project, query, cfg, k=k, min_sim=-1.0)
-                out = [
-                    {"text": r["text"], "score": round(s, 3), "kind": r["kind"], "created": r["created_at"]}
-                    for s, r in hits
-                ]
+                out = [_fact_row(r, round(s, 3)) for s, r in hits]
             else:
                 limit = _int_param(params, "limit")
                 offset = _int_param(params, "offset") or 0
                 rows = store.rows_for_project(project_key, limit=limit, offset=offset)
-                out = [
-                    {"text": r["text"], "score": None, "kind": r["kind"], "created": r["created_at"]}
-                    for r in rows
-                ]
+                out = [_fact_row(r, None) for r in rows]
             store.close()
             self._send(200, json.dumps(out))
         else:

@@ -36,7 +36,7 @@ def _run_worker(payload_path: str) -> None:
     from core.config import get_config
     from core.embedding import get_embedder
     from core.project import resolve_project
-    from core.service import capture_transcript_incremental
+    from core.service import capture_session_summary, capture_transcript_incremental
     from core.store import Store
 
     cfg = get_config()
@@ -44,8 +44,12 @@ def _run_worker(payload_path: str) -> None:
     transcript_path = payload.get("transcript_path")
     if not transcript_path or not Path(transcript_path).exists():
         return
+    session_id = payload.get("session_id", "")
+    embedder = get_embedder(cfg)
     store = Store(cfg.db_path)
-    capture_transcript_incremental(store, get_embedder(cfg), cfg, project, payload.get("session_id", ""), transcript_path)
+    capture_transcript_incremental(store, embedder, cfg, project, session_id, transcript_path)
+    if payload.get("hook_event_name") == "SessionEnd":
+        capture_session_summary(store, embedder, cfg, project, session_id, transcript_path)
     if cfg.ttl_days > 0:
         import time
 

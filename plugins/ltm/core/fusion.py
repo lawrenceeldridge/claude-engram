@@ -16,9 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 # Channel weights, tuned for a text-fact store. Similarity carries semantic
-# intent; lexical is weighted almost as high because it rescues the hash
-# embedder's blind spots; recency and reinforcement are tie-breakers.
-DEFAULT_WEIGHTS = {"similarity": 1.0, "lexical": 0.8, "recency": 0.4, "frequency": 0.3}
+# intent; lexical and fts (keyword/BM25, the latter also over title/narrative) are
+# weighted high because they rescue the hash embedder's blind spots; recency and
+# reinforcement are tie-breakers.
+DEFAULT_WEIGHTS = {"similarity": 1.0, "lexical": 0.8, "fts": 0.6, "recency": 0.4, "frequency": 0.3}
 
 DEFAULT_SMOOTHING = 60
 

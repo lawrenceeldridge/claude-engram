@@ -10,11 +10,24 @@ a semantically near-identical newer fact can supersede older ones.
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import sqlite3
 import time
 from pathlib import Path
 
 from core.project import Project
+
+_FTS_TOKEN = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _fts_match_expr(query: str) -> str:
+    """Turn a free-text query into a safe FTS5 MATCH expression (OR of quoted terms).
+
+    Quoting each token defuses FTS5 operator characters in user input, so an
+    arbitrary query can never raise a syntax error; OR keeps it recall-oriented.
+    """
+    return " OR ".join(f'"{t}"' for t in _FTS_TOKEN.findall(query.lower()))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -25,6 +38,9 @@ CREATE TABLE IF NOT EXISTS facts (
   session_id    TEXT,
   kind          TEXT,
   text          TEXT NOT NULL,
+  title         TEXT,
+  narrative     TEXT,
+  files         TEXT,
   created_at    REAL,
   last_seen     REAL,
   dim           INTEGER,
@@ -63,7 +79,36 @@ _MIGRATIONS = [
     ("frequency", "frequency INTEGER DEFAULT 1"),
     ("status", "status TEXT DEFAULT 'active'"),
     ("superseded_by", "superseded_by TEXT"),
+    ("title", "title TEXT"),
+    ("narrative", "narrative TEXT"),
+    ("files", "files TEXT"),
 ]
+
+# Full-text index over the searchable columns. External-content FTS5 keyed on the
+# facts rowid, kept in sync by triggers so every insert/update/supersede/delete is
+# reflected without maintenance in Python. Complements the vector channel with
+# exact-term recall.
+_FTS_VERSION = 1
+
+_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+  text, title, narrative, content='facts', content_rowid='rowid', tokenize='porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+  INSERT INTO facts_fts(rowid, text, title, narrative)
+  VALUES (new.rowid, new.text, COALESCE(new.title,''), COALESCE(new.narrative,''));
+END;
+CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+  INSERT INTO facts_fts(facts_fts, rowid, text, title, narrative)
+  VALUES ('delete', old.rowid, old.text, COALESCE(old.title,''), COALESCE(old.narrative,''));
+END;
+CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+  INSERT INTO facts_fts(facts_fts, rowid, text, title, narrative)
+  VALUES ('delete', old.rowid, old.text, COALESCE(old.title,''), COALESCE(old.narrative,''));
+  INSERT INTO facts_fts(rowid, text, title, narrative)
+  VALUES (new.rowid, new.text, COALESCE(new.title,''), COALESCE(new.narrative,''));
+END;
+"""
 
 
 class Store:
@@ -81,6 +126,20 @@ class Store:
             if name not in existing:
                 self.db.execute(f"ALTER TABLE facts ADD COLUMN {ddl}")
         self.db.execute("UPDATE facts SET last_seen = created_at WHERE last_seen IS NULL")
+        self.db.commit()
+        self._ensure_fts()
+
+    def _ensure_fts(self) -> None:
+        """Create the FTS index + triggers, and backfill rows written before it existed."""
+        self.db.executescript(_FTS_SCHEMA)
+        # Backfill exactly once, tracked via user_version. An emptiness probe is
+        # unreliable here: querying an external-content FTS5 table reflects the
+        # content table's rows even before the index is built. External-content
+        # FTS5 must be populated with the 'rebuild' command, not INSERT...SELECT.
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version < _FTS_VERSION:
+            self.db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
+            self.db.execute(f"PRAGMA user_version = {_FTS_VERSION}")
         self.db.commit()
 
     def close(self) -> None:
@@ -128,14 +187,18 @@ class Store:
         vec_bits: bytes,
         importance: float,
         created_at: float | None = None,
+        title: str = "",
+        narrative: str = "",
+        files: list[str] | None = None,
     ) -> bool:
         fid = self.fact_id(project["key"], text)
         stamp = created_at if created_at is not None else time.time()
         cur = self.db.execute(
             "INSERT OR IGNORE INTO facts "
             "(id, project_key, project_label, project_path, session_id, kind, text, "
-            " created_at, last_seen, dim, scale, vec_int8, vec_bits, importance, frequency, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')",
+            " title, narrative, files, created_at, last_seen, dim, scale, vec_int8, vec_bits, "
+            " importance, frequency, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')",
             (
                 fid,
                 project["key"],
@@ -144,6 +207,9 @@ class Store:
                 session_id,
                 kind,
                 text,
+                title or None,
+                narrative or None,
+                json.dumps(files) if files else None,
                 stamp,
                 stamp,
                 dim,
@@ -214,6 +280,28 @@ class Store:
             "SELECT COUNT(*) FROM facts WHERE project_key = ? AND status = 'active'",
             (project_key,),
         ).fetchone()[0]
+
+    def clear_session_kind(self, project_key: str, session_id: str, kind: str) -> int:
+        """Delete a session's facts of a given kind (used to replace its session summary)."""
+        cur = self.db.execute(
+            "DELETE FROM facts WHERE project_key = ? AND session_id = ? AND kind = ?",
+            (project_key, session_id, kind),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def fts_search(self, project_key: str, query: str, limit: int = 50) -> list[str]:
+        """Active fact ids for a project matching an FTS5 keyword query, best-ranked first."""
+        match = _fts_match_expr(query)
+        if not match:
+            return []
+        rows = self.db.execute(
+            "SELECT f.id FROM facts_fts JOIN facts f ON f.rowid = facts_fts.rowid "
+            "WHERE facts_fts MATCH ? AND f.project_key = ? AND f.status = 'active' "
+            "ORDER BY bm25(facts_fts) LIMIT ?",
+            (match, project_key, limit),
+        ).fetchall()
+        return [row[0] for row in rows]
 
     def sweep(
         self,

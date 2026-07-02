@@ -47,6 +47,9 @@ _QUESTION_OPENERS = (
 class DistilledFact:
     text: str
     supersedes: list[str] = field(default_factory=list)
+    title: str = ""
+    narrative: str = ""
+    files: list[str] = field(default_factory=list)
 
 
 def _is_user_ask(line: str) -> bool:
@@ -89,6 +92,10 @@ class Distiller(ABC):
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
         """existing = (fact_id, fact_text) for active facts in this project."""
 
+    def summarize(self, text: str) -> DistilledFact | None:
+        """A single session-level summary fact, or None if unsupported (heuristic)."""
+        return None
+
 
 class HeuristicDistiller(Distiller):
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
@@ -101,9 +108,15 @@ The transcript interleaves user messages with the assistant's actions (rendered
 as lines like "Edited auth.py", "Ran: just test") and its explanations. Record
 what the ASSISTANT did and learned, not what the user asked.
 
-Output ONLY a JSON array. Each element:
+Output ONLY a JSON object of the form {{"facts": [ ... ]}}. Each element:
   {{"text": "<one atomic, self-contained fact in present tense, <=200 chars>",
+    "title": "<short headline, <=60 chars>",
+    "narrative": "<1-3 sentences giving the why/how and any detail worth keeping, <=500 chars>",
+    "files": ["<repo-relative path this fact concerns>", ...],
     "supersedes": ["<id of an existing fact this makes outdated>", ...]}}
+
+`text` is the atomic fact used for retrieval; `title`/`narrative`/`files` add
+recoverable detail. Use [] / "" when a field does not apply.
 
 Prefer facts in these categories:
 - what-changed  : a concrete change made (file/module edited, feature added, config set)
@@ -127,33 +140,109 @@ Session transcript:
 """
 
 
+def _coerce_items(output: str) -> list:
+    """Pull the fact array out of an LLM response.
+
+    Tolerates the two shapes small models emit: a bare JSON array, or a
+    ``{"facts": [...]}`` object (what ``response_format: json_object`` forces).
+    Tries a strict parse first, then the widest object/array substring so a
+    stray prose preamble or markdown fence doesn't defeat it.
+    """
+    slices = (
+        output,
+        output[output.find("[") : output.rfind("]") + 1],
+        output[output.find("{") : output.rfind("}") + 1],
+    )
+    for candidate in slices:
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("facts", "observations", "items", "memories"):
+                if isinstance(data.get(key), list):
+                    return data[key]
+            for value in data.values():
+                if isinstance(value, list):
+                    return value
+    return []
+
+
+def _str_list(value) -> list[str]:
+    if not isinstance(value, list):
+        value = [value] if value else []
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
 def parse_records(output: str) -> list[DistilledFact]:
-    start = output.find("[")
-    end = output.rfind("]")
-    if start == -1 or end == -1 or end < start:
-        return []
-    try:
-        items = json.loads(output[start : end + 1])
-    except json.JSONDecodeError:
-        return []
     records = []
-    for item in items:
-        if isinstance(item, dict) and str(item.get("text", "")).strip():
-            supersedes = item.get("supersedes") or []
-            if not isinstance(supersedes, list):
-                supersedes = [supersedes]
-            records.append(
-                DistilledFact(
-                    text=str(item["text"]).strip(),
-                    supersedes=[str(s) for s in supersedes if str(s).strip().lower() not in _NON_IDS],
-                )
+    for item in _coerce_items(output):
+        if not (isinstance(item, dict) and str(item.get("text", "")).strip()):
+            continue
+        supersedes = [s for s in _str_list(item.get("supersedes")) if s.lower() not in _NON_IDS]
+        records.append(
+            DistilledFact(
+                text=str(item["text"]).strip(),
+                supersedes=supersedes,
+                title=str(item.get("title", "")).strip(),
+                narrative=str(item.get("narrative", "")).strip(),
+                files=_str_list(item.get("files")),
             )
+        )
     return records
 
 
 def _build_prompt(text: str, existing: list[tuple[str, str]]) -> str:
     existing_block = "\n".join(f"{fid}: {ftext}" for fid, ftext in existing) or "(none)"
     return _PROMPT.format(existing=existing_block, transcript=text)
+
+
+_SUMMARY_PROMPT = """Summarise this coding-assistant session as one durable memory.
+
+Output ONLY a JSON object:
+  {{"title": "<short headline of what the session was about, <=70 chars>",
+    "request": "<what the user set out to achieve>",
+    "learned": "<key findings, decisions, or gotchas>",
+    "completed": "<what was actually done, incl. commits/files touched>",
+    "next_steps": "<what remains, or empty string if nothing>"}}
+
+Be concrete and specific; prefer names, paths and outcomes over narration.
+
+Session transcript:
+{transcript}
+"""
+
+_SUMMARY_SECTIONS = (
+    ("request", "Request"),
+    ("learned", "Learned"),
+    ("completed", "Completed"),
+    ("next_steps", "Next steps"),
+)
+
+
+def parse_summary(output: str) -> DistilledFact | None:
+    start, end = output.find("{"), output.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        obj = json.loads(output[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    title = str(obj.get("title", "")).strip()
+    narrative = "\n".join(
+        f"{label}: {str(obj.get(key, '')).strip()}"
+        for key, label in _SUMMARY_SECTIONS
+        if str(obj.get(key, "")).strip()
+    )
+    text = title or str(obj.get("completed", "")).strip()[:200]
+    return DistilledFact(text=text, title=title, narrative=narrative) if text else None
 
 
 class ClaudeCliDistiller(Distiller):
@@ -164,22 +253,31 @@ class ClaudeCliDistiller(Distiller):
         self.model = model or "haiku"
         self.timeout = timeout
 
-    def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
+    def _complete(self, prompt: str) -> str:
         args = [self.cmd, "-p"]
         if self.model:
             args += ["--model", self.model]
+        result = subprocess.run(
+            args, input=prompt, capture_output=True, text=True, timeout=self.timeout
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or "llm error")[:200])
+        return result.stdout
+
+    def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
         try:
-            result = subprocess.run(
-                args, input=_build_prompt(text, existing), capture_output=True, text=True, timeout=self.timeout
-            )
-            if result.returncode != 0:
-                raise RuntimeError((result.stderr or "llm error")[:200])
-            records = parse_records(result.stdout)
+            records = parse_records(self._complete(_build_prompt(text, existing)))
             if records:
                 return records
         except Exception:
             pass
         return HeuristicDistiller().distill(text, existing)
+
+    def summarize(self, text: str) -> DistilledFact | None:
+        try:
+            return parse_summary(self._complete(_SUMMARY_PROMPT.format(transcript=text)))
+        except Exception:
+            return None
 
 
 class HTTPDistiller(Distiller):
@@ -194,31 +292,43 @@ class HTTPDistiller(Distiller):
         self.api_key = api_key
         self.timeout = timeout
 
-    def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
+    def _complete(self, prompt: str) -> str:
         body = json.dumps(
             {
                 "model": self.model,
                 "messages": [
-                    {"role": "system", "content": "You extract long-term memory. Output only a JSON array."},
-                    {"role": "user", "content": _build_prompt(text, existing)},
+                    {"role": "system", "content": "You extract long-term memory. Output only a JSON object."},
+                    {"role": "user", "content": prompt},
                 ],
                 "temperature": 0,
                 "stream": False,
+                # Guarantees syntactically valid JSON, so a stray token can't drop the
+                # whole capture to the heuristic fallback. Honoured by Ollama/vLLM/LM Studio.
+                "response_format": {"type": "json_object"},
             }
         ).encode()
         request = urllib.request.Request(f"{self.base_url}/chat/completions", data=body, method="POST")
         request.add_header("Content-Type", "application/json")
         if self.api_key:
             request.add_header("Authorization", f"Bearer {self.api_key}")
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            data = json.loads(response.read().decode())
+        return data["choices"][0]["message"]["content"]
+
+    def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode())
-            records = parse_records(data["choices"][0]["message"]["content"])
+            records = parse_records(self._complete(_build_prompt(text, existing)))
             if records:
                 return records
         except Exception:
             pass
         return HeuristicDistiller().distill(text, existing)
+
+    def summarize(self, text: str) -> DistilledFact | None:
+        try:
+            return parse_summary(self._complete(_SUMMARY_PROMPT.format(transcript=text)))
+        except Exception:
+            return None
 
 
 def get_distiller(cfg) -> Distiller:

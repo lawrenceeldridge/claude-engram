@@ -85,11 +85,12 @@ def search_fused(
 ) -> list[FusedHit]:
     """Rank facts by Weighted Reciprocal Rank fusion of four channels.
 
-    A candidate qualifies if it clears the similarity floor *or* shares a content
-    token with the query — so keyword overlap rescues facts a weak embedder ranks
-    below the gate. Returns ``(fused_score, cosine_similarity, row)`` in fused
-    order; the similarity is carried through so confidence stays interpretable
-    regardless of fused-score magnitude.
+    A candidate qualifies if it clears the similarity floor, shares a content
+    token with the query, *or* is an FTS keyword hit — so lexical signal rescues
+    facts a weak embedder ranks below the gate (including matches on the title /
+    narrative fields, which are not embedded). Returns ``(fused_score,
+    cosine_similarity, row)`` in fused order; the similarity is carried through so
+    confidence stays interpretable regardless of fused-score magnitude.
     """
     k = cfg.top_k if k is None else k
     min_sim = cfg.min_sim if min_sim is None else min_sim
@@ -97,18 +98,28 @@ def search_fused(
     qdim = len(query_vec)
     query_tokens = token_set(query)
 
+    rows_by_id: dict[str, sqlite3.Row] = {}
     candidates: dict[str, tuple[float, int, sqlite3.Row]] = {}
     for row in store.active_rows_for_project(project["key"]):
         if row["dim"] and row["dim"] != qdim:
             continue
+        rows_by_id[row["id"]] = row
         sim = cosine(query_vec, _row_vec(row))
         overlap = len(query_tokens & token_set(row["text"]))
         if sim < min_sim and overlap == 0:
             continue
         candidates[row["id"]] = (sim, overlap, row)
 
+    fts_ids = store.fts_search(project["key"], query, limit=max(k * 4, 50))
+    for fid in fts_ids:
+        if fid not in candidates and fid in rows_by_id:
+            row = rows_by_id[fid]
+            candidates[fid] = (cosine(query_vec, _row_vec(row)), 0, row)
+
     if not candidates:
         return []
+
+    fts_rank = {fid: i for i, fid in enumerate(fid for fid in fts_ids if fid in candidates)}
 
     def ranked_by(key, predicate=lambda v: True) -> list[str]:
         items = [(fid, key(v)) for fid, v in candidates.items() if predicate(v)]
@@ -118,6 +129,7 @@ def search_fused(
     channels = [
         Channel("similarity", ranked_by(lambda v: v[0], lambda v: v[0] > 0)),
         Channel("lexical", ranked_by(lambda v: v[1], lambda v: v[1] > 0)),
+        Channel("fts", sorted(fts_rank, key=fts_rank.get)),
         Channel("recency", ranked_by(lambda v: v[2]["last_seen"] or v[2]["created_at"])),
         Channel("frequency", ranked_by(lambda v: v[2]["frequency"] or 1)),
     ]

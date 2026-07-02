@@ -88,6 +88,59 @@ class RecallStructuredTests(unittest.TestCase):
         self.assertEqual(page2, ["fact 2", "fact 1"])
         self.assertEqual(self.store.active_count(self.project["key"]), 5)
 
+    def test_structured_fields_persist(self):
+        from core.distill import DistilledFact
+
+        service.add_records(
+            self.store, self.embedder, self.cfg, self.project, "s1",
+            [DistilledFact(text="uses ruff for linting", title="Linting",
+                           narrative="Adopted ruff.", files=["pyproject.toml"])],
+        )
+        row = self.store.rows_for_project(self.project["key"])[0]
+        self.assertEqual(row["title"], "Linting")
+        self.assertEqual(row["narrative"], "Adopted ruff.")
+        self.assertIn("pyproject.toml", row["files"])
+
+    def test_fts_matches_term_present_only_in_title(self):
+        from core.distill import DistilledFact
+
+        service.add_records(
+            self.store, self.embedder, self.cfg, self.project, "s1",
+            [DistilledFact(text="the build pipeline", title="Zephyr deploy")],
+        )
+        self.assertEqual(len(self.store.fts_search(self.project["key"], "zephyr")), 1)
+
+    def test_fts_backfill_on_migration(self):
+        from core.distill import DistilledFact
+
+        service.add_records(
+            self.store, self.embedder, self.cfg, self.project, "s1",
+            [DistilledFact(text="the localhost viewer streams updates")],
+        )
+        # Simulate a database created before the FTS index existed.
+        self.store.db.executescript(
+            "DROP TABLE facts_fts;"
+            "DROP TRIGGER facts_ai; DROP TRIGGER facts_ad; DROP TRIGGER facts_au;"
+        )
+        self.store.db.execute("PRAGMA user_version = 0")
+        self.store.db.commit()
+        self.store.close()
+        reopened = Store(self.cfg.db_path)
+        self.assertEqual(len(reopened.fts_search(self.project["key"], "viewer")), 1)
+        reopened.close()
+
+    def test_session_summary_replaces_prior(self):
+        from core.distill import DistilledFact
+
+        for note in ("Summary one", "Summary two"):
+            self.store.clear_session_kind(self.project["key"], "s1", "session_summary")
+            service.add_records(
+                self.store, self.embedder, self.cfg, self.project, "s1",
+                [DistilledFact(text=note)], kind="session_summary",
+            )
+        rows = [r for r in self.store.rows_for_project(self.project["key"]) if r["kind"] == "session_summary"]
+        self.assertEqual([r["text"] for r in rows], ["Summary two"])
+
     def test_dim_divergence_returns_embedding_mismatch(self):
         service.add_facts(
             self.store, self.embedder, self.cfg, self.project, "s1",
@@ -179,6 +232,32 @@ class McpServerTests(unittest.TestCase):
         )
         payload = json.loads(resp["result"]["content"][0]["text"])
         self.assertIn("projects", payload)
+
+
+class DistillStructuredTests(unittest.TestCase):
+    def test_parse_records_object_wrapped_with_fields(self):
+        from core.distill import parse_records
+
+        raw = '{"facts":[{"text":"x","title":"T","narrative":"N","files":["a.py"],"supersedes":[]}]}'
+        recs = parse_records(raw)
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0].title, "T")
+        self.assertEqual(recs[0].narrative, "N")
+        self.assertEqual(recs[0].files, ["a.py"])
+
+    def test_parse_summary_builds_narrative(self):
+        from core.distill import parse_summary
+
+        raw = '{"title":"Did X","request":"do x","learned":"y","completed":"z","next_steps":""}'
+        summary = parse_summary(raw)
+        self.assertEqual(summary.text, "Did X")
+        self.assertIn("Learned: y", summary.narrative)
+        self.assertNotIn("Next steps", summary.narrative)
+
+    def test_parse_summary_returns_none_on_junk(self):
+        from core.distill import parse_summary
+
+        self.assertIsNone(parse_summary("not json at all"))
 
 
 if __name__ == "__main__":

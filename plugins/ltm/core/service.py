@@ -76,6 +76,9 @@ def add_records(
             vec_bits=pack_bits(vec),
             importance=min(1.0, len(record.text) / 240.0),
             created_at=now,
+            title=record.title,
+            narrative=record.narrative,
+            files=record.files,
         )
         if victims:
             store.supersede(list(victims), fact_id)
@@ -120,6 +123,30 @@ def capture_transcript(
     transcript_path: str,
 ) -> int:
     return capture_text(store, embedder, cfg, project, session_id, extract_text(transcript_path))
+
+
+def capture_session_summary(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    transcript_path: str,
+) -> int:
+    """Distil the whole session into a single ``session_summary`` fact (idempotent).
+
+    Runs once at SessionEnd over the full transcript — a coarse "what this session
+    was about / did / learned / left" record that complements the atomic per-turn
+    facts. Replaces any prior summary for the session so re-runs don't accumulate.
+    """
+    text = extract_text(transcript_path)
+    if not text.strip():
+        return 0
+    summary = get_distiller(cfg).summarize(text)
+    if summary is None:
+        return 0
+    store.clear_session_kind(project["key"], session_id, "session_summary")
+    return add_records(store, embedder, cfg, project, session_id, [summary], kind="session_summary")
 
 
 def capture_transcript_incremental(
