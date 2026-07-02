@@ -27,15 +27,31 @@ import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-_NOISE_PREFIXES = ("http", "```", "|", ">")
+_NOISE_PREFIXES = ("http", "```", "|", ">", "<")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _NON_IDS = {"", "none", "null", "n/a", "na", "-"}  # sentinels small models emit for "nothing"
+
+# Directive / interrogative openers that mark a user ask rather than a durable
+# fact — memory records what happened, not what was requested. Kept narrow and
+# directive-heavy so it doesn't eat assistant declaratives ("Is/Are/Will …");
+# the endswith-"?" check is the main catch. This only guards the fallback
+# heuristic — the default LLM distiller does its own filtering.
+_QUESTION_OPENERS = (
+    "can we", "can you", "could you", "would you", "should i", "should we",
+    "what does", "what is", "what's", "how do", "how does", "why is", "why do",
+    "please ", "let's ", "lets ", "yes", "okay", "ok ", "one other", "note,", "note ",
+)
 
 
 @dataclass
 class DistilledFact:
     text: str
     supersedes: list[str] = field(default_factory=list)
+
+
+def _is_user_ask(line: str) -> bool:
+    lowered = line.lower()
+    return line.endswith("?") or lowered.startswith(_QUESTION_OPENERS)
 
 
 def _candidates(text: str):
@@ -52,11 +68,11 @@ def _candidates(text: str):
                     yield sentence
 
 
-def heuristic_facts(text: str, max_facts: int = 12, min_len: int = 24) -> list[str]:
+def heuristic_facts(text: str, max_facts: int = 12, min_len: int = 14) -> list[str]:
     facts: list[str] = []
     seen: set[str] = set()
     for line in _candidates(text):
-        if not (min_len <= len(line) <= 240):
+        if not (min_len <= len(line) <= 240) or _is_user_ask(line):
             continue
         key = " ".join(line.lower().split())
         if key in seen:
@@ -81,17 +97,27 @@ class HeuristicDistiller(Distiller):
 
 _PROMPT = """You extract durable long-term memory from a coding assistant session.
 
+The transcript interleaves user messages with the assistant's actions (rendered
+as lines like "Edited auth.py", "Ran: just test") and its explanations. Record
+what the ASSISTANT did and learned, not what the user asked.
+
 Output ONLY a JSON array. Each element:
   {{"text": "<one atomic, self-contained fact in present tense, <=200 chars>",
     "supersedes": ["<id of an existing fact this makes outdated>", ...]}}
 
+Prefer facts in these categories:
+- what-changed  : a concrete change made (file/module edited, feature added, config set)
+- decision      : a choice made and, briefly, why
+- problem-solution / gotcha : a bug hit and how it was fixed; a non-obvious trap
+- pattern / convention : a reusable approach or house style adopted
+- trade-off     : an option weighed and rejected, and why
+
 Rules:
-- Keep only facts worth remembering across future sessions: decisions,
-  conventions, architecture, configuration, and stable user preferences.
-- Skip transient chatter, questions, and one-off debugging noise.
-- If a new fact updates or contradicts an existing fact, list that fact's id in
-  "supersedes" (even if the wording is completely different).
-- Use [] for supersedes when nothing is replaced.
+- Capture outcomes that help a future session, not narration. Skip questions,
+  chatter, tool noise, and anything transient.
+- Attribute concretely ("Uses X because Y"), not vaguely ("made some changes").
+- If a new fact updates or contradicts an existing one, put that fact's id in
+  "supersedes" (even if the wording is completely different); else use [].
 
 Existing facts (id: text):
 {existing}

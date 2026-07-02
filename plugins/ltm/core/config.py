@@ -105,7 +105,7 @@ def get_config() -> Config:
         w_recency=_num(_opt("w_recency", "0.3"), 0.3),
         w_freq=_num(_opt("w_freq", "0.2"), 0.2),
         supersede_threshold=_num(_opt("supersede_threshold", "0.85"), 0.85),
-        distiller=_opt("distiller", "heuristic"),
+        distiller=_opt("distiller", "claude"),
         distiller_cmd=_opt("distiller_cmd", "claude"),
         distiller_model=_opt("distiller_model", ""),
         distiller_base_url=_opt("distiller_base_url", "http://localhost:11434/v1"),

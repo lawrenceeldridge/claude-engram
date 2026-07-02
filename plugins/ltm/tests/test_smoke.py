@@ -82,8 +82,8 @@ class DistillerTests(unittest.TestCase):
 
     def test_get_distiller_selects_backend(self):
         cfg = get_config()
-        self.assertIsInstance(get_distiller(cfg), HeuristicDistiller)
-        self.assertIsInstance(get_distiller(replace(cfg, distiller="claude")), ClaudeCliDistiller)
+        self.assertIsInstance(get_distiller(cfg), ClaudeCliDistiller)  # default is now claude/haiku
+        self.assertIsInstance(get_distiller(replace(cfg, distiller="heuristic")), HeuristicDistiller)
         self.assertIsInstance(get_distiller(replace(cfg, distiller="ollama")), HTTPDistiller)
 
     def test_http_distiller_falls_back_when_unreachable(self):
@@ -146,7 +146,7 @@ class LoopTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["LTM_DATA_DIR"] = self.tmp.name
-        self.cfg = get_config()
+        self.cfg = replace(get_config(), distiller="heuristic")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.project = {"key": "test", "path": "/tmp/test", "label": "test"}

@@ -1,7 +1,7 @@
 {
   "name": "ltm",
   "displayName": "Long-Term Memory",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -30,8 +30,8 @@
     "distiller": {
       "type": "string",
       "title": "Distiller",
-      "description": "heuristic = dependency-free line extraction; claude = headless claude -p (defaults to Haiku, costs a little); ollama = local OpenAI-compatible server (zero tokens, offline).",
-      "default": "heuristic"
+      "description": "claude = headless claude -p (defaults to Haiku — best-quality outcome facts, costs a little); ollama = local OpenAI-compatible server (zero tokens, offline); heuristic = dependency-free line extraction (no LLM). claude/ollama fall back to heuristic on any failure, so capture never breaks.",
+      "default": "claude"
     },
     "distiller_model": {
       "type": "string",
