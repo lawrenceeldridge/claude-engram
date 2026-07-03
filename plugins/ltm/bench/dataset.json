@@ -1,5 +1,5 @@
 {
-  "description": "Labelled recall set. Queries are paraphrased away from the fact wording so lexical matching is stressed; facts 16-17 are hard-negative distractors. relevant = indices into facts.",
+  "description": "Labelled recall set. Queries are paraphrased away from the fact wording so lexical matching is stressed; facts 16, 17 and 33 are hard-negative distractors (no query targets them); some queries are multi-relevant (relevant lists more than one fact). relevant = indices into facts.",
   "facts": [
     "The project deploys to AWS Lambda using the Serverless Framework.",
     "Database migrations are managed with Alembic and run in CI before every deploy.",
@@ -18,7 +18,23 @@
     "Shared UI components live in a package called ui-kit.",
     "Application logs are shipped to Datadog as structured JSON.",
     "The onboarding document explains how to request database credentials.",
-    "A quick reference of common shell commands is pinned in the wiki."
+    "A quick reference of common shell commands is pinned in the wiki.",
+    "The CI pipeline runs on GitHub Actions with a matrix across Python 3.10 to 3.13.",
+    "Feature flags are managed through LaunchDarkly.",
+    "The design system uses Tailwind CSS with a custom theme.",
+    "API responses use cursor-based pagination rather than offset pagination.",
+    "The staging environment is redeployed automatically on every merge to main.",
+    "Error tracking and alerting are handled by Sentry.",
+    "Full-text search is powered by an Elasticsearch cluster.",
+    "Transactional email is sent through Amazon SES with a dedicated sending domain.",
+    "The codebase is a monorepo managed with Turborepo.",
+    "Type checking is enforced in CI with mypy in strict mode.",
+    "Container images are built with Docker and pushed to Amazon ECR.",
+    "Analytics events are streamed through Kafka into a Snowflake warehouse.",
+    "Accessibility is tested with axe and must meet WCAG 2.1 AA.",
+    "The public REST API is documented with an OpenAPI spec served at /docs.",
+    "Local development spins up its dependencies with Docker Compose.",
+    "The support rota is published in the team calendar each month."
   ],
   "queries": [
     {"q": "how is the service shipped to production", "relevant": [0]},
@@ -34,6 +50,21 @@
     {"q": "how are static assets delivered quickly worldwide", "relevant": [10]},
     {"q": "what framework powers the phone application", "relevant": [11]},
     {"q": "what is needed before code can be merged", "relevant": [12]},
-    {"q": "how do we stop clients from overwhelming the endpoints", "relevant": [13]}
+    {"q": "how do we stop clients from overwhelming the endpoints", "relevant": [13]},
+    {"q": "where do continuous integration jobs execute", "relevant": [18]},
+    {"q": "how do we toggle features without a redeploy", "relevant": [19]},
+    {"q": "what handles styling and theming", "relevant": [20]},
+    {"q": "how do clients page through large result sets", "relevant": [21]},
+    {"q": "when does the pre-production environment refresh", "relevant": [22]},
+    {"q": "how are runtime exceptions surfaced to the team", "relevant": [23]},
+    {"q": "what powers keyword search across content", "relevant": [24]},
+    {"q": "how do we send account and notification emails", "relevant": [25]},
+    {"q": "how is the repository organised across packages", "relevant": [26]},
+    {"q": "where are built container images stored", "relevant": [28]},
+    {"q": "where does event data land for warehousing", "relevant": [29]},
+    {"q": "where is the http api contract described", "relevant": [31]},
+    {"q": "how do we run dependencies for local development", "relevant": [32]},
+    {"q": "what quality gates run in continuous integration", "relevant": [18, 27]},
+    {"q": "what kinds of automated testing does the project have", "relevant": [6, 30]}
   ]
 }
