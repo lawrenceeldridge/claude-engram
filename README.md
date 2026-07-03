@@ -213,16 +213,16 @@ env vars; defaults `1.0 / 0.3 / 0.2`.
 Fresh facts enter a short-term tier and promote to long-term on rehearsal; a
 consolidation ("sleep") pass runs at session checkpoints (or `ltm consolidate`).
 Recall is tier-agnostic and **pruning is off by default** — turn it on deliberately.
-Env-configured (`LTM_*`):
+Set via `userConfig` (or `LTM_*` env):
 
-| Env var | Default | Meaning |
+| Key | Default | Meaning |
 |---|---|---|
-| `LTM_PROMOTE_AFTER_FREQ` | `2` | reinforcement count that promotes an STM fact to LTM |
-| `LTM_STM_CAPACITY` | `0` | max active STM facts before weakest are displaced (0 = unbounded/off) |
-| `LTM_STM_RECALL_WEIGHT` | `1.0` | recall weight for STM facts (1.0 = tier-agnostic; `<1` down-ranks STM) |
-| `LTM_RETENTION_KEEP_MAX` | `0` | keep only the top-N facts by retention score, prune the rest (0 = off) |
-| `LTM_PRUNE_THRESHOLD` | `0` | prune facts whose retention score is below this (0 = off) |
-| `LTM_PURGE_HORIZON_DAYS` | `0` | hard-delete facts archived longer than this, then `VACUUM` (0 = off) |
+| `promote_after_freq` | `2` | reinforcement count that promotes an STM fact to LTM |
+| `stm_capacity` | `0` | max active STM facts before the weakest are displaced (0 = unbounded/off) |
+| `stm_recall_weight` | `1.0` | recall weight for STM facts (1.0 = tier-agnostic; `<1` down-ranks STM) |
+| `retention_keep_max` | `0` | keep only the top-N facts by retention score, prune the rest (0 = off) |
+| `prune_threshold` | `0` | prune facts whose retention score is below this (0 = off) |
+| `purge_horizon_days` | `0` | hard-delete facts archived longer than this, then `VACUUM` (0 = off) |
 
 ### Durable work queue — MemoryBus (inproc / NATS)
 
@@ -231,18 +231,18 @@ Detached capture and recovery run through a durable Command queue. The default
 crash recovery). Opt into **NATS JetStream** for durable, cross-process processing —
 the server is auto-provisioned (a checksum-verified `nats-server` binary, no Docker
 required) and it **fails open to `inproc`** whenever NATS is unavailable, so enabling
-it is safe. Env-configured (`LTM_*`):
+it is safe. Set via `userConfig` (or `LTM_*` env):
 
-| Env var | Default | Meaning |
+| Key | Default | Meaning |
 |---|---|---|
-| `LTM_BUS` | `inproc` | `inproc` (SQLite queue) or `nats` (JetStream) |
-| `LTM_BUS_MAX_DELIVER` | `5` | delivery attempts before a work item is dead-lettered |
-| `LTM_BUS_BACKOFF` | `5,30,120,600` | retry backoff schedule, seconds (comma-separated) |
-| `LTM_LEASE_TTL` | `300` | seconds a claimed item is leased before reclaim (crash recovery) |
-| `LTM_NATS_URL` | `nats://localhost:4222` | NATS URL — use a dedicated port so ltm doesn't share another server |
-| `LTM_NATS_STREAM` | `LTM_WORK` | JetStream stream name |
-| `LTM_NATS_PROVISION` | `binary` | auto-start NATS: `binary` (download nats-server), `docker`, or `off` (bring your own) |
-| `LTM_NATS_VERSION` | `2.10.22` | pinned nats-server version for the binary provisioner |
+| `bus` | `inproc` | `inproc` (SQLite queue) or `nats` (JetStream) |
+| `bus_max_deliver` | `5` | delivery attempts before a work item is dead-lettered |
+| `bus_backoff` | `5,30,120,600` | retry backoff schedule, seconds (comma-separated) |
+| `lease_ttl` | `300` | seconds a claimed item is leased before reclaim (crash recovery) |
+| `nats_url` | `nats://localhost:4222` | NATS URL — use a dedicated port so ltm doesn't share another server |
+| `nats_stream` | `LTM_WORK` | JetStream stream name |
+| `nats_provision` | `binary` | auto-start NATS: `binary` (download nats-server), `docker`, or `off` (bring your own) |
+| `nats_version` | `2.10.22` | pinned nats-server version for the binary provisioner |
 
 Enable NATS in `settings.json` (a dedicated port keeps it isolated):
 
