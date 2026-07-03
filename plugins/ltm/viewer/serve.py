@@ -360,7 +360,7 @@ async function loadHealth() {
 // shortcuts) - cost (bytes injected). Hover for the full breakdown.
 function fmtTok(n) {
   const a = Math.abs(n);
-  return a >= 1000 ? (n / 1000).toFixed(a >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(n);
+  return a >= 1000 ? (n / 1000).toFixed(a >= 10000 ? 0 : 1).replace(/\\.0$/, '') + 'k' : String(n);
 }
 async function loadLedger() {
   const el = $('#ledger'); if (!el) return;
@@ -369,9 +369,9 @@ async function loadLedger() {
     const s = await (await fetch('/api/stats?project=' + encodeURIComponent(pk || ''))).json();
     el.classList.toggle('neg', s.net_tokens < 0);
     el.innerHTML = 'saved <b>~' + fmtTok(s.net_tokens) + '</b> tok';
-    el.title = 'net ~' + s.net_tokens.toLocaleString() + ' tokens (saved − cost)\n'
-      + '  cost injected:   ~' + s.cost_tokens.toLocaleString() + ' (' + s.injections + ' injections)\n'
-      + '  saved measured:  ~' + s.saved_measured_tokens.toLocaleString() + ' (' + s.targeted_reads + ' targeted reads)\n'
+    el.title = 'net ~' + s.net_tokens.toLocaleString() + ' tokens (saved − cost)\\n'
+      + '  cost injected:   ~' + s.cost_tokens.toLocaleString() + ' (' + s.injections + ' injections)\\n'
+      + '  saved measured:  ~' + s.saved_measured_tokens.toLocaleString() + ' (' + s.targeted_reads + ' targeted reads)\\n'
       + '  saved estimated: ~' + s.saved_estimated_tokens.toLocaleString() + ' (' + s.ok_recalls + ' recall shortcuts)';
   } catch (e) { /* fail-open: leave the last-known value */ }
 }
