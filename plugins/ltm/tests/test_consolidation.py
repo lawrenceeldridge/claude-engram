@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
+from core.consolidation import consolidate  # noqa: E402
 from core.consolidation.refine import refine  # noqa: E402
 from core.consolidation.replay import replay  # noqa: E402
 from core.consolidation.scoring import RetentionFeatures, depth_of, retention  # noqa: E402
@@ -132,6 +133,41 @@ class StageTests(unittest.TestCase):
         self.assertIsNone(self.store.get(old_pruned))
         self.assertIsNotNone(self.store.get(recent_pruned))  # within horizon
         self.assertIsNotNone(self.store.get(keep_active))  # active never purged
+
+    # --- consolidate (the orchestration the capture worker calls) ---
+
+    def test_consolidate_displacement_disabled_by_default(self):
+        for i in range(5):
+            self._add(f"fact {i}")
+        counts = consolidate(self.store, self.cfg, self.project)  # stm_capacity defaults to 0
+        self.assertEqual(counts["displaced"], 0)
+        self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 5)
+
+    def test_consolidate_displaces_stm_beyond_capacity(self):
+        for i in range(5):
+            self._add(f"fact {i}")
+        cfg = replace(self.cfg, stm_capacity=3)
+        counts = consolidate(self.store, cfg, self.project)
+        self.assertEqual(counts["displaced"], 2)  # weakest 2 beyond the cap
+        self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 3)
+        # Reversible archive, not a delete — the rows still exist as 'displaced'.
+        total = self.store.db.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+        self.assertEqual(total, 5)
+        displaced = self.store.db.execute("SELECT COUNT(*) FROM facts WHERE status = 'displaced'").fetchone()[0]
+        self.assertEqual(displaced, 2)
+
+    def test_consolidate_promotes_before_displacing(self):
+        # replay runs first: a rehearsed STM fact is promoted to LTM and so is exempt
+        # from STM displacement even at capacity 1.
+        first = self._add("older recalled fact")
+        self._add("newer fact")
+        self.store.mark_recalled([first])  # rehearsal signal
+        cfg = replace(self.cfg, stm_capacity=1)
+        counts = consolidate(self.store, cfg, self.project)
+        self.assertEqual(counts["promoted"], 1)
+        self.assertEqual(counts["displaced"], 0)  # 1 STM left after promotion == capacity
+        self.assertEqual(self.store.get(first)["tier"], "ltm")
+        self.assertEqual(self.store.get(first)["status"], "active")
 
 
 if __name__ == "__main__":
