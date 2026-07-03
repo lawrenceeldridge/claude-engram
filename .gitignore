@@ -1,3 +1,18 @@
+# Generated files (claude-mem plans and trackers)
+docs/generated/
+
+# Claude per-user settings — settings.json is the team-shared file (versioned);
+# settings.local.json is user-specific (gitignored by the monorepo root, listed
+# here too for local clarity). Repo rooted at scaleapi/ips-applications:
+# see the root .gitignore for `**/.claude/settings.local.json`.
+.claude/settings.local.json
+.cursor/settings.local.json
+
+# Environment files — allow .env.example
+.env
+.env.*
+!.env.example
+
 __pycache__/
 *.py[cod]
 *.egg-info/
