@@ -133,7 +133,23 @@ class ChunkStoreTests(unittest.TestCase):
     def test_migration_created_chunk_tables(self):
         self.assertEqual(self.store.db.execute("PRAGMA user_version").fetchone()[0], _SCHEMA_VERSION)
         names = {r[0] for r in self.store.db.execute("SELECT name FROM sqlite_master")}
-        self.assertTrue({"chunks", "chunk_sources", "chunks_fts"} <= names)
+        self.assertTrue({"chunks", "chunk_sources", "chunks_fts", "index_meta"} <= names)
+
+    def test_chunk_projects_uses_index_meta_label(self):
+        # An index-only project (chunks, no memory facts) must show a real name.
+        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("a", "A", "x")], "h", 1)
+        row = next(r for r in self.store.chunk_projects() if r["project_key"] == self.pk)
+        self.assertIsNone(row["label"])  # no meta yet → viewer falls back to the key
+        self.store.set_index_meta({"key": self.pk, "label": "my-project", "path": "/tmp/my-project"})
+        row = next(r for r in self.store.chunk_projects() if r["project_key"] == self.pk)
+        self.assertEqual(row["label"], "my-project")
+        self.assertEqual(row["path"], "/tmp/my-project")
+
+    def test_set_index_meta_upserts(self):
+        self.store.set_index_meta({"key": self.pk, "label": "a", "path": "/a"})
+        self.store.set_index_meta({"key": self.pk, "label": "b", "path": "/b"})
+        row = self.store.db.execute("SELECT label, path FROM index_meta WHERE project_key = ?", (self.pk,)).fetchone()
+        self.assertEqual((row["label"], row["path"]), ("b", "/b"))
 
     def test_replace_and_fetch(self):
         self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("intro", "Intro", "hello postgres")], "fh", 1)

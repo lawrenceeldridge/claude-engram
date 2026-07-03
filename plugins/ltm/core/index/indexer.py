@@ -164,6 +164,8 @@ def index_file(store: Store, embedder: EmbeddingGateway, cfg: Config, project: P
         return {"status": "removed" if source_path else "ignored", "chunks": 0}
 
     status, n, _sp = _index_path(store, embedder, None, project, project_root, path.parent, path, time.time())
+    if status == "indexed":
+        store.set_index_meta(project)  # record a human name for the index (viewer dropdown)
     return {"status": status, "chunks": n}
 
 
@@ -198,6 +200,7 @@ def index_project(
     if max_files is not None and len(discovered) > max_files:
         return {**stats, "skipped_too_large": len(discovered), "max_files": max_files}
 
+    store.set_index_meta(project)  # record a human name for the index (viewer dropdown)
     for path in discovered:
         status, n_chunks, source_path = _index_path(store, embedder, distiller, project, project_root, root, path, now)
         if source_path is not None:

@@ -340,6 +340,21 @@ def _v11_rescue_from_redistill(db: sqlite3.Connection) -> None:
     db.execute("DELETE FROM pending_redistill")
 
 
+def _v12_index_meta(db: sqlite3.Connection) -> None:
+    # Human name for a project's index. The index keys on hash(path) and stores only
+    # relative source paths, so a project with chunks but no memory facts had nothing
+    # to label it with and rendered as a raw hash in the viewer. Recorded per index
+    # run; the viewer falls back to it when a project has no facts-derived label.
+    db.executescript(
+        "CREATE TABLE IF NOT EXISTS index_meta ("
+        "  project_key TEXT PRIMARY KEY,"
+        "  label       TEXT,"
+        "  path        TEXT,"
+        "  updated_at  REAL"
+        ");"
+    )
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -356,6 +371,7 @@ _MIGRATIONS = [
     _v9_stm,
     _v10_work_queue,
     _v11_rescue_from_redistill,
+    _v12_index_meta,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -921,10 +937,24 @@ class Store:
         params.append(limit)
         return [row[0] for row in self.db.execute(sql, params).fetchall()]
 
+    def set_index_meta(self, project: Project) -> None:
+        """Record a project's human label/path for the index, so an index-only project
+        (chunks but no memory facts) still shows a real name instead of its raw key."""
+        self.db.execute(
+            "INSERT INTO index_meta (project_key, label, path, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(project_key) DO UPDATE SET "
+            "label = excluded.label, path = excluded.path, updated_at = excluded.updated_at",
+            (project["key"], project.get("label") or project["key"], project.get("path") or "", _now(None)),
+        )
+        self.db.commit()
+
     def chunk_projects(self) -> list[sqlite3.Row]:
         return self.db.execute(
-            "SELECT project_key, COUNT(*) AS c, COUNT(DISTINCT source_path) AS files, "
-            "MAX(indexed_at) AS last FROM chunks GROUP BY project_key ORDER BY last DESC"
+            "SELECT c.project_key AS project_key, COUNT(*) AS c, "
+            "COUNT(DISTINCT c.source_path) AS files, MAX(c.indexed_at) AS last, "
+            "m.label AS label, m.path AS path "
+            "FROM chunks c LEFT JOIN index_meta m ON m.project_key = c.project_key "
+            "GROUP BY c.project_key ORDER BY last DESC"
         ).fetchall()
 
     def chunk_count(self, project_key: str) -> int:

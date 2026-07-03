@@ -610,13 +610,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"archived": archived, "queue": queue}))
         elif parsed.path == "/api/index_projects":
             store = Store(cfg.db_path)
+            # Prefer the memory (facts) label/path; fall back to the label recorded at
+            # index time (index_meta), so an index-only project shows a real name and
+            # never its raw key.
             labels = {r["project_key"]: (r["project_label"], r["project_path"]) for r in store.projects()}
             out = _disambiguate_labels(
                 [
                     {
                         "project_key": r["project_key"],
-                        "label": (labels.get(r["project_key"]) or (r["project_key"], ""))[0],
-                        "path": (labels.get(r["project_key"]) or ("", ""))[1],
+                        "label": (labels.get(r["project_key"]) or (None, None))[0] or r["label"] or r["project_key"],
+                        "path": (labels.get(r["project_key"]) or (None, None))[1] or r["path"] or "",
                         "files": r["files"],
                         "count": r["c"],
                     }
