@@ -6,6 +6,11 @@ rehearsed short-term facts (replay), displaces the weakest short-term overflow
 archived rows (purge). What it keeps vs forgets is decided by the pure retention
 score in scoring.py (design section 3A). Each retrieval-affecting step is gated
 default-off until eval-tuned, and archival is reversible (status flip, not delete).
+
+The RNR model's *rescue* stage (re-distil parked degraded deltas) is deliberately
+NOT here: it needs the embedder + distiller and runs at the head of every capture,
+so it lives in ``core/service.py::rescue``, co-located with the write path rather
+than in this checkpoint-only pass.
 """
 
 from __future__ import annotations

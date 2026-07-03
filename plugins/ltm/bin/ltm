@@ -28,11 +28,11 @@ _bootstrap.reexec_if_pinned()
 ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(ROOT))
 
+from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.ports.embedding import get_embedder  # noqa: E402
 from core.project import resolve_project  # noqa: E402
 from core.store import Store  # noqa: E402
-from core import service  # noqa: E402
 
 
 def _project(cfg, args):
@@ -133,8 +133,7 @@ def cmd_sweep(args) -> int:
 def cmd_consolidate(args) -> int:
     import time
 
-    from core.consolidation.refine import refine
-    from core.consolidation.replay import replay
+    from core.consolidation import consolidate
 
     cfg = get_config()
     store = Store(cfg.db_path)
@@ -146,17 +145,23 @@ def cmd_consolidate(args) -> int:
         ]
     else:
         targets = [_project(cfg, args)]
-    promoted = pruned = 0
+    # Route through the shared orchestrator so the CLI can't drift from the
+    # checkpoint pass (bin/capture.py) — same stages, same order (replay →
+    # displace → refine → purge), each gated/idempotent/reversible.
+    totals = {"promoted": 0, "displaced": 0, "pruned": 0, "purged": 0}
     for project in targets:
-        promoted += replay(store, project, now)
-        pruned += refine(store, cfg, project, now)
-    purged = store.purge(cfg.purge_horizon_days * 86400, now) if cfg.purge_horizon_days > 0 else 0
+        counts = consolidate(store, cfg, project, now)
+        for stage, n in counts.items():
+            totals[stage] += n
     gated = (
         ""
         if (cfg.retention_keep_max > 0 or cfg.prune_threshold > 0)
         else " (pruning off — set retention_keep_max/prune_threshold)"
     )
-    print(f"consolidated {len(targets)} project(s): promoted {promoted}, pruned {pruned}, purged {purged}{gated}")
+    print(
+        f"consolidated {len(targets)} project(s): promoted {totals['promoted']}, "
+        f"displaced {totals['displaced']}, pruned {totals['pruned']}, purged {totals['purged']}{gated}"
+    )
     store.close()
     return 0
 
