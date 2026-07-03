@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.distill import _MAX_INPUT_CHARS, _clip, heuristic_facts  # noqa: E402
+from core.ports.distill import _MAX_INPUT_CHARS, _clip, heuristic_facts  # noqa: E402
 from core.transcript import extract_text  # noqa: E402
 
 
@@ -39,57 +39,79 @@ def _user(content):
 
 class ExtractionTests(unittest.TestCase):
     def test_tool_use_becomes_action_lines(self):
-        text = extract_text(_write_transcript([
-            _assistant([
-                {"type": "tool_use", "name": "Edit", "input": {"file_path": "/repo/src/auth.py"}},
-                {"type": "tool_use", "name": "Bash", "input": {"command": "just test && echo done"}},
-                {"type": "tool_use", "name": "Grep", "input": {"pattern": "delete dialog"}},
-            ]),
-        ]))
+        text = extract_text(
+            _write_transcript(
+                [
+                    _assistant(
+                        [
+                            {"type": "tool_use", "name": "Edit", "input": {"file_path": "/repo/src/auth.py"}},
+                            {"type": "tool_use", "name": "Bash", "input": {"command": "just test && echo done"}},
+                            {"type": "tool_use", "name": "Grep", "input": {"pattern": "delete dialog"}},
+                        ]
+                    ),
+                ]
+            )
+        )
         self.assertIn("Edited auth.py", text)
         self.assertIn("Ran: just test", text)
         self.assertIn("Searched for delete dialog", text)
 
     def test_thinking_and_tool_result_dropped(self):
-        text = extract_text(_write_transcript([
-            _assistant([
-                {"type": "thinking", "thinking": "secret private reasoning that must not persist"},
-                {"type": "text", "text": "Fixed the RTL alignment bug in the dialog."},
-            ]),
-            _user([{"type": "tool_result", "tool_use_id": "x", "content": "verbose 5000-line output"}]),
-        ]))
+        text = extract_text(
+            _write_transcript(
+                [
+                    _assistant(
+                        [
+                            {"type": "thinking", "thinking": "secret private reasoning that must not persist"},
+                            {"type": "text", "text": "Fixed the RTL alignment bug in the dialog."},
+                        ]
+                    ),
+                    _user([{"type": "tool_result", "tool_use_id": "x", "content": "verbose 5000-line output"}]),
+                ]
+            )
+        )
         self.assertIn("Fixed the RTL alignment bug in the dialog.", text)
         self.assertNotIn("secret private reasoning", text)
         self.assertNotIn("verbose 5000-line output", text)
 
     def test_harness_scaffolding_stripped(self):
-        text = extract_text(_write_transcript([
-            _user("<command-name>/clear</command-name>"),
-            _user("<ide_opened_file>The user opened /repo/x.ts</ide_opened_file>"),
-            _user("Real request: refactor the ingestion client."),
-            _user("Answer <system-reminder>injected junk</system-reminder>please."),
-        ]))
+        text = extract_text(
+            _write_transcript(
+                [
+                    _user("<command-name>/clear</command-name>"),
+                    _user("<ide_opened_file>The user opened /repo/x.ts</ide_opened_file>"),
+                    _user("Real request: refactor the ingestion client."),
+                    _user("Answer <system-reminder>injected junk</system-reminder>please."),
+                ]
+            )
+        )
         self.assertNotIn("command-name", text)
         self.assertNotIn("ide_opened_file", text)
         self.assertNotIn("injected junk", text)
         self.assertIn("Real request: refactor the ingestion client.", text)
 
     def test_todowrite_is_not_recorded(self):
-        text = extract_text(_write_transcript([
-            _assistant([{"type": "tool_use", "name": "TodoWrite", "input": {"todos": []}}]),
-        ]))
+        text = extract_text(
+            _write_transcript(
+                [
+                    _assistant([{"type": "tool_use", "name": "TodoWrite", "input": {"todos": []}}]),
+                ]
+            )
+        )
         self.assertEqual(text.strip(), "")
 
 
 class HeuristicBiasTests(unittest.TestCase):
     def test_action_lines_survive_and_questions_dropped(self):
-        text = "\n".join([
-            "Can we have it so localhost is always available?",
-            "yes lets also do the above",
-            "Edited AttachmentField.tsx",
-            "Ran: npm run build",
-            "The delete dialog now uses an in-app AlertDialog.",
-        ])
+        text = "\n".join(
+            [
+                "Can we have it so localhost is always available?",
+                "yes lets also do the above",
+                "Edited AttachmentField.tsx",
+                "Ran: npm run build",
+                "The delete dialog now uses an in-app AlertDialog.",
+            ]
+        )
         facts = heuristic_facts(text)
         self.assertIn("Edited AttachmentField.tsx", facts)
         self.assertIn("Ran: npm run build", facts)
@@ -103,14 +125,16 @@ class HeuristicBiasTests(unittest.TestCase):
         self.assertIn("Wrote mcp_server.py for the recall tool.", facts)
 
     def test_assistant_narration_dropped_but_outcomes_kept(self):
-        text = "\n".join([
-            "Let me check what the auto-index already did, and the scale:",
-            "The assistant can now map Linear tickets to code.",
-            "I'll now update the tool description.",
-            "Now let me read the indexer.",
-            "The delete dialog now uses an in-app AlertDialog.",
-            "search_code indexes TypeScript via tree-sitter.",
-        ])
+        text = "\n".join(
+            [
+                "Let me check what the auto-index already did, and the scale:",
+                "The assistant can now map Linear tickets to code.",
+                "I'll now update the tool description.",
+                "Now let me read the indexer.",
+                "The delete dialog now uses an in-app AlertDialog.",
+                "search_code indexes TypeScript via tree-sitter.",
+            ]
+        )
         facts = heuristic_facts(text)
         self.assertNotIn("The assistant can now map Linear tickets to code.", facts)
         self.assertNotIn("I'll now update the tool description.", facts)

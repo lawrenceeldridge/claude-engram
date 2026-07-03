@@ -76,6 +76,20 @@ class Config:
     w_recency: float
     w_freq: float
     supersede_threshold: float
+    stm_capacity: int
+    promote_after_freq: int
+    stm_recall_weight: float
+    bus: str
+    bus_max_deliver: int
+    bus_backoff: tuple[float, ...]
+    lease_ttl: float
+    nats_url: str
+    nats_stream: str
+    nats_provision: str
+    nats_version: str
+    retention_keep_max: int
+    prune_threshold: float
+    purge_horizon_days: float
     distiller: str
     distiller_cmd: str
     distiller_model: str
@@ -97,9 +111,7 @@ class Config:
 def get_config() -> Config:
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
-    markers = tuple(
-        m.strip() for m in _opt("markers", _DEFAULT_MARKERS).split(",") if m.strip()
-    )
+    markers = tuple(m.strip() for m in _opt("markers", _DEFAULT_MARKERS).split(",") if m.strip())
     return Config(
         embedding=_opt("embedding", "hash"),
         embedding_model=_opt("embedding_model", ""),
@@ -114,6 +126,29 @@ def get_config() -> Config:
         w_recency=_num(_opt("w_recency", "0.3"), 0.3),
         w_freq=_num(_opt("w_freq", "0.2"), 0.2),
         supersede_threshold=_num(_opt("supersede_threshold", "0.85"), 0.85),
+        # STM/LTM tier (Atkinson-Shiffrin). Defaults are behaviour-neutral:
+        # no displacement (0 = unbounded STM), gentle promotion, no recall penalty.
+        stm_capacity=int(_num(_opt("stm_capacity", "0"), 0)),
+        promote_after_freq=int(_num(_opt("promote_after_freq", "2"), 2)),
+        stm_recall_weight=_num(_opt("stm_recall_weight", "1.0"), 1.0),
+        # Durable work queue (MemoryBus). inproc = stdlib SQLite queue (default);
+        # nats = opt-in JetStream adapter (Phase 5), fail-open to inproc.
+        bus=_opt("bus", "inproc"),
+        bus_max_deliver=int(_num(_opt("bus_max_deliver", "5"), 5)),
+        bus_backoff=tuple(float(x) for x in _opt("bus_backoff", "5,30,120,600").split(",") if x.strip()),
+        lease_ttl=_num(_opt("lease_ttl", "300"), 300),
+        nats_url=_opt("nats_url", "nats://localhost:4222"),
+        nats_stream=_opt("nats_stream", "LTM_WORK"),
+        # How to auto-provision a NATS server when bus=nats and none is reachable:
+        # binary = download + run the nats-server binary (default, no Docker needed);
+        # docker = run the official image; off = never auto-start (bring your own).
+        nats_provision=_opt("nats_provision", "binary"),
+        nats_version=_opt("nats_version", "2.10.22"),
+        # Consolidation (sleep pass). All default-off: pruning is retrieval-affecting
+        # and stays disabled until the retention weights are `ltm eval`-tuned.
+        retention_keep_max=int(_num(_opt("retention_keep_max", "0"), 0)),
+        prune_threshold=_num(_opt("prune_threshold", "0"), 0),
+        purge_horizon_days=_num(_opt("purge_horizon_days", "0"), 0),
         distiller=_opt("distiller", "claude"),
         distiller_cmd=_opt("distiller_cmd", "claude"),
         distiller_model=_opt("distiller_model", ""),

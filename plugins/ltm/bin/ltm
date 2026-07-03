@@ -29,7 +29,7 @@ ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().par
 sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
-from core.embedding import get_embedder  # noqa: E402
+from core.ports.embedding import get_embedder  # noqa: E402
 from core.project import resolve_project  # noqa: E402
 from core.store import Store  # noqa: E402
 from core import service  # noqa: E402
@@ -130,6 +130,49 @@ def cmd_sweep(args) -> int:
     return 0
 
 
+def cmd_consolidate(args) -> int:
+    import time
+
+    from core.consolidation.refine import refine
+    from core.consolidation.replay import replay
+
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    now = time.time()
+    if args.all:
+        targets = [
+            {"key": r["project_key"], "label": r["project_label"] or r["project_key"], "path": r["project_path"] or ""}
+            for r in store.projects()
+        ]
+    else:
+        targets = [_project(cfg, args)]
+    promoted = pruned = 0
+    for project in targets:
+        promoted += replay(store, project, now)
+        pruned += refine(store, cfg, project, now)
+    purged = store.purge(cfg.purge_horizon_days * 86400, now) if cfg.purge_horizon_days > 0 else 0
+    gated = "" if (cfg.retention_keep_max > 0 or cfg.prune_threshold > 0) else " (pruning off — set retention_keep_max/prune_threshold)"
+    print(f"consolidated {len(targets)} project(s): promoted {promoted}, pruned {pruned}, purged {purged}{gated}")
+    store.close()
+    return 0
+
+
+def cmd_nats(args) -> int:
+    from core.nats_provision import ensure_nats, status, stop
+
+    cfg = get_config()
+    if args.action == "start":
+        ok = ensure_nats(cfg, force=True)
+        print("nats reachable at " + cfg.nats_url if ok else "nats not reachable (provisioning failed)")
+        return 0 if ok else 1
+    if args.action == "stop":
+        print("stopped" if stop(cfg) else "nothing to stop")
+        return 0
+    s = status(cfg)
+    print(f"url={s['url']} reachable={s['reachable']} provision={s['provision']} pid={s['pid']} binary={s['binary']}")
+    return 0
+
+
 def cmd_setup(_args) -> int:
     from core.provision import provision
 
@@ -185,7 +228,7 @@ def cmd_stats(args) -> int:
 
 
 def cmd_drift(_args) -> int:
-    from core.drift import check, pin
+    from core.index.drift import check, pin
 
     cfg = get_config()
     embedder = get_embedder(cfg)
@@ -270,6 +313,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--days", type=float, default=0, help="TTL in days (default: config ttl_days)")
     p.add_argument("--all", action="store_true", help="sweep every project, not just the current one")
     p.set_defaults(func=cmd_sweep)
+
+    p = sub.add_parser("consolidate", help="run the sleep pass: replay (promote) + refine (prune, opt-in)")
+    add_cwd(p)
+    p.add_argument("--all", action="store_true", help="consolidate every project, not just the current one")
+    p.set_defaults(func=cmd_consolidate)
+
+    p = sub.add_parser("nats", help="manage the opt-in NATS server (bus=nats): status | start | stop")
+    p.add_argument("action", choices=["status", "start", "stop"], nargs="?", default="status")
+    p.set_defaults(func=cmd_nats)
 
     p = sub.add_parser("setup", help="provision the private fastembed venv (one-time)")
     p.set_defaults(func=cmd_setup)

@@ -21,11 +21,7 @@ from pathlib import Path
 
 def _venv_exe(data_dir: str | os.PathLike) -> str | None:
     venv = os.path.join(str(data_dir), "venv")
-    exe = (
-        os.path.join(venv, "Scripts", "python.exe")
-        if os.name == "nt"
-        else os.path.join(venv, "bin", "python")
-    )
+    exe = os.path.join(venv, "Scripts", "python.exe") if os.name == "nt" else os.path.join(venv, "bin", "python")
     return exe if os.path.exists(exe) else None
 
 
@@ -54,11 +50,7 @@ def managed_python(data_dir: str | os.PathLike | None = None) -> str | None:
 def reexec_if_pinned() -> None:
     if os.environ.get("LTM_REEXECED"):
         return
-    target = (
-        os.environ.get("CLAUDE_PLUGIN_OPTION_python")
-        or os.environ.get("LTM_PYTHON")
-        or managed_python()
-    )
+    target = os.environ.get("CLAUDE_PLUGIN_OPTION_python") or os.environ.get("LTM_PYTHON") or managed_python()
     if not target or not os.path.exists(target):
         return
     # Compare by path, not realpath: two venvs built from the same base interpreter

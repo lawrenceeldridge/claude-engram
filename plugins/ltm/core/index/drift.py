@@ -6,8 +6,7 @@ you, old fact vectors become incomparable to new ones and recall quietly rots.
 
 This pins a small set of fixed strings' vectors at first use and, on demand,
 re-embeds them and alarms if the mean cosine similarity to the pinned vectors
-drops below a threshold — a cheap tripwire, no model internals required. Adapted
-from jcodemunch's retrieval/embed_drift.
+drops below a threshold — a cheap tripwire, no model internals required.
 """
 
 from __future__ import annotations
@@ -15,8 +14,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from core.embedding import EmbeddingGateway
-from core.quantize import cosine
+from core.domain.quantize import cosine
+from core.ports.embedding import EmbeddingGateway
 
 CANARY_PHRASES = [
     "the deployment pipeline runs on continuous integration",
@@ -68,11 +67,19 @@ def check(embedder: EmbeddingGateway, data_dir: Path | str, model_id: str) -> di
 
     baseline = json.loads(path.read_text(encoding="utf-8"))
     if baseline.get("dim") != embedder.dim:
-        return {"status": "dim_changed", "pinned_dim": baseline.get("dim"), "current_dim": embedder.dim,
-                "hint": "Embedding dimension changed — re-embed the store."}
+        return {
+            "status": "dim_changed",
+            "pinned_dim": baseline.get("dim"),
+            "current_dim": embedder.dim,
+            "hint": "Embedding dimension changed — re-embed the store.",
+        }
     if baseline.get("model") != model_id:
-        return {"status": "model_changed", "pinned_model": baseline.get("model"), "current_model": model_id,
-                "hint": "Embedding model changed — old vectors are not comparable; re-embed the store."}
+        return {
+            "status": "model_changed",
+            "pinned_model": baseline.get("model"),
+            "current_model": model_id,
+            "hint": "Embedding model changed — old vectors are not comparable; re-embed the store.",
+        }
 
     current = embedder.embed(CANARY_PHRASES)
     sims = [cosine(a, b) for a, b in zip(baseline["vectors"], current)]

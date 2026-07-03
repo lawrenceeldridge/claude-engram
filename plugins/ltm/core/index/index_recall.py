@@ -18,10 +18,10 @@ import hashlib
 from pathlib import Path
 
 from core.config import Config
-from core.embedding import EmbeddingGateway
-from core.fusion import Channel, fuse
+from core.domain.fusion import Channel, fuse
+from core.domain.quantize import cosine, dequantize_int8
+from core.ports.embedding import EmbeddingGateway
 from core.project import Project
-from core.quantize import cosine, dequantize_int8
 from core.store import Store
 
 _PER_FILE_CAP = 3
@@ -176,11 +176,11 @@ def _section_freshness(project_root: str, row) -> str:
 def _live_units(kind: str, text: str, path: Path):
     """(anchor, body) pairs from the live file, parsed and disambiguated as the indexer did."""
     if kind == "code_symbol":
-        from core.code_symbols import extract_code_symbols
+        from core.index.code_symbols import extract_code_symbols
 
         raw = [(s.qualname, s.body) for s in extract_code_symbols(text, path.suffix)]
         return _dedupe_anchors(raw)  # match the indexer's overload disambiguation
-    from core.chunking import split_markdown
+    from core.index.chunking import split_markdown
 
     return [(s.slug, s.body) for s in split_markdown(text, path.stem)]
 
@@ -199,9 +199,7 @@ def _dedupe_anchors(units: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return out
 
 
-def get_outline(
-    store: Store, project: Project, source_path: str | None = None, kind: str | None = None
-) -> dict:
+def get_outline(store: Store, project: Project, source_path: str | None = None, kind: str | None = None) -> dict:
     """Repo/file skeleton — anchors, titles, breadcrumbs, summaries; zero bodies."""
     rows = store.chunk_outline(project["key"], source_path, kind=kind)
     return {

@@ -19,14 +19,43 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bin"))
 
-from core.chunking import make_slug, split_markdown  # noqa: E402
-from core.code_symbols import extract_code_symbols, extract_symbols  # noqa: E402
-from core import treesitter_symbols  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
-from core.indexer import index_file, index_project  # noqa: E402
-from core.index_recall import get_chunk, get_outline, search_index  # noqa: E402
-from core.store import Store, _SCHEMA_VERSION  # noqa: E402
+from core.index import treesitter_symbols  # noqa: E402
+from core.index.chunking import make_slug, split_markdown  # noqa: E402
+from core.index.code_symbols import extract_code_symbols, extract_symbols  # noqa: E402
+from core.index.index_recall import get_chunk, get_outline, search_index  # noqa: E402
+from core.index.indexer import index_file, index_project, tree_signature  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
+from core.store import _SCHEMA_VERSION, Store  # noqa: E402
+
+
+class TreeSignatureTests(unittest.TestCase):
+    def test_signature_stable_and_reacts_to_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.md").write_text("alpha")
+            (root / "b.py").write_text("x = 1\n")
+            sig = tree_signature(root)
+            self.assertEqual(sig, tree_signature(root))  # stable when nothing changes
+            self.assertGreaterEqual(sig, 0)
+
+            (root / "c.md").write_text("gamma")  # add a file
+            added = tree_signature(root)
+            self.assertNotEqual(added, sig)
+
+            (root / "a.md").write_text("alpha plus more content")  # edit (size changes)
+            self.assertNotEqual(tree_signature(root), added)
+
+            (root / "c.md").unlink()  # remove a file
+            self.assertNotEqual(tree_signature(root), added)
+
+    def test_signature_ignores_non_indexed_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.md").write_text("alpha")
+            before = tree_signature(root)
+            (root / "notes.bin").write_text("binary junk")  # not an indexed extension
+            self.assertEqual(tree_signature(root), before)
 
 
 class ChunkingTests(unittest.TestCase):
@@ -87,9 +116,18 @@ class ChunkStoreTests(unittest.TestCase):
     def _chunk(self, anchor: str, title: str, body: str, summary: str = "") -> dict:
         return {
             "id": self.store.chunk_id(self.pk, "d.md", anchor),
-            "anchor": anchor, "title": title, "heading_path": title, "level": 1,
-            "summary": summary, "body": body, "byte_start": 0, "byte_end": len(body),
-            "content_hash": "h", "dim": 8, "scale": 1.0, "vec_int8": b"\x00" * 8,
+            "anchor": anchor,
+            "title": title,
+            "heading_path": title,
+            "level": 1,
+            "summary": summary,
+            "body": body,
+            "byte_start": 0,
+            "byte_end": len(body),
+            "content_hash": "h",
+            "dim": 8,
+            "scale": 1.0,
+            "vec_int8": b"\x00" * 8,
         }
 
     def test_migration_created_chunk_tables(self):
@@ -98,22 +136,24 @@ class ChunkStoreTests(unittest.TestCase):
         self.assertTrue({"chunks", "chunk_sources", "chunks_fts"} <= names)
 
     def test_replace_and_fetch(self):
-        self.store.replace_source_chunks(
-            self.pk, "d.md", [self._chunk("intro", "Intro", "hello postgres")], "fh", 1
-        )
+        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("intro", "Intro", "hello postgres")], "fh", 1)
         row = self.store.get_chunk(self.pk, "intro")
         self.assertEqual(row["title"], "Intro")
         self.assertEqual(self.store.chunk_count(self.pk), 1)
         self.assertEqual(self.store.source_state(self.pk, "d.md"), ("fh", 1))
 
     def test_replace_swaps_out_removed_sections(self):
-        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("a", "A", "x"), self._chunk("b", "B", "y")], "h1", 1)
+        self.store.replace_source_chunks(
+            self.pk, "d.md", [self._chunk("a", "A", "x"), self._chunk("b", "B", "y")], "h1", 1
+        )
         self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("a", "A", "x")], "h2", 2)
         self.assertEqual(self.store.chunk_count(self.pk), 1)
         self.assertIsNone(self.store.get_chunk(self.pk, "b"))
 
     def test_fts_search_matches_body_term(self):
-        self.store.replace_source_chunks(self.pk, "d.md", [self._chunk("db", "Database", "uses postgres on 5432")], "h", 1)
+        self.store.replace_source_chunks(
+            self.pk, "d.md", [self._chunk("db", "Database", "uses postgres on 5432")], "h", 1
+        )
         self.assertIn(self.store.chunk_id(self.pk, "d.md", "db"), self.store.chunk_fts_search(self.pk, "postgres"))
 
     def test_delete_source(self):
@@ -137,7 +177,10 @@ class IndexerAndRecallTests(unittest.TestCase):
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.repo = tempfile.TemporaryDirectory()
         self.project = {"key": "p", "path": self.repo.name, "label": "p"}
-        self._write("guide.md", "# Setup\nInstall it.\n\n## Database\nUse Postgres on port 5432.\n\n## Auth\nHeader based only.\n")
+        self._write(
+            "guide.md",
+            "# Setup\nInstall it.\n\n## Database\nUse Postgres on port 5432.\n\n## Auth\nHeader based only.\n",
+        )
 
     def tearDown(self):
         self.store.close()
@@ -202,7 +245,10 @@ class IndexerAndRecallTests(unittest.TestCase):
         self._index()
         self.assertEqual(get_chunk(self.store, self.project, "setup/database")["freshness"], "fresh")
         # edit only the Auth section: database stays fresh, auth becomes edited
-        self._write("guide.md", "# Setup\nInstall it.\n\n## Database\nUse Postgres on port 5432.\n\n## Auth\nHeader based only. Plus tokens.\n")
+        self._write(
+            "guide.md",
+            "# Setup\nInstall it.\n\n## Database\nUse Postgres on port 5432.\n\n## Auth\nHeader based only. Plus tokens.\n",
+        )
         self.assertEqual(get_chunk(self.store, self.project, "setup/database")["freshness"], "fresh")
         self.assertEqual(get_chunk(self.store, self.project, "setup/auth")["freshness"], "edited")
         # remove the heading entirely: anchor is now stale
@@ -226,7 +272,9 @@ class IndexerAndRecallTests(unittest.TestCase):
         self.assertEqual(index_file(self.store, self.embedder, self.cfg, self.project, str(py))["status"], "skipped")
         py.write_text("def handler(x):\n    return x\ndef helper():\n    return 1\n", encoding="utf-8")
         index_file(self.store, self.embedder, self.cfg, self.project, str(py))
-        self.assertEqual({s["anchor"] for s in self.store.chunk_outline(self.project["key"], "svc.py")}, {"handler", "helper"})
+        self.assertEqual(
+            {s["anchor"] for s in self.store.chunk_outline(self.project["key"], "svc.py")}, {"handler", "helper"}
+        )
         py.unlink()
         self.assertEqual(index_file(self.store, self.embedder, self.cfg, self.project, str(py))["status"], "removed")
         self.assertEqual(self.store.chunk_outline(self.project["key"], "svc.py"), [])
@@ -275,7 +323,9 @@ class CodeIndexingTests(unittest.TestCase):
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.repo = tempfile.TemporaryDirectory()
         self.project = {"key": "p", "path": self.repo.name, "label": "p"}
-        self._write("app.py", "def connect_db(url):\n    return url\n\nclass Server:\n    def start(self):\n        return 1\n")
+        self._write(
+            "app.py", "def connect_db(url):\n    return url\n\nclass Server:\n    def start(self):\n        return 1\n"
+        )
         self._write("readme.md", "# Overview\nProse about the server.\n")
 
     def tearDown(self):
@@ -311,7 +361,9 @@ class CodeIndexingTests(unittest.TestCase):
         self.assertIn("def start", c["body"])
         self.assertEqual(c["freshness"], "fresh")
         # edit the symbol -> edited
-        self._write("app.py", "def connect_db(url):\n    return url\n\nclass Server:\n    def start(self):\n        return 2\n")
+        self._write(
+            "app.py", "def connect_db(url):\n    return url\n\nclass Server:\n    def start(self):\n        return 2\n"
+        )
         self.assertEqual(get_chunk(self.store, self.project, "Server.start")["freshness"], "edited")
 
     def test_code_outline_scoped(self):
@@ -327,7 +379,9 @@ def _has_treesitter() -> bool:
 
 class DispatcherFallbackTests(unittest.TestCase):
     def test_python_dispatch_returns_symbols(self):
-        syms = {s.qualname for s in extract_code_symbols("def a():\n    pass\nclass B:\n    def c(self): pass\n", ".py")}
+        syms = {
+            s.qualname for s in extract_code_symbols("def a():\n    pass\nclass B:\n    def c(self): pass\n", ".py")
+        }
         self.assertEqual(syms, {"a", "B", "B.c"})
 
     def test_unsupported_extension_returns_empty(self):

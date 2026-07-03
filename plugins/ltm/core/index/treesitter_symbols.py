@@ -1,7 +1,7 @@
 """Multi-language symbol extraction via tree-sitter (Python, TypeScript, JS, JSX).
 
-Modelled on jcodemunch's approach: a declarative per-grammar ``Spec`` (node-type →
-symbol kind, which nodes are containers to descend, which are transparent wrappers)
+A declarative per-grammar ``Spec`` (node-type → symbol kind, which nodes are
+containers to descend, which are transparent wrappers)
 drives one generic walker, so adding a language is data, not code. tree-sitter is an
 optional dependency provisioned into the managed venv (see requirements.txt); when it
 is absent, ``extract_symbols`` returns None and the caller falls back to stdlib ``ast``
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.code_symbols import Symbol
+from core.index.code_symbols import Symbol
 
 _SIG_MAX = 240
 
@@ -180,9 +180,14 @@ def _emit_arrows(decl, src, spec, out, prefix, level) -> None:
         sig = f"const {name}{_text(params, src) if params else '()'}"
         out.append(
             Symbol(
-                name=name, qualname=qual, kind="function",
-                signature=" ".join(sig.split())[:_SIG_MAX], docstring="", level=level,
-                byte_start=decl.start_byte, byte_end=decl.end_byte,
+                name=name,
+                qualname=qual,
+                kind="function",
+                signature=" ".join(sig.split())[:_SIG_MAX],
+                docstring="",
+                level=level,
+                byte_start=decl.start_byte,
+                byte_end=decl.end_byte,
                 body=_text(decl, src).rstrip(),
             )
         )

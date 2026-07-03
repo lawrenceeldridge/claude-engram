@@ -29,13 +29,13 @@ the top-level architectural decision every pattern below serves.
 |---|---|
 | `core/store.py` | **Repository over Data Mapper** — all memory + index access; owns the SQLite schema/migrations |
 | `core/service.py` | **Command / Handler** — the capture pipeline, idempotent per fact |
-| `core/recall.py` | **Query Object** (`search`, `search_fused`) + **DTO / Null Object** (`render_block`) |
-| `core/distill.py` | **Functional Core** (pure `heuristic_facts`, parsers) + **Strategy behind Separated Interface** (`Distiller` ABC) |
-| `core/scoring.py`, `core/quantize.py`, `core/fusion.py`, `core/confidence.py`, `core/lexical.py` | **Functional Core** — pure ranking / quantisation / fusion |
-| `core/embedding.py` | **Gateway + Separated Interface** (`EmbeddingGateway` ABC, `get_embedder`) |
+| `core/recall/` (`__init__.py`) | **Query Object** (`search`, `search_fused`) + **DTO / Null Object** (`render_block`) |
+| `core/ports/distill.py` | **Functional Core** (pure `heuristic_facts`, parsers) + **Strategy behind Separated Interface** (`Distiller` ABC) |
+| `core/domain/` (`scoring.py`, `quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`) | **Functional Core** — pure ranking / quantisation / fusion |
+| `core/ports/embedding.py` | **Gateway + Separated Interface** (`EmbeddingGateway` ABC, `get_embedder`) |
 | `core/adapters/fastembed_gw.py` | **Secondary (driven) adapter** — the only place heavy deps import |
 | `core/daemon_client.py` | thin client → resident daemon, **fail-open in-process fallback** |
-| `core/indexer.py`, `chunking.py`, `code_symbols.py`, `treesitter_symbols.py` | code/docs index pipeline (same Repository, Functional-Core parsers) |
+| `core/index/` (`indexer.py`, `chunking.py`, `code_symbols.py`, `treesitter_symbols.py`, `drift.py`, `index_recall.py`) | code/docs index pipeline (same Repository, Functional-Core parsers) |
 | `bin/*` (`recall_prompt.py`, `capture.py`, `mcp_server.py`, `daemon.py`, `ltm`, …), `bin/_bootstrap.py` | **Composition Roots** — read config, pick adapters, call the core |
 
 ---
@@ -185,7 +185,13 @@ to **Distribution** (tool-call boundary), not Web Presentation.
 ## Distribution — DTO + Gateway + thin daemon client (Remote Facade)
 
 claude-ltm crosses three boundaries, and a **DTO** carries data across each; there is
-**no message bus and no event system** (capture is a detached worker, not an event).
+**no Event system / pub-sub**. A **durable Command queue is permitted** — opt-in, behind
+the `MemoryBus` Separated Interface, default `inproc` — for detached per-memory
+processing (capture, re-distil, consolidation). See § Offline Concurrency and the
+`stm-ltm-membus` design (`docs/generated/designs/`). The distinction is load-bearing:
+these are **Commands** (one handler, failures retry/dead-letter), *not* Events (pub-sub,
+many handlers, log-and-skip). Making the existing Command/Handler durable is not adding
+an event bus.
 
 | # | Boundary | Mechanism | Wire shape (DTO) |
 |---|----------|-----------|------------------|
@@ -203,8 +209,10 @@ claude-ltm crosses three boundaries, and a **DTO** carries data across each; the
 - **MCP tool responses are DTOs**, not store internals — return outlines + anchors +
   freshness verdicts, let the model fetch one body with `get_symbol`.
 
-**Avoided.** A message bus / event dispatcher (capture is fire-and-forget detached work,
-not pub/sub); returning raw `sqlite3.Row` objects across any boundary.
+**Avoided.** An **Event** bus / pub-sub dispatcher (no publishers/subscribers, no
+broadcast-to-many, no domain events); returning raw `sqlite3.Row` objects across any
+boundary. A durable *Command* queue behind `MemoryBus` is **not** in this list — it is a
+job-claim substrate (see § Offline Concurrency), not pub-sub.
 
 **Citations.** `DESIGN.md` § Token efficiency, § Latency efficiency (detached capture,
 warm daemon, fail-open); `core/recall.py::render_block`, `core/daemon_client.py`,
@@ -230,6 +238,13 @@ capture workers piling up, and (b) stale facts accumulating.
 - **TTL sweep (hard expiry).** `Store.sweep(...)` retires facts unseen past `ttl_days`
   (unless reinforced past `ttl_keep_frequency`). Reversible (a `status` flag, not a
   delete). Runs off the interactive path or via `ltm sweep`.
+- **Durable Command queue (opt-in, `MemoryBus`).** For per-memory processing that must
+  survive a dropped connection or an `LTM_DISTILLER` outage, single-flight is *extended*
+  (not replaced) by a durable job-claim queue behind the `MemoryBus` Separated Interface:
+  default `inproc` (a SQLite `work_queue` table — lease + retry + dead-letter, all
+  stdlib), opt-in `nats` (JetStream) adapter, **fail-open** to `inproc`. This is the
+  at-least-once, retry-able form of the existing Job-claim; idempotency is still the
+  content-hash `msg_id`. It is a Command queue, **not** an Event bus (see § Distribution).
 
 **Avoided.** Optimistic/Pessimistic Offline Lock, `SELECT … FOR UPDATE`, version columns
 — there is no contended mutable aggregate to guard.

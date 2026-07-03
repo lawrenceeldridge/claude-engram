@@ -1,7 +1,7 @@
 """Project identity via marker-walk.
 
-claude-mem keys memory on ``basename(cwd)``, which fragments monorepos and
-subdirectory launches and collides across same-named folders. Instead we walk up
+Keying memory on ``basename(cwd)`` fragments monorepos and subdirectory launches
+and collides across same-named folders. Instead we walk up
 from the working directory to the nearest project marker (``.git`` etc.) and use
 that directory's absolute path as a stable key (hashed for storage), with its
 basename as a human label. This is stable regardless of which subdirectory the

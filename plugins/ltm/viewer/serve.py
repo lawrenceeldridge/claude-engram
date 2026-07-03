@@ -24,8 +24,8 @@ ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().par
 sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
-from core.embedding import get_embedder  # noqa: E402
-from core.index_recall import get_chunk, get_outline, search_index  # noqa: E402
+from core.index.index_recall import get_chunk, get_outline, search_index  # noqa: E402
+from core.ports.embedding import get_embedder  # noqa: E402
 from core.recall import search_fused  # noqa: E402
 from core.store import Store  # noqa: E402
 
@@ -104,13 +104,25 @@ PAGE = """<!doctype html>
   .cbody.open { display:block; }
   .cbody pre { margin:0; white-space:pre-wrap; font:12px/1.5 ui-monospace,Menlo,monospace; color:#c9d1d9; }
   .card.ix { cursor:pointer; }
+  .sec { margin:24px 0 10px; font:600 12px ui-monospace,Menlo,monospace; text-transform:uppercase;
+         letter-spacing:.06em; color:var(--muted); }
+  .sec:first-child { margin-top:4px; }
+  .qstatus { font:600 10px/1 ui-monospace,Menlo,monospace; text-transform:uppercase; padding:3px 6px;
+             border-radius:5px; margin-inline-start:6px; }
+  .qs-pending{color:#e3b341;border:1px solid #9e6a03} .qs-in_progress{color:#58a6ff;border:1px solid #1f6feb}
+  .qs-dead{color:#f85149;border:1px solid #da3633}
+  .qmeta { margin-inline-start:auto; font:11px ui-monospace,Menlo,monospace; color:var(--muted); }
+  .spill { font:600 10px/1 ui-monospace,Menlo,monospace; text-transform:uppercase; padding:3px 6px;
+           border-radius:5px; margin-inline-start:6px; color:#f85149; border:1px solid #da3633; }
 </style></head>
 <body>
 <header>
   <h1>claude-ltm</h1>
   <div id="views">
-    <button class="vtoggle active" data-view="memory">memory</button>
-    <button class="vtoggle" data-view="index">index</button>
+    <button class="vtoggle active" data-view="stm" title="Short-term memory (fresh, awaiting rehearsal)">stm</button>
+    <button class="vtoggle" data-view="ltm" title="Long-term memory (consolidated)">ltm</button>
+    <button class="vtoggle" data-view="rnr" title="Refine &amp; rescue: work queue + archived/forgotten facts">rnr</button>
+    <button class="vtoggle" data-view="index" title="Code &amp; docs index">index</button>
   </div>
   <select id="project"></select>
   <select id="kind" style="display:none">
@@ -131,7 +143,7 @@ const fmtWhen = ts => { const d = new Date(ts*1000);
   return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 const PAGE = 50;
 let offset = 0, loading = false, exhausted = false, mode = 'list';
-let view = 'memory';   // 'memory' = facts store, 'index' = code/docs chunk index
+let view = 'stm';   // stm|ltm = active facts by tier · rnr = queue + archived · index = code/docs
 let seen = new Set();  // card keys currently rendered — used to flash only new arrivals
 
 async function loadProjects() {
@@ -163,6 +175,7 @@ function summaryHTML(c) {
 }
 function cardHTML(c, flash) {
   const when = fmtWhen(c.created);
+  const spill = (c.status && c.status !== 'active') ? `<span class="spill">${esc(c.status)}</span>` : '';
   const score = c.score==null ? '' : `<span class="score">${c.score}</span> · `;
   const title = c.title ? `<div class="title">${esc(c.title)}</div>` : '';
   // Always show a lead line: the subtitle, or (for untitled/heuristic facts) the
@@ -173,20 +186,21 @@ function cardHTML(c, flash) {
   const cls = `card${flash?' flash':''}`;
   if (c.kind === 'prompt') {
     const text = (c.facts && c.facts[0]) ? c.facts[0] : '';
-    return `<div class="${cls}" data-type="prompt"><div class="chead">${badge(c)}</div><div class="cinner"><div class="prompt">${esc(text)}</div>${meta}</div></div>`;
+    return `<div class="${cls}" data-type="prompt"><div class="chead">${badge(c)}${spill}</div><div class="cinner"><div class="prompt">${esc(text)}</div>${meta}</div></div>`;
   }
   if (c.kind === 'session_summary') {
-    return `<div class="${cls}" data-type="session_summary"><div class="chead">${badge(c)}</div><div class="cinner">${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
+    return `<div class="${cls}" data-type="session_summary"><div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
   }
   const facts = `<ul class="facts">${(c.facts||[]).map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
   const narr = c.narrative ? `<div class="narr">${esc(c.narrative)}</div>` : '';
   const toggles = `<div class="toggles"><button class="toggle" data-v="facts">facts</button>`
     + (c.narrative ? `<button class="toggle" data-v="narr">narrative</button>` : '') + `</div>`;
-  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="chead">${badge(c)}${toggles}</div><div class="cinner">${title}${subtitle}${facts}${narr}${filesHTML(c)}${meta}</div></div>`;
+  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="chead">${badge(c)}${spill}${toggles}</div><div class="cinner">${title}${subtitle}${facts}${narr}${filesHTML(c)}${meta}</div></div>`;
 }
 async function fetchFacts(extra='') {
   const pk = $('#project').value, q = $('#q').value.trim();
-  const url = `/api/facts?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}${extra}`;
+  const tier = (view === 'stm' || view === 'ltm') ? `&tier=${view}` : '';
+  const url = `/api/facts?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}${tier}${extra}`;
   return await (await fetch(url)).json();
 }
 // One indexed chunk: kind badge + freshness pill, heading/qualname title, summary,
@@ -212,10 +226,36 @@ async function reloadIndex() {
   $('#list').innerHTML = rows.length ? rows.map(indexCardHTML).join('')
     : `<div class="empty">No ${what}. Run the index_docs tool for this project.</div>`;
 }
+// One durable work-queue item (rescue re-distill backlog / dead-letter).
+function qItemHTML(q) {
+  const when = fmtWhen(q.enqueued||0);
+  const body = q.payload || q.ref || '';
+  return `<div class="card"><div class="chead"><span class="badge" data-type="discovery">${esc(q.stage)}</span>`
+    + `<span class="qstatus qs-${esc(q.status)}">${esc(q.status)}</span>`
+    + `<span class="qmeta">delivery ${q.attempts} · ${when}</span></div>`
+    + `<div class="cinner"><div class="prompt">${esc(body)}</div></div></div>`;
+}
+// Refine & Rescue: the durable queue (rescue backlog + dead-letter) and the facts
+// consolidation has archived (superseded / displaced / pruned / expired).
+async function reloadRnr() {
+  mode = 'search'; exhausted = true;   // no infinite scroll
+  const pk = $('#project').value;
+  const r = await (await fetch(`/api/rnr?project=${encodeURIComponent(pk)}`)).json();
+  seen = new Set();
+  const queue = r.queue || [], archived = r.archived || [];
+  const qHTML = queue.length ? queue.map(qItemHTML).join('')
+    : `<div class="empty">Queue empty — nothing awaiting re-distill or dead-lettered.</div>`;
+  const aHTML = archived.length ? archived.map(c => cardHTML(c, false)).join('')
+    : `<div class="empty">Nothing archived yet — refine/supersession/expiry haven't retired any facts.</div>`;
+  $('#list').innerHTML =
+    `<h3 class="sec">Rescue queue · ${queue.length}</h3>${qHTML}`
+    + `<h3 class="sec">Archived / forgotten · ${archived.length}</h3>${aHTML}`;
+}
 // Full re-render from the top: a query shows all ranked search hits; a blank query
 // shows the first (newest) page of the browse list, which grows via loadMore().
 async function reload(flashNew) {
   if (view === 'index') return reloadIndex();
+  if (view === 'rnr') return reloadRnr();
   const q = $('#q').value.trim();
   mode = q ? 'search' : 'list';
   offset = 0; exhausted = false;
@@ -261,6 +301,7 @@ $('#views').addEventListener('click', async e => {
   view = b.dataset.view;
   document.querySelectorAll('.vtoggle').forEach(x => x.classList.toggle('active', x === b));
   $('#kind').style.display = view === 'index' ? '' : 'none';
+  $('#q').style.display = view === 'rnr' ? 'none' : '';  // RnR is browse-only
   $('#q').value = '';
   $('#q').placeholder = view === 'index'
     ? 'search indexed code / docs… (blank = list)' : 'semantic search within project… (blank = list all)';
@@ -282,7 +323,7 @@ function connectStream() {
   es.onopen = () => { badge.classList.remove('off'); label.textContent = 'live'; };
   es.addEventListener('change', async () => {
     await loadProjects();      // refresh counts + keep current project selected
-    if (view === 'memory') await reload(true);  // avoid churn re-rendering the index mid-build
+    if (view !== 'index') await reload(true);  // stm/ltm/rnr refresh live; avoid churn during index build
   });
   es.onerror = () => { badge.classList.add('off'); label.textContent = 'reconnecting…'; };
 }
@@ -325,6 +366,8 @@ def _card_from_rows(rows, score=None) -> dict:
         "kind": head["kind"],
         "created": head["created_at"],
         "score": score,
+        "tier": (head["tier"] if "tier" in head.keys() else None),
+        "status": (head["status"] if "status" in head.keys() else None),
         "facts": [row["text"] for row in rows],
     }
 
@@ -392,6 +435,7 @@ class Handler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             project_key = params.get("project", [""])[0]
             query = params.get("q", [""])[0].strip()
+            tier = params.get("tier", [""])[0] or None  # 'stm' / 'ltm' tabs; None = both
             store = Store(cfg.db_path)
             if query and project_key:
                 project = {"key": project_key, "path": "", "label": ""}
@@ -401,13 +445,34 @@ class Handler(BaseHTTPRequestHandler):
                 k = store.active_count(project_key) or 1
                 hits = search_fused(store, get_embedder(cfg), project, query, cfg, k=k)
                 out = [_card_from_rows([row], round(sim, 3)) for _score, sim, row in hits]
+                if tier:
+                    out = [c for c in out if c.get("tier") == tier]  # keep this tab's tier
             else:
                 limit = _int_param(params, "limit")
                 offset = _int_param(params, "offset") or 0
-                groups = store.list_observations(project_key, limit=limit, offset=offset)
+                groups = store.list_observations(project_key, limit=limit, offset=offset, tier=tier, active=True)
                 out = [_card_from_rows(rows) for rows in groups]
             store.close()
             self._send(200, json.dumps(out))
+        elif parsed.path == "/api/rnr":
+            # Refine & Rescue view: the durable work queue + archived ("forgotten") facts.
+            params = parse_qs(parsed.query)
+            project_key = params.get("project", [""])[0]
+            store = Store(cfg.db_path)
+            archived = [_card_from_rows(rows) for rows in store.list_observations(project_key, active=False)]
+            queue = [
+                {
+                    "stage": r["stage"],
+                    "status": r["status"],
+                    "attempts": r["attempts"],
+                    "ref": r["ref"],
+                    "payload": (r["payload"] or "")[:240],
+                    "enqueued": r["enqueued_at"],
+                }
+                for r in store.work_items(project_key)
+            ]
+            store.close()
+            self._send(200, json.dumps({"archived": archived, "queue": queue}))
         elif parsed.path == "/api/index_projects":
             store = Store(cfg.db_path)
             labels = {r["project_key"]: (r["project_label"], r["project_path"]) for r in store.projects()}

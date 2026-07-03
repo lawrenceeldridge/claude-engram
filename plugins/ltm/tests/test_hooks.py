@@ -23,14 +23,16 @@ sys.path.insert(0, str(ROOT))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.distill import DistilledFact  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
+from core.ports.distill import DistilledFact  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
 class _StubSummarizer:
     def summarize(self, text):
-        return DistilledFact(text="session did things", title="Session", narrative="Investigated: x", type="session_summary")
+        return DistilledFact(
+            text="session did things", title="Session", narrative="Investigated: x", type="session_summary"
+        )
 
     def distill(self, text, existing):
         return []
@@ -52,7 +54,10 @@ class SummaryThrottleTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _write(self, nbytes: int) -> None:
-        msg = {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "x" * nbytes}]}}
+        msg = {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "x" * nbytes}]},
+        }
         self.tx.write_text(json.dumps(msg) + "\n", encoding="utf-8")
 
     def _call(self, **kw) -> int:
@@ -98,8 +103,19 @@ class OrientationTests(unittest.TestCase):
 
     def test_renders_latest_summary(self):
         service.add_records(
-            self.store, self.embedder, self.cfg, self.project, "s1",
-            [DistilledFact(text="did things", title="Refactor X", narrative="Investigated: a\nCompleted: b", type="session_summary")],
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
+            [
+                DistilledFact(
+                    text="did things",
+                    title="Refactor X",
+                    narrative="Investigated: a\nCompleted: b",
+                    type="session_summary",
+                )
+            ],
             kind="session_summary",
         )
         block = service.orientation_block(self.store, self.project)
@@ -125,7 +141,9 @@ class PreToolUseGuardTests(unittest.TestCase):
     def _mark_consulted(self, tool: str) -> None:
         subprocess.run(
             [sys.executable, str(ROOT / "bin" / "mark_consulted.py")],
-            input=json.dumps({"tool_name": tool, "session_id": self.sess}), text=True, capture_output=True,
+            input=json.dumps({"tool_name": tool, "session_id": self.sess}),
+            text=True,
+            capture_output=True,
         )
 
     def _run(self, payload: dict, enforce: str = "advisory") -> str:
@@ -133,7 +151,10 @@ class PreToolUseGuardTests(unittest.TestCase):
         payload.setdefault("session_id", self.sess)
         r = subprocess.run(
             [sys.executable, str(ROOT / "bin" / "prefer_memory.py")],
-            input=json.dumps(payload), text=True, capture_output=True, env=env,
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
         )
         return r.stdout.strip()
 
@@ -196,8 +217,8 @@ class PreToolUseGuardTests(unittest.TestCase):
         self.assertFalse(self._consulted_marker().exists())
 
     def test_strict_denies_read_of_indexed_code(self):
-        from core.embedding import HashEmbedding
-        from core.indexer import index_file
+        from core.index.indexer import index_file
+        from core.ports.embedding import HashEmbedding
         from core.project import resolve_project
 
         data, repo = tempfile.mkdtemp(), tempfile.mkdtemp()

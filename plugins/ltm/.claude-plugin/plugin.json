@@ -1,7 +1,7 @@
 {
   "name": "ltm",
   "displayName": "Long-Term Memory",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -139,6 +139,99 @@
       "default": 7801,
       "min": 1024,
       "max": 65535
+    },
+    "promote_after_freq": {
+      "type": "number",
+      "title": "STM→LTM promote-after frequency",
+      "description": "Reinforcement count at which a fresh short-term fact is promoted to the long-term store (rehearsal).",
+      "default": 2,
+      "min": 1
+    },
+    "stm_capacity": {
+      "type": "number",
+      "title": "Short-term capacity",
+      "description": "Max active short-term facts before the weakest are displaced (archived). 0 = unbounded (displacement off).",
+      "default": 0,
+      "min": 0
+    },
+    "stm_recall_weight": {
+      "type": "number",
+      "title": "STM recall weight",
+      "description": "Recall weight applied to short-term facts. 1.0 = tier-agnostic (default); below 1.0 down-ranks STM at recall.",
+      "default": 1.0,
+      "min": 0,
+      "max": 1
+    },
+    "retention_keep_max": {
+      "type": "number",
+      "title": "Retention keep-max (prune)",
+      "description": "Consolidation keeps only the top-N active facts by retention score and prunes the rest. 0 = disabled. Retrieval-affecting — enable deliberately.",
+      "default": 0,
+      "min": 0
+    },
+    "prune_threshold": {
+      "type": "number",
+      "title": "Retention prune threshold",
+      "description": "Consolidation prunes facts whose retention score is below this. 0 = disabled. Retrieval-affecting — enable deliberately.",
+      "default": 0,
+      "min": 0
+    },
+    "purge_horizon_days": {
+      "type": "number",
+      "title": "Purge horizon (days)",
+      "description": "Hard-delete (and VACUUM) facts that have been archived longer than this many days. 0 = disabled (archives are kept, reversible).",
+      "default": 0,
+      "min": 0
+    },
+    "bus": {
+      "type": "string",
+      "title": "Work-queue backend",
+      "description": "Durable queue for detached capture/recovery. inproc = zero-dependency SQLite queue (default); nats = NATS JetStream (opt-in). Fails open to inproc if NATS is unavailable.",
+      "default": "inproc"
+    },
+    "bus_max_deliver": {
+      "type": "number",
+      "title": "Queue max deliveries",
+      "description": "Delivery attempts before a work item is dead-lettered.",
+      "default": 5,
+      "min": 1
+    },
+    "bus_backoff": {
+      "type": "string",
+      "title": "Queue retry backoff",
+      "description": "Retry backoff schedule in seconds, comma-separated (e.g. 5,30,120,600).",
+      "default": "5,30,120,600"
+    },
+    "lease_ttl": {
+      "type": "number",
+      "title": "Queue lease TTL (seconds)",
+      "description": "Seconds a claimed work item is leased before it can be reclaimed (crash recovery).",
+      "default": 300,
+      "min": 1
+    },
+    "nats_url": {
+      "type": "string",
+      "title": "NATS URL",
+      "description": "NATS server URL when bus=nats. Use a dedicated port so ltm doesn't share another project's server.",
+      "default": "nats://localhost:4222"
+    },
+    "nats_stream": {
+      "type": "string",
+      "title": "NATS stream name",
+      "description": "JetStream stream name for the work queue.",
+      "default": "LTM_WORK"
+    },
+    "nats_provision": {
+      "type": "string",
+      "title": "NATS auto-provision",
+      "description": "How to start NATS when bus=nats and none is reachable: binary = download + run nats-server (no Docker needed); docker = run the official image; off = bring your own.",
+      "default": "binary"
+    },
+    "nats_version": {
+      "type": "string",
+      "title": "NATS server version",
+      "description": "Pinned nats-server version for the binary provisioner (checksum-verified download).",
+      "default": "2.10.22"
     }
   }
 }

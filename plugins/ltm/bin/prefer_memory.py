@@ -59,11 +59,17 @@ def _emit_context(msg: str) -> None:
 
 
 def _emit_deny(msg: str) -> None:
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": msg
-        }
-    }))
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": msg,
+                }
+            }
+        )
+    )
 
 
 def _is_indexed(file_path: str) -> bool:

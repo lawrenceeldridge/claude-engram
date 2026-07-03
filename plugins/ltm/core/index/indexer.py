@@ -19,22 +19,37 @@ import os
 import time
 from pathlib import Path
 
-from core.chunking import split_markdown
-from core.code_symbols import extract_code_symbols
 from core.config import Config
-from core.distill import get_distiller
-from core.embedding import EmbeddingGateway
+from core.domain.quantize import quantize_int8
+from core.index.chunking import split_markdown
+from core.index.code_symbols import extract_code_symbols
+from core.ports.distill import get_distiller
+from core.ports.embedding import EmbeddingGateway
 from core.project import Project
-from core.quantize import quantize_int8
 from core.store import Store
 
 _DOC_EXTENSIONS = {".md", ".markdown", ".mdx", ".mdc"}
 _CODE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 _INDEX_EXTENSIONS = _DOC_EXTENSIONS | _CODE_EXTENSIONS
 _SKIP_DIRS = {
-    ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next",
-    "target", ".mypy_cache", ".pytest_cache", ".ruff_cache", "site-packages", ".tox",
-    ".idea", ".vscode", "coverage", ".turbo",
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "dist",
+    "build",
+    ".next",
+    "target",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "site-packages",
+    ".tox",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".turbo",
 }
 _MAX_FILE_BYTES = 2_000_000  # skip pathological/generated docs; nothing useful to recall
 _EMBED_BODY_CHARS = 1000
@@ -50,6 +65,26 @@ def _discover(root: Path) -> list[Path]:
             if Path(name).suffix.lower() in _INDEX_EXTENSIONS:
                 found.append(Path(dirpath) / name)
     return found
+
+
+def tree_signature(root: str | Path) -> int:
+    """A cheap fingerprint of the indexable file tree (paths + mtime + size), no reads.
+
+    Merkle-rollup shortcut: if this hasn't changed since the last index, nothing was
+    added/removed/edited out-of-band, so the auto-index can skip the whole pass —
+    including loading the embedding model. Content hashing (the exact, per-file
+    freshness check) still happens inside index_project when the tree *has* changed.
+    Returns a non-negative 63-bit int (fits the capture_cursors INTEGER column).
+    """
+    parts = []
+    for path in sorted(_discover(Path(root))):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path}|{st.st_mtime_ns}|{st.st_size}")
+    digest = hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    return int(digest[:16], 16) & 0x7FFFFFFFFFFFFFFF
 
 
 def _file_hash(data: bytes) -> str:
@@ -70,8 +105,14 @@ def _embed_text(title: str, heading_path: str, summary: str, body: str) -> str:
 
 
 def _index_path(
-    store: Store, embedder: EmbeddingGateway, distiller, project: Project,
-    project_root: Path, root: Path, path: Path, now: float,
+    store: Store,
+    embedder: EmbeddingGateway,
+    distiller,
+    project: Project,
+    project_root: Path,
+    root: Path,
+    path: Path,
+    now: float,
 ) -> tuple[str, int, str | None]:
     """Index one file with the mtime→hash short-circuit. Returns (status, n_chunks, source_path)."""
     try:
@@ -100,9 +141,7 @@ def _index_path(
     return ("indexed", len(chunks), source_path)
 
 
-def index_file(
-    store: Store, embedder: EmbeddingGateway, cfg: Config, project: Project, file_path: str | Path
-) -> dict:
+def index_file(store: Store, embedder: EmbeddingGateway, cfg: Config, project: Project, file_path: str | Path) -> dict:
     """Re-index a single file (for the PostToolUse per-edit refresh).
 
     A no-LLM, hash-short-circuited single-file update — cheap enough to run on every
@@ -160,9 +199,7 @@ def index_project(
         return {**stats, "skipped_too_large": len(discovered), "max_files": max_files}
 
     for path in discovered:
-        status, n_chunks, source_path = _index_path(
-            store, embedder, distiller, project, project_root, root, path, now
-        )
+        status, n_chunks, source_path = _index_path(store, embedder, distiller, project, project_root, root, path, now)
         if source_path is not None:
             seen.add(source_path)
         if status == "indexed":
@@ -186,9 +223,14 @@ def _doc_units(source_path: str, text: str) -> list[dict]:
             continue
         units.append(
             {
-                "kind": "doc_section", "anchor": s.slug, "title": s.title,
-                "heading_path": s.heading_path, "level": s.level, "body": s.body,
-                "byte_start": s.byte_start, "byte_end": s.byte_end,
+                "kind": "doc_section",
+                "anchor": s.slug,
+                "title": s.title,
+                "heading_path": s.heading_path,
+                "level": s.level,
+                "body": s.body,
+                "byte_start": s.byte_start,
+                "byte_end": s.byte_end,
                 "summary": _section_summary(s.title, s.body),
             }
         )
@@ -204,9 +246,14 @@ def _code_units(text: str, ext: str) -> list[dict]:
         summary = f"{sym.signature} — {sym.docstring}" if sym.docstring else sym.signature
         units.append(
             {
-                "kind": "code_symbol", "anchor": sym.qualname, "title": sym.name,
-                "heading_path": sym.qualname, "level": sym.level, "body": sym.body,
-                "byte_start": sym.byte_start, "byte_end": sym.byte_end,
+                "kind": "code_symbol",
+                "anchor": sym.qualname,
+                "title": sym.name,
+                "heading_path": sym.qualname,
+                "level": sym.level,
+                "body": sym.body,
+                "byte_start": sym.byte_start,
+                "byte_end": sym.byte_end,
                 "summary": summary[:_SUMMARY_CHARS],
             }
         )

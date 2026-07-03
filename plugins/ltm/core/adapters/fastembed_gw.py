@@ -12,7 +12,7 @@ seconds to each turn. With the daemon holding the model warm, queries stay fast.
 
 from __future__ import annotations
 
-from core.embedding import EmbeddingGateway
+from core.ports.embedding import EmbeddingGateway
 
 # bge-base measured ~2.2x the Recall@1 of bge-small on the paraphrase benchmark
 # for ~5ms/query (trivial with the warm daemon); int8 quantization loss is

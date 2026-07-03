@@ -16,11 +16,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.store import Store  # noqa: E402
 from core.transcript import extract_incremental  # noqa: E402
-from core import service  # noqa: E402
 
 
 def _turn(role: str, text: str) -> str:

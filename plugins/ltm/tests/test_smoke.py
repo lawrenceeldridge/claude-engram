@@ -17,22 +17,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.distill import (  # noqa: E402
+from core.domain.quantize import cosine, dequantize_int8, hamming, pack_bits, quantize_int8  # noqa: E402
+from core.domain.scoring import frequency_boost, priority, recency_decay  # noqa: E402
+from core.ports.distill import (  # noqa: E402
     ClaudeCliDistiller,
     DistilledFact,
-    HTTPDistiller,
     HeuristicDistiller,
+    HTTPDistiller,
     get_distiller,
     parse_records,
 )
-from core.embedding import HashEmbedding  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.project import resolve_project  # noqa: E402
-from core.quantize import cosine, dequantize_int8, hamming, pack_bits, quantize_int8  # noqa: E402
 from core.recall import search  # noqa: E402
-from core.scoring import frequency_boost, priority, recency_decay  # noqa: E402
 from core.store import Store  # noqa: E402
-from core import service  # noqa: E402
 
 
 class QuantizeTests(unittest.TestCase):
@@ -114,6 +114,13 @@ class ProvisionTests(unittest.TestCase):
         self.assertTrue(reqs)
         self.assertTrue(any("fastembed" in r for r in reqs))
 
+    def test_ensure_nats_py_noop_without_venv(self):
+        # No managed venv → nats-py client install is a no-op (bus=nats degrades to inproc).
+        from core.provision import ensure_nats_py_in_venv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(ensure_nats_py_in_venv(tmp, log=lambda *a: None))
+
     def test_reexec_is_noop_without_pin(self):
         sys.path.insert(0, str(ROOT / "bin"))
         import _bootstrap
@@ -182,7 +189,9 @@ class LoopTests(unittest.TestCase):
         active = [r["text"] for r in self.store.active_rows_for_project(self.project["key"])]
         self.assertIn("The project language is Rust.", active)
         self.assertNotIn("The project language is Python.", active)
-        block = service.recall_prompt_block(self.store, self.embedder, cfg, self.project, "what language is the project")
+        block = service.recall_prompt_block(
+            self.store, self.embedder, cfg, self.project, "what language is the project"
+        )
         self.assertIn("Rust", block)
         self.assertNotIn("Python", block)
 
@@ -193,9 +202,16 @@ class LoopTests(unittest.TestCase):
             vec = self.embedder.embed_one(text)
             blob, scale = quantize_int8(vec)
             self.store.add(
-                project=self.project, session_id="s", kind="fact", text=text,
-                vec_int8=blob, scale=scale, dim=len(vec), vec_bits=pack_bits(vec),
-                importance=0.5, created_at=stamp,
+                project=self.project,
+                session_id="s",
+                kind="fact",
+                text=text,
+                vec_int8=blob,
+                scale=scale,
+                dim=len(vec),
+                vec_bits=pack_bits(vec),
+                importance=0.5,
+                created_at=stamp,
             )
         hits = search(self.store, self.embedder, self.project, "alpha config value", self.cfg, k=2, min_sim=-1.0)
         self.assertEqual(hits[0][1]["text"], "alpha config uses value two")
@@ -223,9 +239,16 @@ class LoopTests(unittest.TestCase):
             vec = self.embedder.embed_one(text)
             blob, scale = quantize_int8(vec)
             self.store.add(
-                project=self.project, session_id="s", kind="fact", text=text,
-                vec_int8=blob, scale=scale, dim=len(vec), vec_bits=pack_bits(vec),
-                importance=0.5, created_at=when,
+                project=self.project,
+                session_id="s",
+                kind="fact",
+                text=text,
+                vec_int8=blob,
+                scale=scale,
+                dim=len(vec),
+                vec_bits=pack_bits(vec),
+                importance=0.5,
+                created_at=when,
             )
             fid = self.store.fact_id(self.project["key"], text)
             self.store.db.execute("UPDATE facts SET frequency = ?, last_seen = ? WHERE id = ?", (freq, when, fid))
@@ -245,8 +268,15 @@ class LoopTests(unittest.TestCase):
         stray = [0.1] * 8
         blob, scale = quantize_int8(stray)
         self.store.add(
-            project=self.project, session_id="s2", kind="fact", text="stray wrong-dim row",
-            vec_int8=blob, scale=scale, dim=8, vec_bits=pack_bits(stray), importance=0.5,
+            project=self.project,
+            session_id="s2",
+            kind="fact",
+            text="stray wrong-dim row",
+            vec_int8=blob,
+            scale=scale,
+            dim=8,
+            vec_bits=pack_bits(stray),
+            importance=0.5,
         )
         hits = search(self.store, self.embedder, self.project, "deployment pipeline", self.cfg, k=10, min_sim=-1.0)
         texts = [r["text"] for _s, r in hits]

@@ -34,7 +34,7 @@ def main() -> int:
     try:
         from core.config import get_config
         from core.daemon_client import request
-        from core.embedding import get_embedder
+        from core.ports.embedding import get_embedder
         from core.project import resolve_project
         from core.service import recall_prompt_block
         from core.store import Store

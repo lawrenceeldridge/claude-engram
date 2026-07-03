@@ -32,12 +32,12 @@ from pathlib import Path
 ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(ROOT))
 
+from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.embedding import EmbeddingGateway, HashEmbedding  # noqa: E402
-from core.quantize import cosine  # noqa: E402
+from core.domain.quantize import cosine  # noqa: E402
+from core.ports.embedding import EmbeddingGateway, HashEmbedding  # noqa: E402
 from core.recall import search  # noqa: E402
 from core.store import Store  # noqa: E402
-from core import service  # noqa: E402
 
 DATASET = Path(__file__).resolve().parent / "dataset.json"
 

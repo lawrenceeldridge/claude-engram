@@ -29,7 +29,7 @@ These pairs cannot both be in force for the **same data / seam / responsibility*
 | I/O inside a pure function | Functional Core / Imperative Shell | same function | A core function that reads the DB / loads a model can't be tested without mocks |
 | Synchronous model load on the recall hook | daemon-client Remote Facade | recall hot path | Reloads the model every turn; blows the latency budget |
 | Placeholder/error on empty recall | Special Case / Null Object | `render_block` | Spends tokens on irrelevant turns |
-| Message bus / events | detached fire-and-forget capture | capture | claude-ltm has no bus; capture is a spawned worker, not pub/sub |
+| **Event** bus / pub-sub | detached capture / durable Command queue | capture | claude-ltm has no *Event* bus (no publishers/subscribers, no broadcast). A durable **Command** queue (`MemoryBus`, opt-in) is permitted — one handler, retry/dead-letter, not pub-sub. See `ltm-defaults.md` §§ Distribution / Offline Concurrency |
 | Server/Database Session State | stateless short-lived hooks | cross-turn state | There is no session; the durable store is Domain data, not a session store |
 
 (Patterns can of course coexist in *different* seams — e.g. the viewer's HTML dispatch and

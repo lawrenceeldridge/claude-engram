@@ -15,13 +15,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bin"))
 
+from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.drift import check, pin  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
-from core.fusion import Channel, fuse  # noqa: E402
+from core.domain.fusion import Channel, fuse  # noqa: E402
+from core.index.drift import check, pin  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.recall import search_fused  # noqa: E402
 from core.store import Store  # noqa: E402
-from core import service  # noqa: E402
 
 
 class FusionTests(unittest.TestCase):
@@ -60,7 +60,11 @@ class SearchFusedTests(unittest.TestCase):
 
     def test_lexical_overlap_rescues_below_similarity_gate(self):
         service.add_facts(
-            self.store, self.embedder, self.cfg, self.project, "s1",
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
             ["the orbital telescope calibration sequence completed"],
         )
         # A high min_sim would gate a weak embedding out; lexical overlap keeps it.
@@ -114,7 +118,9 @@ class LedgerTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_recall_is_logged_to_ledger(self):
-        service.add_facts(self.store, self.embedder, self.cfg, self.project, "s1", ["deployment runs on github actions"])
+        service.add_facts(
+            self.store, self.embedder, self.cfg, self.project, "s1", ["deployment runs on github actions"]
+        )
         service.recall_structured(self.store, self.embedder, self.cfg, self.project, "deployment")
         service.recall_structured(self.store, self.embedder, self.cfg, self.project, "nothing relevant here xyzzy")
         stats = self.store.recall_stats(self.project["key"])

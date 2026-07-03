@@ -14,8 +14,8 @@ stripped — it is noise, not memory. Private reasoning (``thinking``) and verbo
 from __future__ import annotations
 
 import json
-import re
 import os
+import re
 
 _SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 

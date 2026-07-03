@@ -80,7 +80,7 @@ def serve() -> None:
 
 
 def _serve(cfg, lock: Path) -> None:
-    from core.embedding import get_embedder
+    from core.ports.embedding import get_embedder
     from core.project import resolve_project
     from core.service import recall_core_block, recall_prompt_block, recall_structured
     from core.store import Store

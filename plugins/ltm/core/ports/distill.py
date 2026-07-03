@@ -32,7 +32,7 @@ _NOISE_PREFIXES = ("http", "```", "|", ">", "<")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _NON_IDS = {"", "none", "null", "n/a", "na", "-"}  # sentinels small models emit for "nothing"
 
-# Observation categories (mirrors claude-mem's taxonomy). Small models drift, so
+# Observation categories (a small fixed taxonomy). Small models drift, so
 # anything off-list falls back to "discovery" at parse time.
 _TYPES = {"decision", "bugfix", "feature", "refactor", "discovery", "change"}
 _DEFAULT_TYPE = "discovery"
@@ -43,9 +43,28 @@ _DEFAULT_TYPE = "discovery"
 # the endswith-"?" check is the main catch. This only guards the fallback
 # heuristic — the default LLM distiller does its own filtering.
 _QUESTION_OPENERS = (
-    "can we", "can you", "could you", "would you", "should i", "should we",
-    "what does", "what is", "what's", "how do", "how does", "why is", "why do",
-    "please ", "let's ", "lets ", "yes", "okay", "ok ", "one other", "note,", "note ",
+    "can we",
+    "can you",
+    "could you",
+    "would you",
+    "should i",
+    "should we",
+    "what does",
+    "what is",
+    "what's",
+    "how do",
+    "how does",
+    "why is",
+    "why do",
+    "please ",
+    "let's ",
+    "lets ",
+    "yes",
+    "okay",
+    "ok ",
+    "one other",
+    "note,",
+    "note ",
 )
 
 # First-person / self-referential procedural narration the assistant emits while
@@ -55,9 +74,25 @@ _QUESTION_OPENERS = (
 # declarative outcomes ("The delete dialog now uses an AlertDialog."): it only
 # matches planning/self-reference openers, not every sentence starting with "the".
 _NARRATION_OPENERS = (
-    "let me", "let us ", "i'll ", "i will ", "i'm going to", "i am going to",
-    "i've ", "i have ", "now i", "now let", "first, i", "first i", "next, i",
-    "next i", "then i", "here's ", "here is ", "the assistant ", "we now ",
+    "let me",
+    "let us ",
+    "i'll ",
+    "i will ",
+    "i'm going to",
+    "i am going to",
+    "i've ",
+    "i have ",
+    "now i",
+    "now let",
+    "first, i",
+    "first i",
+    "next, i",
+    "next i",
+    "then i",
+    "here's ",
+    "here is ",
+    "the assistant ",
+    "we now ",
     "we can now",
 )
 
@@ -361,9 +396,7 @@ def parse_summary(output: str) -> DistilledFact | None:
         return None
     title = str(obj.get("title", "")).strip()
     narrative = "\n".join(
-        f"{label}: {str(obj.get(key, '')).strip()}"
-        for key, label in _SUMMARY_SECTIONS
-        if str(obj.get(key, "")).strip()
+        f"{label}: {str(obj.get(key, '')).strip()}" for key, label in _SUMMARY_SECTIONS if str(obj.get(key, "")).strip()
     )
     text = title or str(obj.get("completed", "")).strip()[:200]
     return DistilledFact(text=text, title=title, narrative=narrative, type="session_summary") if text else None
@@ -381,9 +414,7 @@ class ClaudeCliDistiller(Distiller):
         args = [self.cmd, "-p"]
         if self.model:
             args += ["--model", self.model]
-        result = subprocess.run(
-            args, input=prompt, capture_output=True, text=True, timeout=self.timeout
-        )
+        result = subprocess.run(args, input=prompt, capture_output=True, text=True, timeout=self.timeout)
         if result.returncode != 0:
             raise RuntimeError((result.stderr or "llm error")[:200])
         return result.stdout

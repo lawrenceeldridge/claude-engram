@@ -1,0 +1,66 @@
+# Project + dev-tooling manifest for the ltm plugin.
+#
+# Source of truth for dependencies and tooling config. The plugin core is
+# STDLIB-FIRST — `dependencies = []`. Semantic recall and multi-language code
+# indexing are OPT-IN extras (`[project.optional-dependencies].embeddings`),
+# self-provisioned into a private venv under CLAUDE_PLUGIN_DATA on first use
+# (see core/provision.py). requirements.txt is a GENERATED lock derived from the
+# `embeddings` extra (see the regen command below) — the runtime provisioner reads
+# it so provisioning works with BOTH `uv` and plain `pip` (no uv required).
+#
+# Regenerate the runtime lock after changing the `embeddings` extra:
+#   uv export --extra embeddings --no-hashes --no-annotate --no-emit-project -o requirements.txt
+#
+# Dev workflow (uv):
+#   uv sync --extra dev            # create .venv with ruff + pytest
+#   uv run ruff check .            # lint   (or `ruff check .` if installed via `uv tool install ruff`)
+#   uv run ruff format .           # format
+#   uv run pytest                  # tests  (also: python3 -m unittest discover -s tests, stdlib)
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ltm"
+version = "0.8.0"
+description = "Token-first, cross-project long-term memory for Claude Code (plugin)."
+requires-python = ">=3.10"
+license = "MIT"
+# Stdlib-first: the core imports and runs on the Python standard library alone.
+dependencies = []
+
+[project.optional-dependencies]
+# Opt-in semantic recall (fastembed) + multi-language code indexing (tree-sitter).
+# Absent → falls back to the hash embedder and stdlib `ast` (Python only).
+embeddings = [
+    "fastembed",
+    "tree-sitter-language-pack>=0.7.0,<1.0.0",
+]
+# Opt-in durable-queue backend (bus=nats). Absent → the MemoryBus falls open to the
+# stdlib inproc SQLite queue. Provisioned separately from the embeddings venv.
+nats = [
+    "nats-py>=2.9",
+]
+# Dev tooling only — never shipped, never a runtime dependency.
+dev = [
+    "ruff>=0.15",
+    "pytest>=8.0",
+]
+
+# Only `core` is a real importable package; bin/ are composition-root scripts,
+# viewer/ is a thin server. The plugin ships via the marketplace (a directory
+# copy), not pip — this build target exists so uv can resolve/lock metadata.
+[tool.hatch.build.targets.wheel]
+packages = ["core"]
+
+[tool.ruff]
+line-length = 120
+src = ["."]
+
+[tool.ruff.lint]
+# ruff defaults (already clean across the tree) + import sorting.
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core"]

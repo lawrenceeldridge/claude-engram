@@ -10,15 +10,17 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 
 from core.config import Config
-from core.confidence import compute_confidence
-from core.distill import DistilledFact, get_distiller
-from core.embedding import EmbeddingGateway
-from core.lexical import has_overlap
+from core.domain.confidence import compute_confidence
+from core.domain.lexical import has_overlap
+from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
+from core.ports.distill import DistilledFact, get_distiller
+from core.ports.embedding import EmbeddingGateway
+from core.ports.membus import WorkItem, get_bus
 from core.project import Project
-from core.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.recall import render_block, search, search_fused
 from core.store import Store
 from core.transcript import extract_incremental_parts, extract_text
@@ -60,7 +62,11 @@ def add_records(
     for record in records:
         fact_id = store.fact_id(project["key"], record.text)
         if store.exists(fact_id):
-            store.reinforce(fact_id, now)
+            # Rehearsal — a fact seen again reinforces, and once rehearsed enough
+            # (frequency >= promote_after_freq) it transfers from STM to LTM.
+            freq = store.reinforce(fact_id, now)
+            if freq >= cfg.promote_after_freq:
+                store.promote(fact_id, now)
             continue
         vec = embedder.embed_one(record.text)
         victims = _resolve_supersedes(store, project["key"], record.supersedes)
@@ -100,9 +106,7 @@ def add_facts(
     facts: list[str],
     kind: str = "fact",
 ) -> int:
-    return add_records(
-        store, embedder, cfg, project, session_id, [DistilledFact(f) for f in facts], kind
-    )
+    return add_records(store, embedder, cfg, project, session_id, [DistilledFact(f) for f in facts], kind)
 
 
 # Distillers that call an LLM (and so can transiently fail to the heuristic). A
@@ -122,49 +126,65 @@ def capture_text(
     existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
     records = distiller.distill(text, existing)
     inserted = add_records(store, embedder, cfg, project, session_id, records)
-    # If an LLM distiller degraded to the heuristic (unreachable / timed out), park the
-    # raw delta so a later healthy capture can re-distil it and replace these facts.
+    # If an LLM distiller degraded to the heuristic (unreachable / timed out), publish
+    # the raw delta to the durable 'rescue' queue so a later healthy session re-distils
+    # it and replaces these facts. Idempotent on the delta's content hash.
     if records and cfg.distiller in _LLM_DISTILLERS and all(r.degraded for r in records):
         fact_ids = [store.fact_id(project["key"], r.text) for r in records]
-        store.enqueue_redistill(project["key"], session_id, text, fact_ids)
+        payload = json.dumps(
+            {"text": text, "fact_ids": fact_ids, "session_id": session_id, "project_key": project["key"]}
+        )
+        bus = get_bus(cfg, store)
+        try:
+            bus.publish(
+                WorkItem(
+                    stage="rescue",
+                    project_key=project["key"],
+                    msg_id="rescue:" + store.fact_id(project["key"], text),
+                    session_id=session_id,
+                    payload=payload,
+                )
+            )
+        finally:
+            bus.close()
     return inserted
 
 
-def recover_pending(
-    store: Store,
-    embedder: EmbeddingGateway,
-    cfg: Config,
-    project: Project,
-    *,
-    limit: int = 3,
-    max_attempts: int = 6,
-) -> int:
-    """Re-distil parked deltas with the LLM; on success replace their heuristic facts.
+def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int = 3) -> int:
+    """Re-distil parked degraded deltas from the durable 'rescue' queue (design §6.4).
 
-    Runs at the head of every incremental capture. Cheap when the queue is empty (no
-    LLM call). Because the queue is shared, a healthy session recovers junk that a
-    stale or offline one produced; entries that keep failing are dropped after
-    ``max_attempts`` so a genuinely un-parseable delta can't retry forever.
+    The durable successor to the old ``pending_redistill`` path: drains the bus, so
+    retry/backoff and dead-lettering are handled by the queue rather than an ad-hoc
+    attempts column. Runs at the head of every incremental capture; cheap when empty
+    (no LLM call). No-op without an LLM distiller (a heuristic-only install can't
+    recover). The queue is global, so a healthy session rescues deltas any session
+    parked — each work item carries its own project key.
     """
     if cfg.distiller not in _LLM_DISTILLERS:
         return 0
-    distiller = get_distiller(cfg)
-    recovered = 0
-    for entry in store.list_redistill(project["key"], limit):
-        existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
-        records = distiller.distill(entry["text"], existing)
-        if records and not all(r.degraded for r in records):
+    bus = get_bus(cfg, store)
+    try:
+        distiller = get_distiller(cfg)
+        recovered = 0
+        for lease in bus.pull("rescue", limit):
             try:
-                old_ids = json.loads(entry["fact_ids"]) if entry["fact_ids"] else []
+                data = json.loads(lease.item.payload)
             except (ValueError, TypeError):
-                old_ids = []
-            store.delete_facts(old_ids)
-            add_records(store, embedder, cfg, project, entry["session_id"] or "", records)
-            store.clear_redistill(entry["id"])
-            recovered += 1
-        else:
-            store.bump_redistill(entry["id"], max_attempts)
-    return recovered
+                lease.term()  # unparseable payload — dead-letter, never retry
+                continue
+            project = store.project_meta(data.get("project_key", ""))
+            existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
+            records = distiller.distill(data.get("text", ""), existing)
+            if records and not all(r.degraded for r in records):
+                store.delete_facts(data.get("fact_ids") or [])
+                add_records(store, embedder, cfg, project, data.get("session_id", ""), records)
+                lease.ack()
+                recovered += 1
+            else:
+                lease.nak()  # still degraded — retry later; dead-letters past bus_max_deliver
+        return recovered
+    finally:
+        bus.close()
 
 
 def capture_transcript(
@@ -218,7 +238,7 @@ def maybe_capture_summary(
 ) -> int:
     """Refresh the session summary, throttled by how much the transcript has grown.
 
-    claude-mem re-summarises on every Stop — a full-transcript LLM call per turn.
+    Re-summarising on every Stop would be a full-transcript LLM call per turn.
     Throttling on transcript growth (a summary cursor per session) keeps the summary
     current on Stop at a fraction of that cost, while ``force=True`` (SessionEnd /
     PreCompact checkpoints) always writes a final one. Both paths advance the cursor,
@@ -292,7 +312,7 @@ def capture_transcript_incremental(
     stored verbatim alongside the distilled facts. The cursor advances even when the
     delta yields no facts, so nothing is reprocessed.
     """
-    recover_pending(store, embedder, cfg, project)  # drain any heuristic-fallback backlog first
+    rescue(store, embedder, cfg)  # drain any heuristic-fallback backlog first (durable queue)
     cursor_key = f"{project['key']}:{session_id or transcript_path}"
     start = store.get_capture_cursor(cursor_key)
     text, prompts, end = extract_incremental_parts(transcript_path, start)
@@ -329,8 +349,8 @@ def orientation_block(store: Store, project: Project, max_chars: int = 900) -> s
     """The latest session summary as a 'where you left off' orientation snapshot.
 
     Injected at SessionStart (which also fires after a /compact), this re-establishes
-    task orientation across a session or compaction boundary — claude-ltm's equivalent
-    of jcodemunch's PreCompact snapshot, delivered on the reliable SessionStart event.
+    task orientation across a session or compaction boundary, delivered on the reliable
+    SessionStart event (which also fires after a /compact).
     """
     row = store.latest_summary(project["key"])
     if row is None:
@@ -370,9 +390,14 @@ def _embedding_mismatch(store: Store, embedder: EmbeddingGateway, project_key: s
     return bool(stored) and qdim not in stored
 
 
-def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int]:
-    """Greedy budget pack: highest-ranked facts first, until the char budget is spent."""
+def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]:
+    """Greedy budget pack: highest-ranked facts first, until the char budget is spent.
+
+    Also returns the ids of the packed facts so the caller can record retrieval
+    attribution (recall_count / last_recalled) — the id is not exposed in the DTO.
+    """
     packed: list[dict] = []
+    packed_ids: list[str] = []
     used = 0
     for _score, sim, row in hits:
         text = row["text"]
@@ -386,8 +411,9 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int]:
                 "frequency": row["frequency"] or 1,
             }
         )
+        packed_ids.append(row["id"])
         used += len(text)
-    return packed, len(hits) - len(packed)
+    return packed, len(hits) - len(packed), packed_ids
 
 
 def recall_structured(
@@ -422,7 +448,7 @@ def recall_structured(
     else:
         verdict = "ok"
 
-    facts, dropped = _pack_facts(hits, max_chars)
+    facts, dropped, recalled_ids = _pack_facts(hits, max_chars)
     result = {
         "query": query,
         "project": project["label"],
@@ -442,4 +468,10 @@ def recall_structured(
         confidence=confidence,
         verdict=verdict,
     )
+    # Retrieval attribution feeds the retention score (testing/spacing signal). It is
+    # best-effort — a failure here must never break a recall.
+    try:
+        store.mark_recalled(recalled_ids)
+    except sqlite3.Error:
+        pass
     return result

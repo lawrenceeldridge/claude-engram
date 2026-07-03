@@ -70,8 +70,8 @@ def _run_worker(payload_path: str) -> None:
             pass
 
     from core.config import get_config
-    from core.embedding import get_embedder
-    from core.indexer import index_project
+    from core.index.indexer import index_project, tree_signature
+    from core.ports.embedding import get_embedder
     from core.project import resolve_project
     from core.store import Store
 
@@ -82,9 +82,18 @@ def _run_worker(payload_path: str) -> None:
     try:
         root = payload.get("cwd") or os.getcwd()
         project = resolve_project(root, cfg.markers)
-        embedder = get_embedder(cfg)
+        index_root = project["path"] or root
         store = Store(cfg.db_path)
-        index_project(store, embedder, cfg, project, project["path"] or root, max_files=_AUTO_MAX_FILES)
+        # Merkle rollup: if the file tree is unchanged since the last index, skip the
+        # whole pass — including loading the embedding model (the expensive part).
+        sig_key = f"idxsig:{project['key']}"
+        sig = tree_signature(index_root)
+        if sig != 0 and sig == store.get_capture_cursor(sig_key):
+            store.close()
+            return
+        embedder = get_embedder(cfg)
+        index_project(store, embedder, cfg, project, index_root, max_files=_AUTO_MAX_FILES)
+        store.set_capture_cursor(sig_key, sig)
         store.close()
     finally:
         try:

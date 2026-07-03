@@ -29,6 +29,23 @@ def _fts_match_expr(query: str) -> str:
     """
     return " OR ".join(f'"{t}"' for t in _FTS_TOKEN.findall(query.lower()))
 
+
+def _now(now: float | None) -> float:
+    """Resolve an optional caller-supplied timestamp to a concrete one (test seam)."""
+    return now if now is not None else time.time()
+
+
+def _placeholders(seq) -> str:
+    """`?, ?, …` for an IN (...) clause sized to ``seq``."""
+    return ",".join("?" for _ in seq)
+
+
+def _content_id(project_key: str, text: str) -> str:
+    """Content-addressed id for a fact (per project, whitespace/case-normalised)."""
+    norm = " ".join(text.lower().split())
+    return hashlib.sha256(f"{project_key}\x00{norm}".encode()).hexdigest()[:24]
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
   id            TEXT PRIMARY KEY,
@@ -53,10 +70,16 @@ CREATE TABLE IF NOT EXISTS facts (
   importance    REAL DEFAULT 0,
   frequency     INTEGER DEFAULT 1,
   status        TEXT DEFAULT 'active',
-  superseded_by TEXT
+  superseded_by TEXT,
+  tier          TEXT NOT NULL DEFAULT 'ltm',
+  recall_count  INTEGER DEFAULT 0,
+  last_recalled REAL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_project ON facts(project_key, status);
 CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);
+-- NOTE: idx_facts_tier is created in migration _v9_stm, not here — the base schema
+-- runs before migrations, so an index referencing the migration-added `tier` column
+-- must not live here (it would fail opening a pre-v9 database).
 
 CREATE TABLE IF NOT EXISTS recall_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,9 +210,7 @@ def _v2_structured(db: sqlite3.Connection) -> None:
 
 
 def _v3_fts(db: sqlite3.Connection) -> None:
-    existed = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_fts'"
-    ).fetchone()
+    existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_fts'").fetchone()
     db.executescript(_FTS_SCHEMA)
     if not existed:
         # External-content FTS5 is populated with the 'rebuild' command (a manual
@@ -243,13 +264,80 @@ def _v8_redistill(db: sqlite3.Connection) -> None:
 def _v7_index(db: sqlite3.Connection) -> None:
     # Code/docs index tables + their FTS. Additive and idempotent; the facts store is
     # untouched. 'rebuild' backfills the FTS from any chunks written before it existed.
-    existed = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts'"
-    ).fetchone()
+    existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts'").fetchone()
     db.executescript(_CHUNK_SCHEMA)
     db.executescript(_CHUNK_FTS_SCHEMA)
     if not existed:
         db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+
+
+def _v9_stm(db: sqlite3.Connection) -> None:
+    # Atkinson-Shiffrin STM/LTM split + retrieval attribution. `tier` marks a fact's
+    # store: fresh captures land in 'stm' and promote to 'ltm' on rehearsal (see
+    # service.add_records). Existing rows are established memory → 'ltm'. recall_count/
+    # last_recalled feed the retention score (design §3A) — the testing/spacing signals.
+    # Additive: recall stays tier-agnostic by default, so behaviour is unchanged.
+    _add_columns(
+        db,
+        [
+            ("tier", "tier TEXT NOT NULL DEFAULT 'ltm'"),
+            ("recall_count", "recall_count INTEGER DEFAULT 0"),
+            ("last_recalled", "last_recalled REAL"),
+        ],
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_facts_tier ON facts(project_key, tier, status)")
+
+
+def _v10_work_queue(db: sqlite3.Connection) -> None:
+    # Durable Command queue for the MemoryBus inproc adapter — the at-least-once,
+    # retry-able form of detached capture (survives dropped connections / distiller
+    # outages). msg_id is a content hash → idempotent publish. ack deletes the row;
+    # nak reschedules (next_retry_at); a lease (lease_expires) makes an interrupted
+    # claim reclaimable (crash recovery); exhausted retries land in status='dead'.
+    db.executescript(
+        "CREATE TABLE IF NOT EXISTS work_queue ("
+        "  msg_id        TEXT PRIMARY KEY,"
+        "  stage         TEXT NOT NULL,"
+        "  project_key   TEXT NOT NULL,"
+        "  session_id    TEXT,"
+        "  ref           TEXT,"
+        "  payload       TEXT,"
+        "  status        TEXT NOT NULL DEFAULT 'pending',"  # pending | in_progress | dead
+        "  attempts      INTEGER DEFAULT 0,"
+        "  next_retry_at REAL DEFAULT 0,"
+        "  lease_owner   TEXT,"
+        "  lease_expires REAL DEFAULT 0,"
+        "  enqueued_at   REAL"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_work_claim ON work_queue(stage, status, next_retry_at);"
+    )
+
+
+def _v11_rescue_from_redistill(db: sqlite3.Connection) -> None:
+    # Cutover: the ad-hoc pending_redistill recovery queue becomes the durable bus
+    # 'rescue' stage. Move any parked deltas into work_queue (idempotent on msg_id)
+    # so the switch loses nothing, then drain the old table. Runs after _v10 (the
+    # work_queue table exists). The old table is left in place (empty, harmless).
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_redistill'").fetchone():
+        return
+    rows = db.execute("SELECT project_key, session_id, text, fact_ids, created_at FROM pending_redistill").fetchall()
+    for project_key, session_id, text, fact_ids, created_at in rows:
+        payload = json.dumps(
+            {
+                "text": text,
+                "fact_ids": json.loads(fact_ids) if fact_ids else [],
+                "session_id": session_id or "",
+                "project_key": project_key,
+            }
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO work_queue "
+            "(msg_id, stage, project_key, session_id, ref, payload, status, attempts, "
+            " next_retry_at, lease_owner, lease_expires, enqueued_at) "
+            "VALUES (?, 'rescue', ?, ?, '', ?, 'pending', 0, 0, NULL, 0, ?)",
+            ("rescue:" + _content_id(project_key, text), project_key, session_id or "", payload, created_at or 0.0),
+        )
+    db.execute("DELETE FROM pending_redistill")
 
 
 # Ordered schema migrations. user_version marks how many have run; every step is
@@ -257,8 +345,17 @@ def _v7_index(db: sqlite3.Connection) -> None:
 # EXISTS, rebuild only on first creation), so a database at any prior version —
 # including the legacy FTS flag of 1 — converges by running the rest as no-ops.
 _MIGRATIONS = [
-    _v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle, _v6_fts_widen,
-    _v7_index, _v8_redistill,
+    _v1_lifecycle,
+    _v2_structured,
+    _v3_fts,
+    _v4_observations,
+    _v5_subtitle,
+    _v6_fts_widen,
+    _v7_index,
+    _v8_redistill,
+    _v9_stm,
+    _v10_work_queue,
+    _v11_rescue_from_redistill,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -297,25 +394,127 @@ class Store:
 
     @staticmethod
     def fact_id(project_key: str, text: str) -> str:
-        norm = " ".join(text.lower().split())
-        return hashlib.sha256(f"{project_key}\x00{norm}".encode()).hexdigest()[:24]
+        return _content_id(project_key, text)
 
     def exists(self, fact_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM facts WHERE id = ?", (fact_id,)).fetchone() is not None
 
-    def reinforce(self, fact_id: str, now: float | None = None) -> None:
-        """Consolidation — strengthen a fact seen again and refresh its recency."""
+    def reinforce(self, fact_id: str, now: float | None = None) -> int:
+        """Consolidation — strengthen a fact seen again and refresh its recency.
+
+        Returns the fact's new frequency so the caller can decide promotion
+        (STM→LTM on rehearsal); 0 if the fact is absent.
+        """
         self.db.execute(
             "UPDATE facts SET frequency = frequency + 1, last_seen = ?, status = 'active' WHERE id = ?",
-            (now if now is not None else time.time(), fact_id),
+            (_now(now), fact_id),
         )
         self.db.commit()
+        row = self.db.execute("SELECT frequency FROM facts WHERE id = ?", (fact_id,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def promote(self, fact_id: str, now: float | None = None) -> None:
+        """Rehearsal transfer — move a short-term fact into the long-term store."""
+        self.db.execute(
+            "UPDATE facts SET tier = 'ltm', last_seen = ? WHERE id = ? AND tier = 'stm'",
+            (_now(now), fact_id),
+        )
+        self.db.commit()
+
+    def stm_rows(self, project_key: str, limit: int | None = None) -> list[sqlite3.Row]:
+        """Active short-term facts for a project, weakest first (frequency, then oldest seen)."""
+        sql = (
+            "SELECT * FROM facts WHERE project_key = ? AND status = 'active' AND tier = 'stm' "
+            "ORDER BY frequency ASC, last_seen ASC"
+        )
+        params: list = [project_key]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self.db.execute(sql, params).fetchall()
+
+    def displace_stm(self, project_key: str, capacity: int) -> int:
+        """Short-term displacement — archive the weakest active STM facts beyond ``capacity``.
+
+        ``capacity <= 0`` disables displacement (the default). Archival is reversible
+        (``status='displaced'``), never a delete; recall already scans ``status='active'``
+        so displaced facts simply leave the search set. Returns the number archived.
+        """
+        if capacity <= 0:
+            return 0
+        rows = self.stm_rows(project_key)  # weakest-first
+        overflow = rows[: max(0, len(rows) - capacity)]  # keep the strongest ``capacity``
+        ids = [r["id"] for r in overflow]
+        if not ids:
+            return 0
+        placeholders = _placeholders(ids)
+        cur = self.db.execute(
+            f"UPDATE facts SET status = 'displaced' WHERE id IN ({placeholders})",
+            ids,
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def mark_recalled(self, fact_ids: list[str], now: float | None = None) -> int:
+        """Retrieval attribution — record that facts were recalled (testing/spacing signal).
+
+        Increments ``recall_count`` and refreshes ``last_recalled`` — the retention-score
+        inputs (design §3A). Called off the interactive hot path (from the on-demand
+        ``recall_structured``, not the per-prompt hook). Returns rows updated.
+        """
+        if not fact_ids:
+            return 0
+        stamp = _now(now)
+        placeholders = _placeholders(fact_ids)
+        cur = self.db.execute(
+            f"UPDATE facts SET recall_count = recall_count + 1, last_recalled = ? WHERE id IN ({placeholders})",
+            (stamp, *fact_ids),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def supersede_count(self, fact_id: str) -> int:
+        """How many facts this one superseded — the retention 'surprise' signal (§3A)."""
+        return self.db.execute("SELECT COUNT(*) FROM facts WHERE superseded_by = ?", (fact_id,)).fetchone()[0]
+
+    def set_status(self, fact_ids: list[str], status: str) -> int:
+        """Archive a set of facts under ``status`` (reversible; recall scans 'active' only)."""
+        if not fact_ids:
+            return 0
+        cur = self.db.execute(
+            f"UPDATE facts SET status = ? WHERE id IN ({_placeholders(fact_ids)})",
+            (status, *fact_ids),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def purge(self, horizon_seconds: float, now: float | None = None) -> int:
+        """Two-stage lifecycle backstop — hard-delete long-archived facts, then VACUUM.
+
+        The ONLY true delete: rows already archived (superseded/displaced/pruned/expired)
+        and untouched for longer than ``horizon_seconds``. Opt-in (disabled at 0). The
+        FTS index stays in sync via the delete trigger.
+        """
+        cutoff = _now(now) - horizon_seconds
+        cur = self.db.execute(
+            "DELETE FROM facts WHERE status IN ('superseded', 'displaced', 'pruned', 'expired') "
+            "AND COALESCE(last_seen, created_at) < ?",
+            (cutoff,),
+        )
+        self.db.commit()
+        deleted = cur.rowcount
+        if deleted:
+            try:
+                self.db.execute("VACUUM")
+            except sqlite3.OperationalError:
+                pass  # a concurrent reader can block VACUUM; space reclaim is best-effort
+        return deleted
 
     def supersede(self, fact_ids: list[str], by_id: str) -> int:
         """Retroactive interference — archive facts replaced by a newer one."""
         if not fact_ids:
             return 0
-        placeholders = ",".join("?" for _ in fact_ids)
+        placeholders = _placeholders(fact_ids)
         cur = self.db.execute(
             f"UPDATE facts SET status = 'superseded', superseded_by = ? "
             f"WHERE id IN ({placeholders}) AND status = 'active'",
@@ -343,6 +542,7 @@ class Store:
         files: list[str] | None = None,
         type: str = "",
         observation_id: str = "",
+        tier: str = "stm",
     ) -> bool:
         fid = self.fact_id(project["key"], text)
         stamp = created_at if created_at is not None else time.time()
@@ -350,8 +550,8 @@ class Store:
             "INSERT OR IGNORE INTO facts "
             "(id, project_key, project_label, project_path, session_id, kind, text, "
             " title, subtitle, narrative, files, type, observation_id, created_at, last_seen, dim, scale, "
-            " vec_int8, vec_bits, importance, frequency, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')",
+            " vec_int8, vec_bits, importance, frequency, status, tier) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?)",
             (
                 fid,
                 project["key"],
@@ -373,6 +573,7 @@ class Store:
                 vec_int8,
                 vec_bits,
                 importance,
+                tier,
             ),
         )
         self.db.commit()
@@ -381,9 +582,7 @@ class Store:
     def get(self, fact_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
 
-    def rows_for_project(
-        self, project_key: str, limit: int | None = None, offset: int = 0
-    ) -> list[sqlite3.Row]:
+    def rows_for_project(self, project_key: str, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
         """Facts for a project, newest first. Paginate with limit/offset; limit=None returns all."""
         sql = "SELECT * FROM facts WHERE project_key = ? ORDER BY created_at DESC, rowid DESC"
         params: list = [project_key]
@@ -398,30 +597,50 @@ class Store:
         ).fetchall()
 
     def list_observations(
-        self, project_key: str, limit: int | None = None, offset: int = 0
+        self,
+        project_key: str,
+        limit: int | None = None,
+        offset: int = 0,
+        tier: str | None = None,
+        active: bool | None = None,
     ) -> list[list[sqlite3.Row]]:
         """Facts grouped into observation cards, newest group first, paginated by group.
 
         A group is the facts sharing an observation_id (falling back to the fact's own
-        id for ungrouped rows), returned as an ordered list of its fact rows.
+        id for ungrouped rows), returned as an ordered list of its fact rows. Optional
+        filters: ``tier`` ('stm'/'ltm') and ``active`` (True = status='active' only,
+        False = archived only) — used by the viewer's STM / LTM / RnR tabs.
         """
         grp = "COALESCE(observation_id, id)"
-        sql = (
-            f"SELECT {grp} AS grp, MAX(created_at) AS ts, MAX(rowid) AS rid "
-            "FROM facts WHERE project_key = ? GROUP BY grp ORDER BY ts DESC, rid DESC"
-        )
-        params: list = [project_key]
+        cond = "project_key = ?"
+        cparams: list = [project_key]
+        if tier is not None:
+            cond += " AND tier = ?"
+            cparams.append(tier)
+        if active is True:
+            cond += " AND status = 'active'"
+        elif active is False:
+            cond += " AND status != 'active'"
+        sql = f"SELECT {grp} AS grp, MAX(created_at) AS ts, MAX(rowid) AS rid FROM facts WHERE {cond} GROUP BY grp ORDER BY ts DESC, rid DESC"
+        params = list(cparams)
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params += [limit, offset]
         groups = self.db.execute(sql, params).fetchall()
         return [
             self.db.execute(
-                f"SELECT * FROM facts WHERE project_key = ? AND {grp} = ? ORDER BY rowid ASC",
-                (project_key, row["grp"]),
+                f"SELECT * FROM facts WHERE {cond} AND {grp} = ? ORDER BY rowid ASC",
+                (*cparams, row["grp"]),
             ).fetchall()
             for row in groups
         ]
+
+    def work_items(self, project_key: str, limit: int = 200) -> list[sqlite3.Row]:
+        """Work-queue rows for a project (all stages/statuses), newest first — the RnR view."""
+        return self.db.execute(
+            "SELECT * FROM work_queue WHERE project_key = ? ORDER BY enqueued_at DESC, rowid DESC LIMIT ?",
+            (project_key, limit),
+        ).fetchall()
 
     def active_rows(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM facts WHERE status = 'active'").fetchall()
@@ -434,8 +653,7 @@ class Store:
         by the dim gate and the result would otherwise masquerade as 'no memory'.
         """
         rows = self.db.execute(
-            "SELECT DISTINCT dim FROM facts "
-            "WHERE project_key = ? AND status = 'active' AND dim IS NOT NULL",
+            "SELECT DISTINCT dim FROM facts WHERE project_key = ? AND status = 'active' AND dim IS NOT NULL",
             (project_key,),
         ).fetchall()
         return {row[0] for row in rows}
@@ -507,10 +725,7 @@ class Store:
         marked 'expired', not deleted, so the viewer can still show them.
         """
         cutoff = now - ttl_seconds
-        sql = (
-            "UPDATE facts SET status = 'expired' "
-            "WHERE status = 'active' AND last_seen < ? AND frequency < ?"
-        )
+        sql = "UPDATE facts SET status = 'expired' WHERE status = 'active' AND last_seen < ? AND frequency < ?"
         params: list = [cutoff, keep_frequency]
         if project_key:
             sql += " AND project_key = ?"
@@ -540,7 +755,7 @@ class Store:
             self.db.execute(
                 "INSERT INTO recall_events (ts, project_key, query, returned, top_sim, confidence, verdict) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (now if now is not None else time.time(), project_key, query, returned, top_sim, confidence, verdict),
+                (_now(now), project_key, query, returned, top_sim, confidence, verdict),
             )
             self.db.commit()
         except sqlite3.Error:
@@ -562,16 +777,14 @@ class Store:
 
     def get_capture_cursor(self, cursor_key: str) -> int:
         """Byte offset already distilled for this session, so incremental capture reads only new turns."""
-        row = self.db.execute(
-            "SELECT offset FROM capture_cursors WHERE cursor_key = ?", (cursor_key,)
-        ).fetchone()
+        row = self.db.execute("SELECT offset FROM capture_cursors WHERE cursor_key = ?", (cursor_key,)).fetchone()
         return row["offset"] if row else 0
 
     def set_capture_cursor(self, cursor_key: str, offset: int, now: float | None = None) -> None:
         self.db.execute(
             "INSERT INTO capture_cursors (cursor_key, offset, updated_at) VALUES (?, ?, ?) "
             "ON CONFLICT(cursor_key) DO UPDATE SET offset = excluded.offset, updated_at = excluded.updated_at",
-            (cursor_key, offset, now if now is not None else time.time()),
+            (cursor_key, offset, _now(now)),
         )
         self.db.commit()
 
@@ -591,13 +804,16 @@ class Store:
         return (row["file_hash"], row["mtime_ns"]) if row else None
 
     def indexed_sources(self, project_key: str) -> set[str]:
-        rows = self.db.execute(
-            "SELECT source_path FROM chunk_sources WHERE project_key = ?", (project_key,)
-        ).fetchall()
+        rows = self.db.execute("SELECT source_path FROM chunk_sources WHERE project_key = ?", (project_key,)).fetchall()
         return {row[0] for row in rows}
 
     def replace_source_chunks(
-        self, project_key: str, source_path: str, chunks: list[dict], file_hash: str, mtime_ns: int,
+        self,
+        project_key: str,
+        source_path: str,
+        chunks: list[dict],
+        file_hash: str,
+        mtime_ns: int,
         now: float | None = None,
     ) -> int:
         """Atomically swap a file's chunks for a freshly-parsed set and stamp its source state.
@@ -606,11 +822,9 @@ class Store:
         removed or renamed; the whole swap is one transaction so a crash can't leave a
         half-indexed file. Returns the number of chunks written.
         """
-        stamp = now if now is not None else time.time()
+        stamp = _now(now)
         with self.db:
-            self.db.execute(
-                "DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path)
-            )
+            self.db.execute("DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path))
             self.db.executemany(
                 "INSERT OR REPLACE INTO chunks "
                 "(id, project_key, source_path, kind, anchor, title, heading_path, level, "
@@ -618,10 +832,23 @@ class Store:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
-                        c["id"], project_key, source_path, c.get("kind", "doc_section"), c["anchor"],
-                        c["title"], c["heading_path"], c["level"], c.get("summary") or None, c["body"],
-                        c["byte_start"], c["byte_end"], c["content_hash"], c["dim"], c["scale"],
-                        c["vec_int8"], stamp,
+                        c["id"],
+                        project_key,
+                        source_path,
+                        c.get("kind", "doc_section"),
+                        c["anchor"],
+                        c["title"],
+                        c["heading_path"],
+                        c["level"],
+                        c.get("summary") or None,
+                        c["body"],
+                        c["byte_start"],
+                        c["byte_end"],
+                        c["content_hash"],
+                        c["dim"],
+                        c["scale"],
+                        c["vec_int8"],
+                        stamp,
                     )
                     for c in chunks
                 ],
@@ -637,9 +864,7 @@ class Store:
     def delete_source(self, project_key: str, source_path: str) -> None:
         """Drop a vanished file's chunks and source row (called for files gone since last index)."""
         with self.db:
-            self.db.execute(
-                "DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path)
-            )
+            self.db.execute("DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path))
             self.db.execute(
                 "DELETE FROM chunk_sources WHERE project_key = ? AND source_path = ?",
                 (project_key, source_path),
@@ -679,9 +904,7 @@ class Store:
             params.append(kind)
         return self.db.execute(sql, params).fetchall()
 
-    def chunk_fts_search(
-        self, project_key: str, query: str, limit: int = 50, kind: str | None = None
-    ) -> list[str]:
+    def chunk_fts_search(self, project_key: str, query: str, limit: int = 50, kind: str | None = None) -> list[str]:
         """Chunk ids matching an FTS5 keyword query, best-ranked first (weighted columns)."""
         match = _fts_match_expr(query)
         if not match:
@@ -705,9 +928,7 @@ class Store:
         ).fetchall()
 
     def chunk_count(self, project_key: str) -> int:
-        return self.db.execute(
-            "SELECT COUNT(*) FROM chunks WHERE project_key = ?", (project_key,)
-        ).fetchone()[0]
+        return self.db.execute("SELECT COUNT(*) FROM chunks WHERE project_key = ?", (project_key,)).fetchone()[0]
 
     def prune_chunks(self, project_key: str) -> int:
         with self.db:
@@ -715,42 +936,122 @@ class Store:
             cur = self.db.execute("DELETE FROM chunks WHERE project_key = ?", (project_key,))
         return cur.rowcount
 
-    # ---- Re-distillation recovery queue -------------------------------------------
+    def project_meta(self, project_key: str) -> Project:
+        """Reconstruct a project's {key, label, path} from any of its facts.
 
-    def enqueue_redistill(
-        self, project_key: str, session_id: str, text: str, fact_ids: list[str], now: float | None = None
-    ) -> None:
-        """Park a delta whose capture fell back to the heuristic, for later re-distillation."""
+        Lets the global rescue drain re-add re-distilled facts under the right project
+        without the caller passing a Project (the work item carries only the key).
+        """
+        row = self.db.execute(
+            "SELECT project_label, project_path FROM facts WHERE project_key = ? LIMIT 1",
+            (project_key,),
+        ).fetchone()
+        return {
+            "key": project_key,
+            "label": row["project_label"] if row and row["project_label"] else project_key,
+            "path": row["project_path"] if row and row["project_path"] else "",
+        }
+
+    # ---- Durable work queue (MemoryBus inproc adapter) ----------------------------
+
+    def enqueue_work(
+        self,
+        *,
+        msg_id: str,
+        stage: str,
+        project_key: str,
+        session_id: str = "",
+        ref: str = "",
+        payload: str = "",
+        now: float | None = None,
+    ) -> bool:
+        """Publish a work item; idempotent on ``msg_id`` (INSERT OR IGNORE). True if new."""
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO work_queue "
+            "(msg_id, stage, project_key, session_id, ref, payload, status, attempts, "
+            " next_retry_at, lease_owner, lease_expires, enqueued_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, NULL, 0, ?)",
+            (msg_id, stage, project_key, session_id, ref, payload, _now(now)),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def claim_work(
+        self, stage: str, limit: int, now: float | None = None, lease_ttl: float = 300.0, owner: str = "worker"
+    ) -> list[sqlite3.Row]:
+        """Lease up to ``limit`` due items for ``stage``, FIFO. Increments delivery count.
+
+        Claimable = pending-and-due, or in_progress whose lease has expired (an
+        interrupted worker's items — crash recovery). Sets a fresh lease and bumps
+        ``attempts`` so the delivery count survives across workers.
+        """
+        now = _now(now)
+        rows = self.db.execute(
+            "SELECT * FROM work_queue WHERE stage = ? AND next_retry_at <= ? AND "
+            "(status = 'pending' OR (status = 'in_progress' AND lease_expires < ?)) "
+            "ORDER BY enqueued_at ASC, rowid ASC LIMIT ?",
+            (stage, now, now, limit),
+        ).fetchall()
+        for row in rows:
+            self.db.execute(
+                "UPDATE work_queue SET status = 'in_progress', lease_owner = ?, lease_expires = ?, "
+                "attempts = attempts + 1 WHERE msg_id = ?",
+                (owner, now + lease_ttl, row["msg_id"]),
+            )
+        self.db.commit()
+        return rows
+
+    def ack_work(self, msg_id: str) -> None:
+        """Work done — remove it from the queue."""
+        self.db.execute("DELETE FROM work_queue WHERE msg_id = ?", (msg_id,))
+        self.db.commit()
+
+    def nak_work(self, msg_id: str, delay: float = 0.0, now: float | None = None) -> None:
+        """Return work for retry after ``delay`` seconds; clears the lease."""
+        now = _now(now)
         self.db.execute(
-            "INSERT INTO pending_redistill (project_key, session_id, text, fact_ids, attempts, created_at) "
-            "VALUES (?, ?, ?, ?, 0, ?)",
-            (project_key, session_id, text, json.dumps(fact_ids), now if now is not None else time.time()),
+            "UPDATE work_queue SET status = 'pending', next_retry_at = ?, lease_owner = NULL, lease_expires = 0 "
+            "WHERE msg_id = ?",
+            (now + delay, msg_id),
         )
         self.db.commit()
 
-    def list_redistill(self, project_key: str, limit: int = 3) -> list[sqlite3.Row]:
-        """Oldest pending recovery entries for a project (bounded per call to cap LLM cost)."""
-        return self.db.execute(
-            "SELECT id, session_id, text, fact_ids, attempts FROM pending_redistill "
-            "WHERE project_key = ? ORDER BY id ASC LIMIT ?",
-            (project_key, limit),
-        ).fetchall()
-
-    def clear_redistill(self, entry_id: int) -> None:
-        self.db.execute("DELETE FROM pending_redistill WHERE id = ?", (entry_id,))
+    def dead_work(self, msg_id: str) -> None:
+        """Dead-letter — retries exhausted or terminally unprocessable. Kept for inspection."""
+        self.db.execute(
+            "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 WHERE msg_id = ?",
+            (msg_id,),
+        )
         self.db.commit()
 
-    def bump_redistill(self, entry_id: int, max_attempts: int) -> None:
-        """Record a failed recovery attempt; drop the entry once it has been tried enough."""
-        self.db.execute("UPDATE pending_redistill SET attempts = attempts + 1 WHERE id = ?", (entry_id,))
-        self.db.execute("DELETE FROM pending_redistill WHERE id = ? AND attempts >= ?", (entry_id, max_attempts))
+    def reclaim_expired(self, now: float | None = None) -> int:
+        """Return interrupted (expired-lease) in_progress items to pending. Crash recovery."""
+        now = _now(now)
+        cur = self.db.execute(
+            "UPDATE work_queue SET status = 'pending', lease_owner = NULL, lease_expires = 0 "
+            "WHERE status = 'in_progress' AND lease_expires < ?",
+            (now,),
+        )
         self.db.commit()
+        return cur.rowcount
+
+    def count_work(self, stage: str | None = None, status: str | None = None) -> int:
+        """Count work items, optionally filtered by stage/status (inspection, tests)."""
+        sql = "SELECT COUNT(*) FROM work_queue WHERE 1=1"
+        params: list = []
+        if stage is not None:
+            sql += " AND stage = ?"
+            params.append(stage)
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        return self.db.execute(sql, params).fetchone()[0]
 
     def delete_facts(self, fact_ids: list[str]) -> int:
         """Hard-delete facts by id (FTS stays in sync via the delete trigger). Used by recovery."""
         if not fact_ids:
             return 0
-        placeholders = ",".join("?" for _ in fact_ids)
+        placeholders = _placeholders(fact_ids)
         cur = self.db.execute(f"DELETE FROM facts WHERE id IN ({placeholders})", tuple(fact_ids))
         self.db.commit()
         return cur.rowcount

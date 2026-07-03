@@ -89,7 +89,10 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "ref": {"type": "string", "description": "The section anchor (e.g. 'installation/prerequisites') or id."},
+                "ref": {
+                    "type": "string",
+                    "description": "The section anchor (e.g. 'installation/prerequisites') or id.",
+                },
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
             },
             "required": ["ref"],
@@ -106,7 +109,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
-                "source_path": {"type": "string", "description": "Optional repo-relative file to scope the outline to."},
+                "source_path": {
+                    "type": "string",
+                    "description": "Optional repo-relative file to scope the outline to.",
+                },
             },
         },
     },
@@ -161,7 +167,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
-                "source_path": {"type": "string", "description": "Optional repo-relative source file (.py/.ts/.tsx/.js/.jsx) to scope to."},
+                "source_path": {
+                    "type": "string",
+                    "description": "Optional repo-relative source file (.py/.ts/.tsx/.js/.jsx) to scope to.",
+                },
             },
         },
     },
@@ -177,7 +186,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
-                "path": {"type": "string", "description": "Optional absolute subtree to index (unbounded); defaults to the project root."},
+                "path": {
+                    "type": "string",
+                    "description": "Optional absolute subtree to index (unbounded); defaults to the project root.",
+                },
             },
         },
     },
@@ -205,7 +217,7 @@ class _Engine:
         if self._ready:
             return
         from core.config import get_config
-        from core.embedding import get_embedder
+        from core.ports.embedding import get_embedder
         from core.store import Store
 
         self.cfg = get_config()
@@ -290,55 +302,65 @@ class _Engine:
 
     def search_docs(self, args: dict) -> dict:
         self._init()
-        from core.index_recall import search_index
+        from core.index.index_recall import search_index
 
         project = self._project(args.get("project"))
         return search_index(
-            self.store, self.embedder, self.cfg, project, args.get("query") or "",
-            k=args.get("k"), kind="doc_section",
+            self.store,
+            self.embedder,
+            self.cfg,
+            project,
+            args.get("query") or "",
+            k=args.get("k"),
+            kind="doc_section",
         )
 
     def search_code(self, args: dict) -> dict:
         self._init()
-        from core.index_recall import search_index
+        from core.index.index_recall import search_index
 
         project = self._project(args.get("project"))
         return search_index(
-            self.store, self.embedder, self.cfg, project, args.get("query") or "",
-            k=args.get("k"), kind="code_symbol",
+            self.store,
+            self.embedder,
+            self.cfg,
+            project,
+            args.get("query") or "",
+            k=args.get("k"),
+            kind="code_symbol",
         )
 
     def get_doc_section(self, args: dict) -> dict:
         self._init()
-        from core.index_recall import get_chunk
+        from core.index.index_recall import get_chunk
 
         project = self._project(args.get("project"))
         return get_chunk(self.store, project, args.get("ref") or "")
 
     def get_symbol(self, args: dict) -> dict:
         self._init()
-        from core.index_recall import get_chunk
+        from core.index.index_recall import get_chunk
 
         project = self._project(args.get("project"))
         return get_chunk(self.store, project, args.get("ref") or "")
 
     def doc_outline(self, args: dict) -> dict:
         self._init()
-        from core.index_recall import get_outline
+        from core.index.index_recall import get_outline
 
         project = self._project(args.get("project"))
         return get_outline(self.store, project, args.get("source_path"), kind="doc_section")
 
     def code_outline(self, args: dict) -> dict:
         self._init()
-        from core.index_recall import get_outline
+        from core.index.index_recall import get_outline
 
         project = self._project(args.get("project"))
         return get_outline(self.store, project, args.get("source_path"), kind="code_symbol")
 
     def index_docs(self, args: dict) -> dict:
         self._init()
-        from core.indexer import index_project
+        from core.index.indexer import index_project
 
         project = self._project(args.get("project"))
         root = args.get("path") or project["path"]

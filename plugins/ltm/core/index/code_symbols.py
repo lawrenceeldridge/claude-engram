@@ -118,7 +118,7 @@ def extract_code_symbols(text: str, ext: str) -> list[Symbol]:
     path. If it is unavailable, Python still indexes via the built-in ``ast`` extractor so
     the plugin's own language never regresses; other languages simply aren't indexed.
     """
-    from core import treesitter_symbols  # lazy: avoids importing tree-sitter when unused
+    from core.index import treesitter_symbols  # lazy: avoids importing tree-sitter when unused
 
     via_ts = treesitter_symbols.extract_symbols(text, ext)
     if via_ts is not None:

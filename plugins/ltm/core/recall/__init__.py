@@ -2,7 +2,7 @@
 
 Ranking is not similarity alone. Each candidate that clears the similarity gate
 (the context cue) gets a Priority Score combining similarity, recency decay and
-frequency (see ``core.scoring``). Superseded facts are excluded at the SQL layer,
+frequency (see ``core.domain.scoring``). Superseded facts are excluded at the SQL layer,
 so a replaced fact can never resurface. Everything the model sees is capped by
 ``max_chars`` so the token budget is bounded.
 """
@@ -13,12 +13,12 @@ import sqlite3
 import time
 
 from core.config import Config
-from core.embedding import EmbeddingGateway
-from core.fusion import Channel, fuse
-from core.lexical import token_set
+from core.domain.fusion import Channel, fuse
+from core.domain.lexical import token_set
+from core.domain.quantize import cosine, dequantize_int8
+from core.domain.scoring import frequency_boost, priority, recency_decay
+from core.ports.embedding import EmbeddingGateway
 from core.project import Project
-from core.quantize import cosine, dequantize_int8
-from core.scoring import frequency_boost, priority, recency_decay
 from core.store import Store
 
 Hit = tuple[float, sqlite3.Row]
@@ -43,6 +43,11 @@ def _score(rows, query_vec, cfg: Config, now: float, min_sim: float, penalty: fl
         decay = recency_decay(age, cfg.half_life_days)
         boost = frequency_boost(row["frequency"] or 1)
         score = priority(sim, decay, boost, cfg.w_sim, cfg.w_recency, cfg.w_freq) * penalty
+        # Short-term facts can be down-weighted at recall (context-dependent retrieval).
+        # Default weight 1.0 is a no-op — and `tier` is only read when a penalty is set,
+        # so behaviour (and old rows without the column) is untouched by default.
+        if cfg.stm_recall_weight != 1.0 and row["tier"] == "stm":
+            score *= cfg.stm_recall_weight
         out.append((score, row))
     return out
 
