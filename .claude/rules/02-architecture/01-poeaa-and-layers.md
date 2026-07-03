@@ -20,6 +20,7 @@ the core, and keeps capture off the hot path. The canonical map (from
 | Embedding provider | **Gateway + Separated Interface** | `core/embedding.py`, `core/adapters/` |
 | Injected payload | DTO (deliberately one line per fact) | `core/recall.py::render_block` |
 | Empty recall | Special Case / Null Object (inject nothing) | `render_block` returns `""` |
+| Durable per-memory processing (opt-in) | Gateway + Separated Interface — a **Command** queue, **not** Events | `core/membus.py`, `core/adapters/{inproc,nats}_bus.py` |
 | Wiring | Composition Root | `bin/*` entry points |
 
 ## Layer seams (do not collapse)
@@ -56,6 +57,12 @@ core/adapters/  (driven adapters: fastembed_gw, …)  ← the only place heavy d
    an error. Irrelevant turns cost zero tokens.
 5. **New pattern? Invoke [`/ltm-poeaa`](../../skills/ltm-poeaa/SKILL.md) first** — it
    carries the catalogue, decision trees, anti-patterns, and this project's defaults.
+6. **Durable per-memory processing is a Command queue, not an Event bus.** claude-ltm has
+   **no** Events / pub-sub. A durable job-claim queue (`MemoryBus`) is permitted for
+   detached capture / re-distil / consolidation — opt-in, behind a Separated Interface,
+   default `inproc` (stdlib SQLite `work_queue`), opt-in `nats` (JetStream), **fail-open**
+   to `inproc`. It extends single-flight + idempotent capture; it never touches the recall
+   hot path. See [DESIGN.md](../../../DESIGN.md) and the `stm-ltm-membus` design.
 
 ## See also
 

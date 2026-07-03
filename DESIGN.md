@@ -30,6 +30,13 @@ SessionEnd/PreCompact ─► spawn detached capture worker        ← fire & for
               (facts + int8/binary embeddings, rows tagged by project)
 ```
 
+**Planned (not yet built):** detached capture is designed to gain a durable **Command
+queue** (`MemoryBus`) so a dropped connection or an `LTM_DISTILLER` outage retries rather
+than degrades — opt-in, behind a Separated Interface, default `inproc` (stdlib SQLite
+`work_queue`), opt-in `nats` (JetStream), **fail-open** to `inproc`, never on the recall
+hot path. It is a Command queue (one handler, retry/dead-letter), **not** an Event bus.
+See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
+
 ### POEAA / Cosmic Python patterns
 
 | Role | Pattern | File |
@@ -157,6 +164,15 @@ is Y") but not semantically-conflicting rewrites that share little vocabulary
 entity/attribute extraction — the LLM-distiller drop-in, which can emit explicit
 `supersedes` links.
 
+**Planned extension (not yet built) — explicit STM/LTM tiers + a "sleep" pass.** The
+lifecycle above implements the multi-store model's *control processes* inline. A designed
+(not yet implemented) extension makes them explicit: a capacity-bounded **short-term
+store** that promotes to long-term on rehearsal, an offline **consolidation pass**
+(replay / refine / rescue, mirroring active systems consolidation + REM), and an
+importance-weighted **forgetting model** (SHY-style global downscale + prune) that keeps
+the active set small enough that brute-force search stays viable. Full design:
+[`docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md`](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
+
 ## Cross-project
 
 One **global** store under `${CLAUDE_PLUGIN_DATA}` (survives plugin updates),
@@ -184,6 +200,7 @@ of launch subdirectory; configurable for monorepo granularity via `markers`.
 | Over-eager supersession retires a distinct fact | conservative default threshold (0.85); superseded rows are archived (reversible), not deleted |
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
+| Planned durable queue becomes a de-facto dependency | `MemoryBus` is opt-in behind a Separated Interface; default `inproc` is stdlib SQLite; `nats` adapter fails open to `inproc`; core stays importable without a broker |
 
 ## Status of the levers
 
