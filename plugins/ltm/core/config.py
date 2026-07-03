@@ -85,6 +85,8 @@ class Config:
     lease_ttl: float
     nats_url: str
     nats_stream: str
+    nats_provision: str
+    nats_version: str
     retention_keep_max: int
     prune_threshold: float
     purge_horizon_days: float
@@ -137,6 +139,11 @@ def get_config() -> Config:
         lease_ttl=_num(_opt("lease_ttl", "300"), 300),
         nats_url=_opt("nats_url", "nats://localhost:4222"),
         nats_stream=_opt("nats_stream", "LTM_WORK"),
+        # How to auto-provision a NATS server when bus=nats and none is reachable:
+        # binary = download + run the nats-server binary (default, no Docker needed);
+        # docker = run the official image; off = never auto-start (bring your own).
+        nats_provision=_opt("nats_provision", "binary"),
+        nats_version=_opt("nats_version", "2.10.22"),
         # Consolidation (sleep pass). All default-off: pruning is retrieval-affecting
         # and stays disabled until the retention weights are `ltm eval`-tuned.
         retention_keep_max=int(_num(_opt("retention_keep_max", "0"), 0)),
