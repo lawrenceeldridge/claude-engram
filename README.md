@@ -163,6 +163,8 @@ ltm core                show the stable session-start memory block
 ltm projects            list every project in the global store
 ltm prune               delete all memory for the current project
 ltm sweep [--all]       archive stale facts (TTL expiry; --days N to override)
+ltm consolidate [--all] run the sleep pass: promote recalled STM, prune (if enabled)
+ltm nats status|start|stop  manage the opt-in NATS server (bus=nats)
 ltm daemon              run the resident daemon (keeps the embedder warm)
 ltm viewer              launch the localhost viewer
 ltm eval --backends …   benchmark embedding backends (see below)
@@ -205,6 +207,52 @@ Env-only knobs (no `userConfig` entry):
 
 Advanced ranking weights (`w_sim`, `w_recency`, `w_freq`) are tunable via `LTM_*`
 env vars; defaults `1.0 / 0.3 / 0.2`.
+
+### Memory lifecycle — STM/LTM tiers & consolidation
+
+Fresh facts enter a short-term tier and promote to long-term on rehearsal; a
+consolidation ("sleep") pass runs at session checkpoints (or `ltm consolidate`).
+Recall is tier-agnostic and **pruning is off by default** — turn it on deliberately.
+Env-configured (`LTM_*`):
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `LTM_PROMOTE_AFTER_FREQ` | `2` | reinforcement count that promotes an STM fact to LTM |
+| `LTM_STM_CAPACITY` | `0` | max active STM facts before weakest are displaced (0 = unbounded/off) |
+| `LTM_STM_RECALL_WEIGHT` | `1.0` | recall weight for STM facts (1.0 = tier-agnostic; `<1` down-ranks STM) |
+| `LTM_RETENTION_KEEP_MAX` | `0` | keep only the top-N facts by retention score, prune the rest (0 = off) |
+| `LTM_PRUNE_THRESHOLD` | `0` | prune facts whose retention score is below this (0 = off) |
+| `LTM_PURGE_HORIZON_DAYS` | `0` | hard-delete facts archived longer than this, then `VACUUM` (0 = off) |
+
+### Durable work queue — MemoryBus (inproc / NATS)
+
+Detached capture and recovery run through a durable Command queue. The default
+`inproc` backend is a zero-dependency SQLite queue (retry + backoff + dead-letter +
+crash recovery). Opt into **NATS JetStream** for durable, cross-process processing —
+the server is auto-provisioned (a checksum-verified `nats-server` binary, no Docker
+required) and it **fails open to `inproc`** whenever NATS is unavailable, so enabling
+it is safe. Env-configured (`LTM_*`):
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `LTM_BUS` | `inproc` | `inproc` (SQLite queue) or `nats` (JetStream) |
+| `LTM_BUS_MAX_DELIVER` | `5` | delivery attempts before a work item is dead-lettered |
+| `LTM_BUS_BACKOFF` | `5,30,120,600` | retry backoff schedule, seconds (comma-separated) |
+| `LTM_LEASE_TTL` | `300` | seconds a claimed item is leased before reclaim (crash recovery) |
+| `LTM_NATS_URL` | `nats://localhost:4222` | NATS URL — use a dedicated port so ltm doesn't share another server |
+| `LTM_NATS_STREAM` | `LTM_WORK` | JetStream stream name |
+| `LTM_NATS_PROVISION` | `binary` | auto-start NATS: `binary` (download nats-server), `docker`, or `off` (bring your own) |
+| `LTM_NATS_VERSION` | `2.10.22` | pinned nats-server version for the binary provisioner |
+
+Enable NATS in `settings.json` (a dedicated port keeps it isolated):
+
+```json
+"env": { "LTM_BUS": "nats", "LTM_NATS_URL": "nats://localhost:4225" }
+```
+
+The `nats-py` client is auto-installed into the managed venv on the next capture, so
+activation takes one restart (it stays on `inproc` until ready). Manage the server
+with `ltm nats status | start | stop`.
 
 ## Real semantic recall (recommended)
 
