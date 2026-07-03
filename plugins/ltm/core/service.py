@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 
 from core.confidence import compute_confidence
@@ -60,7 +61,11 @@ def add_records(
     for record in records:
         fact_id = store.fact_id(project["key"], record.text)
         if store.exists(fact_id):
-            store.reinforce(fact_id, now)
+            # Rehearsal — a fact seen again reinforces, and once rehearsed enough
+            # (frequency >= promote_after_freq) it transfers from STM to LTM.
+            freq = store.reinforce(fact_id, now)
+            if freq >= cfg.promote_after_freq:
+                store.promote(fact_id, now)
             continue
         vec = embedder.embed_one(record.text)
         victims = _resolve_supersedes(store, project["key"], record.supersedes)
@@ -368,9 +373,14 @@ def _embedding_mismatch(store: Store, embedder: EmbeddingGateway, project_key: s
     return bool(stored) and qdim not in stored
 
 
-def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int]:
-    """Greedy budget pack: highest-ranked facts first, until the char budget is spent."""
+def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]:
+    """Greedy budget pack: highest-ranked facts first, until the char budget is spent.
+
+    Also returns the ids of the packed facts so the caller can record retrieval
+    attribution (recall_count / last_recalled) — the id is not exposed in the DTO.
+    """
     packed: list[dict] = []
+    packed_ids: list[str] = []
     used = 0
     for _score, sim, row in hits:
         text = row["text"]
@@ -384,8 +394,9 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int]:
                 "frequency": row["frequency"] or 1,
             }
         )
+        packed_ids.append(row["id"])
         used += len(text)
-    return packed, len(hits) - len(packed)
+    return packed, len(hits) - len(packed), packed_ids
 
 
 def recall_structured(
@@ -420,7 +431,7 @@ def recall_structured(
     else:
         verdict = "ok"
 
-    facts, dropped = _pack_facts(hits, max_chars)
+    facts, dropped, recalled_ids = _pack_facts(hits, max_chars)
     result = {
         "query": query,
         "project": project["label"],
@@ -440,4 +451,10 @@ def recall_structured(
         confidence=confidence,
         verdict=verdict,
     )
+    # Retrieval attribution feeds the retention score (testing/spacing signal). It is
+    # best-effort — a failure here must never break a recall.
+    try:
+        store.mark_recalled(recalled_ids)
+    except sqlite3.Error:
+        pass
     return result

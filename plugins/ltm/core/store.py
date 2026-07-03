@@ -54,10 +54,14 @@ CREATE TABLE IF NOT EXISTS facts (
   importance    REAL DEFAULT 0,
   frequency     INTEGER DEFAULT 1,
   status        TEXT DEFAULT 'active',
-  superseded_by TEXT
+  superseded_by TEXT,
+  tier          TEXT NOT NULL DEFAULT 'ltm',
+  recall_count  INTEGER DEFAULT 0,
+  last_recalled REAL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_project ON facts(project_key, status);
 CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);
+CREATE INDEX IF NOT EXISTS idx_facts_tier ON facts(project_key, tier, status);
 
 CREATE TABLE IF NOT EXISTS recall_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,6 +253,23 @@ def _v7_index(db: sqlite3.Connection) -> None:
         db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
 
 
+def _v9_stm(db: sqlite3.Connection) -> None:
+    # Atkinson-Shiffrin STM/LTM split + retrieval attribution. `tier` marks a fact's
+    # store: fresh captures land in 'stm' and promote to 'ltm' on rehearsal (see
+    # service.add_records). Existing rows are established memory → 'ltm'. recall_count/
+    # last_recalled feed the retention score (design §3A) — the testing/spacing signals.
+    # Additive: recall stays tier-agnostic by default, so behaviour is unchanged.
+    _add_columns(
+        db,
+        [
+            ("tier", "tier TEXT NOT NULL DEFAULT 'ltm'"),
+            ("recall_count", "recall_count INTEGER DEFAULT 0"),
+            ("last_recalled", "last_recalled REAL"),
+        ],
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_facts_tier ON facts(project_key, tier, status)")
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -262,6 +283,7 @@ _MIGRATIONS = [
     _v6_fts_widen,
     _v7_index,
     _v8_redistill,
+    _v9_stm,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -306,13 +328,79 @@ class Store:
     def exists(self, fact_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM facts WHERE id = ?", (fact_id,)).fetchone() is not None
 
-    def reinforce(self, fact_id: str, now: float | None = None) -> None:
-        """Consolidation — strengthen a fact seen again and refresh its recency."""
+    def reinforce(self, fact_id: str, now: float | None = None) -> int:
+        """Consolidation — strengthen a fact seen again and refresh its recency.
+
+        Returns the fact's new frequency so the caller can decide promotion
+        (STM→LTM on rehearsal); 0 if the fact is absent.
+        """
         self.db.execute(
             "UPDATE facts SET frequency = frequency + 1, last_seen = ?, status = 'active' WHERE id = ?",
             (now if now is not None else time.time(), fact_id),
         )
         self.db.commit()
+        row = self.db.execute("SELECT frequency FROM facts WHERE id = ?", (fact_id,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def promote(self, fact_id: str, now: float | None = None) -> None:
+        """Rehearsal transfer — move a short-term fact into the long-term store."""
+        self.db.execute(
+            "UPDATE facts SET tier = 'ltm', last_seen = ? WHERE id = ? AND tier = 'stm'",
+            (now if now is not None else time.time(), fact_id),
+        )
+        self.db.commit()
+
+    def stm_rows(self, project_key: str, limit: int | None = None) -> list[sqlite3.Row]:
+        """Active short-term facts for a project, weakest first (frequency, then oldest seen)."""
+        sql = (
+            "SELECT * FROM facts WHERE project_key = ? AND status = 'active' AND tier = 'stm' "
+            "ORDER BY frequency ASC, last_seen ASC"
+        )
+        params: list = [project_key]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self.db.execute(sql, params).fetchall()
+
+    def displace_stm(self, project_key: str, capacity: int) -> int:
+        """Short-term displacement — archive the weakest active STM facts beyond ``capacity``.
+
+        ``capacity <= 0`` disables displacement (the default). Archival is reversible
+        (``status='displaced'``), never a delete; recall already scans ``status='active'``
+        so displaced facts simply leave the search set. Returns the number archived.
+        """
+        if capacity <= 0:
+            return 0
+        rows = self.stm_rows(project_key)  # weakest-first
+        overflow = rows[: max(0, len(rows) - capacity)]  # keep the strongest ``capacity``
+        ids = [r["id"] for r in overflow]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        cur = self.db.execute(
+            f"UPDATE facts SET status = 'displaced' WHERE id IN ({placeholders})",
+            ids,
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def mark_recalled(self, fact_ids: list[str], now: float | None = None) -> int:
+        """Retrieval attribution — record that facts were recalled (testing/spacing signal).
+
+        Increments ``recall_count`` and refreshes ``last_recalled`` — the retention-score
+        inputs (design §3A). Called off the interactive hot path (from the on-demand
+        ``recall_structured``, not the per-prompt hook). Returns rows updated.
+        """
+        if not fact_ids:
+            return 0
+        stamp = now if now is not None else time.time()
+        placeholders = ",".join("?" for _ in fact_ids)
+        cur = self.db.execute(
+            f"UPDATE facts SET recall_count = recall_count + 1, last_recalled = ? WHERE id IN ({placeholders})",
+            (stamp, *fact_ids),
+        )
+        self.db.commit()
+        return cur.rowcount
 
     def supersede(self, fact_ids: list[str], by_id: str) -> int:
         """Retroactive interference — archive facts replaced by a newer one."""
@@ -346,6 +434,7 @@ class Store:
         files: list[str] | None = None,
         type: str = "",
         observation_id: str = "",
+        tier: str = "stm",
     ) -> bool:
         fid = self.fact_id(project["key"], text)
         stamp = created_at if created_at is not None else time.time()
@@ -353,8 +442,8 @@ class Store:
             "INSERT OR IGNORE INTO facts "
             "(id, project_key, project_label, project_path, session_id, kind, text, "
             " title, subtitle, narrative, files, type, observation_id, created_at, last_seen, dim, scale, "
-            " vec_int8, vec_bits, importance, frequency, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')",
+            " vec_int8, vec_bits, importance, frequency, status, tier) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?)",
             (
                 fid,
                 project["key"],
@@ -376,6 +465,7 @@ class Store:
                 vec_int8,
                 vec_bits,
                 importance,
+                tier,
             ),
         )
         self.db.commit()

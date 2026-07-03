@@ -76,6 +76,9 @@ class Config:
     w_recency: float
     w_freq: float
     supersede_threshold: float
+    stm_capacity: int
+    promote_after_freq: int
+    stm_recall_weight: float
     distiller: str
     distiller_cmd: str
     distiller_model: str
@@ -112,6 +115,11 @@ def get_config() -> Config:
         w_recency=_num(_opt("w_recency", "0.3"), 0.3),
         w_freq=_num(_opt("w_freq", "0.2"), 0.2),
         supersede_threshold=_num(_opt("supersede_threshold", "0.85"), 0.85),
+        # STM/LTM tier (Atkinson-Shiffrin). Defaults are behaviour-neutral:
+        # no displacement (0 = unbounded STM), gentle promotion, no recall penalty.
+        stm_capacity=int(_num(_opt("stm_capacity", "0"), 0)),
+        promote_after_freq=int(_num(_opt("promote_after_freq", "2"), 2)),
+        stm_recall_weight=_num(_opt("stm_recall_weight", "1.0"), 1.0),
         distiller=_opt("distiller", "claude"),
         distiller_cmd=_opt("distiller_cmd", "claude"),
         distiller_model=_opt("distiller_model", ""),

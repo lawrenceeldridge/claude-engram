@@ -43,6 +43,11 @@ def _score(rows, query_vec, cfg: Config, now: float, min_sim: float, penalty: fl
         decay = recency_decay(age, cfg.half_life_days)
         boost = frequency_boost(row["frequency"] or 1)
         score = priority(sim, decay, boost, cfg.w_sim, cfg.w_recency, cfg.w_freq) * penalty
+        # Short-term facts can be down-weighted at recall (context-dependent retrieval).
+        # Default weight 1.0 is a no-op — and `tier` is only read when a penalty is set,
+        # so behaviour (and old rows without the column) is untouched by default.
+        if cfg.stm_recall_weight != 1.0 and row["tier"] == "stm":
+            score *= cfg.stm_recall_weight
         out.append((score, row))
     return out
 
