@@ -168,13 +168,16 @@ async function loadProjects() {
   const paren = prevLabel.lastIndexOf(' (');
   if (paren > -1) prevLabel = prevLabel.slice(0, paren);
   const rows = await (await fetch(view === 'index' ? '/api/index_projects' : '/api/projects')).json();
+  // Per-panel total: stm/ltm/rnr each carry their own count; index and any fallback
+  // use the plain total. So the dropdown number tracks the panel you're on.
+  const countFor = r => ((view === 'stm' || view === 'ltm' || view === 'rnr') ? (r[view] ?? 0) : r.count);
   // Pin the selected project across tab switches even when this view has no data for
   // it yet (e.g. a project with memory but no index) — otherwise the dropdown would
   // silently jump to the first project. The empty view then shows an empty state.
   if (prev && !rows.some(r => r.project_key === prev))
-    rows.push({ project_key: prev, label: prevLabel, count: 0 });
+    rows.push({ project_key: prev, label: prevLabel, count: 0, stm: 0, ltm: 0, rnr: 0 });
   sel.innerHTML = rows.map(r =>
-    `<option value="${r.project_key}">${r.label} (${r.count})</option>`).join('');
+    `<option value="${r.project_key}">${r.label} (${countFor(r)})</option>`).join('');
   if (rows.some(r => r.project_key === prev)) sel.value = prev;  // keep selection across live refresh / tab switch
   return rows.length;
 }
@@ -587,13 +590,17 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
         elif parsed.path == "/api/projects":
             store = Store(cfg.db_path)
+            rnr = store.rnr_counts()
             out = _disambiguate_labels(
                 [
                     {
                         "project_key": r["project_key"],
                         "label": r["project_label"],
                         "path": r["project_path"],
-                        "count": r["c"],
+                        "count": r["c"],  # total active (backward-compatible)
+                        "stm": r["stm"] or 0,
+                        "ltm": r["ltm"] or 0,
+                        "rnr": rnr.get(r["project_key"], 0),
                     }
                     for r in store.projects()
                 ]
