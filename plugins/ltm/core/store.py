@@ -710,11 +710,28 @@ class Store:
         ).fetchone()
 
     def projects(self) -> list[sqlite3.Row]:
+        """Active-fact projects with total (``c``) and per-tier (``stm``/``ltm``) counts,
+        newest first. The tier counts back the viewer's per-panel dropdown totals."""
         return self.db.execute(
             "SELECT project_key, project_label, project_path, "
-            "COUNT(*) AS c, MAX(created_at) AS last "
+            "COUNT(*) AS c, "
+            "SUM(tier = 'stm') AS stm, "
+            "SUM(tier = 'ltm') AS ltm, "
+            "MAX(created_at) AS last "
             "FROM facts WHERE status = 'active' GROUP BY project_key ORDER BY last DESC"
         ).fetchall()
+
+    def rnr_counts(self) -> dict[str, int]:
+        """Per-project count for the viewer's RnR panel: archived ('forgotten') facts
+        plus pending work-queue items — the two populations that panel shows."""
+        counts: dict[str, int] = {}
+        for r in self.db.execute(
+            "SELECT project_key, COUNT(*) AS c FROM facts WHERE status != 'active' GROUP BY project_key"
+        ):
+            counts[r["project_key"]] = r["c"]
+        for r in self.db.execute("SELECT project_key, COUNT(*) AS c FROM work_queue GROUP BY project_key"):
+            counts[r["project_key"]] = counts.get(r["project_key"], 0) + r["c"]
+        return counts
 
     def count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM facts WHERE status = 'active'").fetchone()[0]
