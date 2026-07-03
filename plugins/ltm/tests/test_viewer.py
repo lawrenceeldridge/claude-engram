@@ -7,7 +7,11 @@ report every subsystem healthy, and unreachable probes must fail open to 'warn'
 
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -32,6 +36,24 @@ class DisambiguateLabelsTests(unittest.TestCase):
     def test_unique_labels_untouched(self):
         items = [{"label": "a", "path": "/p/a"}, {"label": "b", "path": "/p/b"}]
         self.assertEqual([it["label"] for it in _disambiguate_labels(items)], ["a", "b"])
+
+
+class PageScriptTests(unittest.TestCase):
+    """The viewer page's inline <script> must be valid JS. Guards against Python string
+    escaping (e.g. a bare `\\n` in the triple-quoted PAGE) silently corrupting the JS —
+    which blanks the whole UI. Skipped when node isn't available."""
+
+    @unittest.skipUnless(shutil.which("node"), "node not available")
+    def test_served_script_is_valid_js(self):
+        from viewer.serve import PAGE
+
+        m = re.search(r"<script>(.*)</script>", PAGE, re.S)
+        self.assertIsNotNone(m, "no <script> block in PAGE")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(m.group(1))
+            path = fh.name
+        result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class TcpOkTests(unittest.TestCase):
