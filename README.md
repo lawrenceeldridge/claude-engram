@@ -1,11 +1,14 @@
 # claude-ltm
 
-Token-first, cross-project **long-term memory** for Claude Code, packaged as a
-plugin. It captures your sessions off the interactive path, distils them into
-atomic facts, embeds those compactly, and injects the *relevant* ones back into
-context — automatically, via hooks. Local-first: no API key and no network in the
-default configuration, no telemetry. The core runs on the Python standard library
-alone; real semantic recall and LLM distillation are opt-in.
+Token-first, cross-project **long-term memory + code/docs index** for Claude Code,
+packaged as a plugin. It captures your sessions off the interactive path, distils
+them into atomic facts, embeds those compactly, and injects the *relevant* ones
+back into context — automatically, via hooks. Alongside memory it indexes your
+codebase and docs into ranked symbol/section outlines, so recall and a
+`search_code` / `get_symbol` lookup replace broad Grep/Glob/Read sweeps (measured
+~2/3 fewer tokens). Local-first: no API key and no network in the default
+configuration, no telemetry. The core runs on the Python standard library alone;
+real semantic recall, the index, and LLM distillation are opt-in.
 
 ## Why it's efficient
 
@@ -15,6 +18,8 @@ Two budgets are optimised separately (see [DESIGN.md](DESIGN.md)):
   in proportion to relevance. A stable per-project *core* is injected once at
   `SessionStart` (joins the prompt-cache prefix → cheap on every later turn); a
   tiny *just-in-time* block is injected per prompt only when something matches.
+  The index returns outlines (qualname + signature + anchor), not file contents —
+  you fetch one symbol's body on demand instead of reading whole files.
 - **Latency** — capture (and any LLM distillation) is fully detached: zero
   interactive cost. Recall is brute-force cosine over quantised (int8) vectors,
   sub-10ms for a personal store. An optional resident daemon keeps the embedding
@@ -36,6 +41,46 @@ memory lifecycle on top (details in [DESIGN.md](DESIGN.md)):
   vocabulary-disjoint conflicts ("I moved to London" → retires "I live in Paris").
 - **Hard expiry** — an optional TTL sweep archives facts unseen past `ttl_days`,
   protecting ones reinforced past `ttl_keep_frequency`.
+- **Recovery** — when the LLM distiller is unavailable, capture falls back to a
+  heuristic and flags the fact `degraded`. A later healthy session re-distils the
+  queued captures automatically, so a transient outage doesn't leave low-quality
+  facts behind permanently.
+
+## Code & docs index
+
+The index is a second retrieval surface, keyed by the same project identity as
+memory. It parses source into symbols and docs into sections, embeds them, and
+serves ranked outlines:
+
+- **Languages** — Python (stdlib `ast`) and TypeScript/JavaScript
+  (`.ts/.tsx/.js/.jsx/.mjs/.cjs`) via `tree-sitter-language-pack`; Markdown/docs
+  by heading structure.
+- **Outlines, not dumps** — a match returns the qualified name, a
+  signature/docstring summary, an anchor, and a **freshness** verdict
+  (`fresh` / `edited` / `stale` / `gone`) checked against the live file. You then
+  fetch one symbol's body with `get_symbol`.
+- **Hybrid ranking** — FTS5 (bm25) fused with fastembed cosine via reciprocal-rank
+  fusion, then diversity-budget packed so one file can't dominate results.
+- **Kept current** — `SessionStart` auto-indexes (single-flight, file-capped), and
+  a `PostToolUse` hook re-indexes each file you Edit/Write so the outline never
+  drifts from disk.
+
+## Memory-first enforcement (`LTM_ENFORCE`)
+
+A `PreToolUse` guard steers you to the cheap path before an expensive one: consult
+`recall` / `search_code` / `search_docs` *first*, then Grep/Glob/Read to widen if
+those come back weak or empty. A `PostToolUse` marker records the moment any ltm
+lookup tool runs (a maintenance `index_docs` doesn't count), so the guard can
+enforce *ordering* rather than nagging blindly.
+
+| `LTM_ENFORCE` | Behaviour |
+|---|---|
+| `off` | Guard disabled. |
+| `advisory` *(default)* | Reminders only, never blocks. One nudge per session to check memory/index before Grep/Glob; a nudge before reading a large code file whole. |
+| `strict` | Grep/Glob are **denied** until memory has been consulted this session (one `recall` — even an empty one — unlocks them). Reading a large **indexed** code file whole is denied (a `search_code` + `get_symbol`, or an `offset`/`limit` pre-edit peek, is expected instead). |
+
+The gate is deliberately cheap to satisfy: a single `recall` call clears it for the
+rest of the session. It's fail-open — any error in the hook lets the tool through.
 
 ## Layout
 
@@ -44,14 +89,40 @@ claude-ltm/
 ├── .claude-plugin/marketplace.json     # marketplace catalogue (lists the plugin)
 └── plugins/ltm/
     ├── .claude-plugin/plugin.json      # plugin manifest + userConfig
-    ├── hooks/hooks.json                # SessionStart, UserPromptSubmit, SessionEnd, PreCompact
+    ├── hooks/hooks.json                # SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd, PreCompact
     ├── commands/memory-viewer.md       # /ltm:memory-viewer
-    ├── core/                           # pure-Python core (Ports & Adapters); adapters/ holds fastembed
-    ├── bin/                            # hook entry points, CLI (ltm), daemon
+    ├── core/                           # pure-Python core (Ports & Adapters): store, service, distill, indexer, chunking, symbol extractors
+    ├── bin/                            # hook entry points, CLI (ltm), MCP server, daemon
+    │   ├── recall_session_start.py     #   SessionStart — core memory + orientation + memory-first directive
+    │   ├── recall_prompt.py            #   UserPromptSubmit — just-in-time recall
+    │   ├── prefer_memory.py            #   PreToolUse — memory-first guard (LTM_ENFORCE)
+    │   ├── mark_consulted.py           #   PostToolUse — records that memory was consulted
+    │   ├── index_edit.py               #   PostToolUse — re-index edited files
+    │   ├── index_docs.py               #   SessionStart — auto-index the project
+    │   ├── capture.py                  #   Stop/SessionEnd/PreCompact — detached capture + summary
+    │   ├── mcp_server.py               #   MCP tools (recall, search_code, get_symbol, …)
+    │   └── daemon.py                   #   optional resident embedder
     ├── bench/                          # labelled recall benchmark + dataset
-    ├── viewer/                         # localhost browser (stdlib http.server)
-    └── tests/                          # stdlib unittest smoke tests
+    ├── viewer/                         # localhost browser (stdlib http.server) — memory + index views
+    └── tests/                          # stdlib unittest / pytest suite
 ```
+
+## MCP tools
+
+The plugin exposes an `ltm-memory` MCP server so the model can query memory and the
+index on demand (these are what the memory-first guard steers toward):
+
+| Tool | Returns |
+|---|---|
+| `recall` | Distilled facts for the current project with a calibrated verdict (`ok` / `low_confidence` / `no_memory`). |
+| `search_code` | Ranked code-symbol outlines (qualname + signature + anchor + freshness). |
+| `get_symbol` | One symbol's full source by anchor, with a symbol-precise freshness check. |
+| `code_outline` | Whole-file / project symbol outline. |
+| `search_docs` | Ranked doc-section outlines. |
+| `get_doc_section` | One doc section's body by anchor. |
+| `doc_outline` | Document/heading outline. |
+| `index_docs` | (Re)index the current project's code + docs. |
+| `list_projects` | Every project in the global store with its active-fact count. |
 
 ## Try it without installing
 
@@ -77,8 +148,10 @@ Or add the marketplace and install:
 /plugin install ltm@claude-ltm
 ```
 
-Hooks then run automatically: memory is captured at session end / pre-compact and
-recalled at session start and on each prompt.
+Hooks then run automatically: memory is recalled and the project auto-indexed at
+session start, relevant facts injected per prompt, the memory-first guard steers
+tool use, edited files are re-indexed, and memory is captured (with a throttled
+session summary) at stop / session end / pre-compact.
 
 ## CLI
 
@@ -103,11 +176,11 @@ or `LTM_*` env vars for standalone use:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `embedding` | `hash` | `hash` (lexical stub, zero deps) or `fastembed` (real semantic model) |
+| `embedding` | `hash` | `hash` (lexical stub, zero deps) or `fastembed` (real semantic model, self-provisions a venv) |
 | `embedding_model` | *(blank)* | fastembed model id; blank = `BAAI/bge-base-en-v1.5` (best measured recall) |
-| `distiller` | `heuristic` | `heuristic` (line extraction), `claude` (headless `claude -p`, Haiku), or `ollama` (local, zero-token) |
+| `distiller` | `claude` | `claude` (headless `claude -p`, Haiku), `ollama` (local, zero-token), or `heuristic` (line extraction, no LLM) |
 | `distiller_model` | *(blank)* | claude: model alias (blank = `haiku`); ollama: model name (blank = `qwen2.5:3b`) |
-| `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller |
+| `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller (ignored under `claude`) |
 | `top_k` | `3` | facts injected per prompt |
 | `min_sim` | `0.12` | similarity threshold to inject |
 | `core_size` | `5` | stable facts injected at session start (0 disables) |
@@ -117,6 +190,18 @@ or `LTM_*` env vars for standalone use:
 | `supersede_threshold` | `0.85` | new-fact similarity that retires an older one (1.0 disables) |
 | `ttl_days` | `0` | archive facts unseen this long on capture (0 disables hard expiry) |
 | `ttl_keep_frequency` | `3` | facts reinforced this often are never expired |
+| `recall_min_confidence` | `0.35` | confidence the `recall` tool needs to report verdict `ok` |
+| `recall_max_chars` | `1200` | character budget for facts returned by the `recall` tool |
+| `viewer_autostart` | `true` | start the localhost viewer detached at session start |
+| `viewer_port` | `7801` | port for the always-on memory/index viewer |
+
+Env-only knobs (no `userConfig` entry):
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `LTM_ENFORCE` | `advisory` | memory-first guard strength — `off` / `advisory` / `strict` (see above) |
+| `LTM_DAEMON` | *(unset)* | `1` makes the recall hook use the resident daemon instead of loading the model in-process |
+| `LTM_PYTHON` / `python` userConfig | *(blank)* | pin an interpreter that already has fastembed; blank = auto-provisioned managed venv |
 
 Advanced ranking weights (`w_sim`, `w_recency`, `w_freq`) are tunable via `LTM_*`
 env vars; defaults `1.0 / 0.3 / 0.2`.
@@ -124,11 +209,12 @@ env vars; defaults `1.0 / 0.3 / 0.2`.
 ## Real semantic recall (recommended)
 
 The lexical `hash` stub only matches shared vocabulary. For recall that
-generalises across wording, use `fastembed`:
+generalises across wording, use `fastembed`. On first use it **self-provisions a
+private venv** under the plugin data dir and downloads the model once — no manual
+`pip` needed; set `embedding=fastembed` and go. To keep the model warm across the
+short-lived hook processes:
 
 ```bash
-pip install fastembed                  # pulls onnxruntime; downloads a model once
-# set embedding=fastembed  (bge-base is the default model)
 python3 bin/ltm daemon                 # keep the model warm
 export LTM_DAEMON=1                     # recall hook uses the daemon, else in-process
 ```
@@ -138,22 +224,22 @@ export LTM_DAEMON=1                     # recall hook uses the daemon, else in-p
 The heuristic distiller just splits lines. An LLM distiller produces genuinely
 atomic facts and explicit `supersedes` links (the fix for vocabulary-disjoint
 conflicts). It runs in the detached capture worker — off the interactive path —
-and falls back to the heuristic on any failure, so capture never breaks. Two
-backends:
+and falls back to the heuristic on any failure (flagging the fact for later
+re-distillation), so capture never breaks. Two backends:
 
-**Local, zero-token (recommended for cost):** any OpenAI-compatible local server.
-Distillation is simple extraction, so a small model suffices.
+**Claude, using an efficient model (default):** distillation is a cheap task, so it
+defaults to **Haiku**, not Opus/Sonnet.
+
+```bash
+# distiller=claude is the default; distiller_model defaults to "haiku"
+```
+
+**Local, zero-token:** any OpenAI-compatible local server. Distillation is simple
+extraction, so a small model suffices.
 
 ```bash
 ollama pull qwen2.5:3b        # or llama3.2:3b
 # set distiller=ollama  (defaults: base_url http://localhost:11434/v1, model qwen2.5:3b)
-```
-
-**Claude, using an efficient model:** distillation is a cheap task, so it defaults
-to **Haiku**, not Opus/Sonnet.
-
-```bash
-# set distiller=claude   (distiller_model defaults to "haiku")
 ```
 
 ## Benchmarking retrieval quality
@@ -180,16 +266,18 @@ shipping it.
 
 ## Project identity
 
-Memory is keyed by a **marker-walk**: from the working directory we walk up to the
-nearest `.git` / `pyproject.toml` / `package.json` (configurable via `markers`)
-and key on that directory's path. This avoids the `basename(cwd)` fragmentation
-that mis-files memory in monorepos and subdirectory launches.
+Memory and the index are keyed by a **marker-walk**: from the working directory we
+walk up to the nearest `.git` / `pyproject.toml` / `package.json` / `go.mod` /
+`Cargo.toml` / `pom.xml` (configurable via `markers`) and key on that directory's
+path. This avoids the `basename(cwd)` fragmentation that mis-files memory in
+monorepos and subdirectory launches.
 
 ## Status
 
-Working end to end (15 stdlib tests). Defaults are local-first and zero-dependency
-(`hash` + `heuristic`); real recall is opt-in via `fastembed` (bge-base) and, for
-best quality, an LLM distiller (`distiller=ollama` for zero-token local, or
-`distiller=claude` on Haiku). See [DESIGN.md](DESIGN.md) for the full
-architecture, POEAA pattern choices, caching analysis, memory-lifecycle model,
-benchmark, and risk register.
+Working end to end (137 tests, 5 skipped). Defaults are local-first and
+zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
+via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
+distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for
+zero-token local). See [DESIGN.md](DESIGN.md) for the full architecture, POEAA
+pattern choices, caching analysis, memory-lifecycle model, benchmark, and risk
+register.
