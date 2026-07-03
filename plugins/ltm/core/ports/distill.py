@@ -32,7 +32,7 @@ _NOISE_PREFIXES = ("http", "```", "|", ">", "<")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _NON_IDS = {"", "none", "null", "n/a", "na", "-"}  # sentinels small models emit for "nothing"
 
-# Observation categories (mirrors claude-mem's taxonomy). Small models drift, so
+# Observation categories (a small fixed taxonomy). Small models drift, so
 # anything off-list falls back to "discovery" at parse time.
 _TYPES = {"decision", "bugfix", "feature", "refactor", "discovery", "change"}
 _DEFAULT_TYPE = "discovery"

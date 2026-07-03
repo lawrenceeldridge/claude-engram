@@ -5,8 +5,8 @@ dependency-free hash embedder, whose "similarity" is only lexical overlap. Fusio
 merges several independent ranked channels into one order, so a fact that a weak
 embedder misses can still surface on keyword overlap, recency or reinforcement.
 
-Adapted from jcodemunch's retrieval/signal_fusion. Each channel yields a ranked
-list of ids; the fused score sums ``weight[c] / (k + rank_c(id))`` across the
+Each channel yields a ranked list of ids; the fused score sums
+``weight[c] / (k + rank_c(id))`` across the
 channels an id appears in (Reciprocal Rank Fusion, smoothing ``k``). Rank-based,
 so channels on incompatible score scales combine cleanly with no normalisation.
 """

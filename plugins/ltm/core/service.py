@@ -231,7 +231,7 @@ def maybe_capture_summary(
 ) -> int:
     """Refresh the session summary, throttled by how much the transcript has grown.
 
-    claude-mem re-summarises on every Stop — a full-transcript LLM call per turn.
+    Re-summarising on every Stop would be a full-transcript LLM call per turn.
     Throttling on transcript growth (a summary cursor per session) keeps the summary
     current on Stop at a fraction of that cost, while ``force=True`` (SessionEnd /
     PreCompact checkpoints) always writes a final one. Both paths advance the cursor,
@@ -342,8 +342,8 @@ def orientation_block(store: Store, project: Project, max_chars: int = 900) -> s
     """The latest session summary as a 'where you left off' orientation snapshot.
 
     Injected at SessionStart (which also fires after a /compact), this re-establishes
-    task orientation across a session or compaction boundary — claude-ltm's equivalent
-    of jcodemunch's PreCompact snapshot, delivered on the reliable SessionStart event.
+    task orientation across a session or compaction boundary, delivered on the reliable
+    SessionStart event (which also fires after a /compact).
     """
     row = store.latest_summary(project["key"])
     if row is None:

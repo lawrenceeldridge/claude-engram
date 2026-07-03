@@ -1,7 +1,7 @@
 """Multi-language symbol extraction via tree-sitter (Python, TypeScript, JS, JSX).
 
-Modelled on jcodemunch's approach: a declarative per-grammar ``Spec`` (node-type →
-symbol kind, which nodes are containers to descend, which are transparent wrappers)
+A declarative per-grammar ``Spec`` (node-type → symbol kind, which nodes are
+containers to descend, which are transparent wrappers)
 drives one generic walker, so adding a language is data, not code. tree-sitter is an
 optional dependency provisioned into the managed venv (see requirements.txt); when it
 is absent, ``extract_symbols`` returns None and the caller falls back to stdlib ``ast``

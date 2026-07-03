@@ -182,8 +182,8 @@ that intentionally spans all projects.
 
 ### Project identity — marker-walk (not `basename(cwd)`)
 
-claude-mem keys on `basename(cwd)`, which fragments monorepos, subdirectory
-launches, and same-named folders (filed bugs). Instead we walk up from `cwd` to
+Keying on `basename(cwd)` fragments monorepos, subdirectory launches, and
+same-named folders. Instead we walk up from `cwd` to
 the nearest marker (`.git`, `pyproject.toml`, …) and key on that directory's
 absolute path (hashed), with its basename as a display label. Stable regardless
 of launch subdirectory; configurable for monorepo granularity via `markers`.

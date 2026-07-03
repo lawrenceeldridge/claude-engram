@@ -6,8 +6,7 @@ you, old fact vectors become incomparable to new ones and recall quietly rots.
 
 This pins a small set of fixed strings' vectors at first use and, on demand,
 re-embeds them and alarms if the mean cosine similarity to the pinned vectors
-drops below a threshold — a cheap tripwire, no model internals required. Adapted
-from jcodemunch's retrieval/embed_drift.
+drops below a threshold — a cheap tripwire, no model internals required.
 """
 
 from __future__ import annotations

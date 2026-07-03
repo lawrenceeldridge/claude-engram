@@ -2,8 +2,8 @@
 
 A single 0-1 score summarising how trustworthy a ranked recall is, so a caller
 (the MCP recall tool, a hook) can decide whether to trust memory or widen to a
-full search. Adapted from jcodemunch's retrieval/confidence: a weighted geometric
-mean of independent 0-1 signals, so any single weak signal drags the number down
+full search. It is a weighted geometric mean of independent 0-1 signals, so any
+single weak signal drags the number down
 (the whole point — a lone strong hit with no runner-up gap shouldn't read as
 certain).
 
