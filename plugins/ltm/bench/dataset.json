@@ -180,5 +180,21 @@
       {"q": "can I commit straight onto the main branch", "relevant": [1]},
       {"q": "I want to edit the generated output file by hand", "relevant": [2]}
     ]
+  },
+  "duplicate_cluster_scenario": {
+    "description": "Measures the integrate (gist-chunking) stage — Idea #3. The first three facts are a near-duplicate cluster (same content, reworded); the rest are distinct. After the heuristic integrate floor runs at the given threshold, the cluster must collapse to one survivor (active count drops) while recall of the cluster's answer is preserved (a query for that content still hits the survivor). relevant = indices into duplicate_cluster_scenario.facts; threshold is the cosine merge floor to test.",
+    "threshold": 0.9,
+    "facts": [
+      "The primary database is PostgreSQL 16 hosted on Amazon RDS.",
+      "The primary database is PostgreSQL 16 running on Amazon RDS.",
+      "The primary datastore is PostgreSQL 16 on Amazon RDS.",
+      "Background jobs are processed by a Celery worker pool backed by Redis.",
+      "Arabic is the default locale so layouts must be right-to-left.",
+      "Application logs are shipped to Datadog as structured JSON."
+    ],
+    "queries": [
+      {"q": "what is the primary database", "relevant": [0, 1, 2]},
+      {"q": "how are background jobs processed", "relevant": [3]}
+    ]
   }
 }
