@@ -1,5 +1,6 @@
 # Generated files (plans and trackers)
 docs/generated/
+docs/whitepaper/
 
 # Claude per-user settings — settings.json is the team-shared file (versioned);
 # settings.local.json is user-specific (gitignored by the monorepo root, listed
