@@ -1,0 +1,37 @@
+% Minimal header-includes for claude-engram design papers.
+% Kept to widely-available packages so tectonic needs nothing exotic.
+
+% Tighter, professional tables (pandoc emits booktabs rules).
+\usepackage{booktabs}
+
+% Better spacing around the title block and abstract.
+\usepackage{setspace}
+
+% Slightly denser lists (research papers do not need loose spacing).
+\usepackage{enumitem}
+\setlist{itemsep=2pt, topsep=4pt}
+
+% Keep long identifiers (paths, config keys) from overflowing the margin.
+\usepackage{seqsplit}
+
+% Code blocks must never cross the right margin. fvextra wraps long verbatim
+% lines (breakanywhere covers unbroken table rows and command lines) at a
+% compact mono size; pandoc's highlighted blocks use the Highlighting
+% environment, plain fenced blocks use `verbatim` — cover both.
+\usepackage{fvextra}
+\fvset{breaklines=true, breakanywhere=true, fontsize=\footnotesize}
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines=true, breakanywhere=true, fontsize=\footnotesize}
+
+% Prefer stretched inter-word space over pushing long inline code past the margin,
+% and allow hyphenation inside typewriter text so long paths/identifiers can break.
+\usepackage[htt]{hyphenat}
+\emergencystretch=5em
+
+% Landscape pages for wide raw output (appendices): wrap the section in
+% \begin{landscape} ... \end{landscape} in the paper's markdown. Rotates the
+% page content while keeping the page itself portrait in print order.
+\usepackage{pdflscape}
+
+% A quiet running header with the short title is intentionally NOT set here to
+% avoid clashing with the article class defaults; add fancyhdr in a per-paper
+% override only if a specific paper needs it.

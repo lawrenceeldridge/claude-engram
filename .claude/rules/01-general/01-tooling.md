@@ -12,7 +12,7 @@ synchronous, sub-10ms cosine scan.
 
 ## The stdlib-first dependency contract
 
-**`plugins/ltm/core/**` must import and run with the Python standard library
+**`plugins/engram/core/**` must import and run with the Python standard library
 alone.** This is the project's defining constraint, not a nicety:
 
 - The default `embedding=hash` (lexical stub) and `distiller=heuristic` (line
@@ -29,36 +29,36 @@ alone.** This is the project's defining constraint, not a nicety:
 
 When `embedding=fastembed`, the plugin **provisions its own private venv** under
 `${CLAUDE_PLUGIN_DATA}` on first use and re-execs the hook into it — no manual pip
-needed (see `core/provision.py`, `bin/_bootstrap.py`, `plugins/ltm/requirements.txt`).
+needed (see `core/provision.py`, `bin/_bootstrap.py`, `plugins/engram/requirements.txt`).
 Pin an existing interpreter that already has `fastembed` via the `python` userConfig
-/ `LTM_PYTHON` env var to skip provisioning.
+/ `ENGRAM_PYTHON` env var to skip provisioning.
 
 ## Running things
 
-All commands run from `plugins/ltm/`:
+All commands run from `plugins/engram/`:
 
 ```bash
-cd plugins/ltm
+cd plugins/engram
 python3 -m unittest discover -s tests   # test suite (all stdlib)
-python3 bin/ltm doctor                  # resolved config, project identity, counts
-python3 bin/ltm demo                    # capture sample facts then recall (end-to-end)
-python3 bin/ltm eval --backends hash    # recall-quality benchmark
-python3 bin/ltm viewer                  # localhost memory/index viewer
+python3 bin/engram doctor                  # resolved config, project identity, counts
+python3 bin/engram demo                    # capture sample facts then recall (end-to-end)
+python3 bin/engram eval --backends hash    # recall-quality benchmark
+python3 bin/engram viewer                  # localhost memory/index viewer
 ruff check . && ruff format .           # lint + format
 ```
 
 Install the plugin for iterating:
 
 ```bash
-claude --plugin-dir ./plugins/ltm       # session-scoped
+claude --plugin-dir ./plugins/engram       # session-scoped
 ```
 
 ## Configuration
 
 Behaviour is driven by the plugin's `userConfig` (exposed to scripts as
-`CLAUDE_PLUGIN_OPTION_*`) or `LTM_*` env vars for standalone use. The full key
+`CLAUDE_PLUGIN_OPTION_*`) or `ENGRAM_*` env vars for standalone use. The full key
 list, defaults, and meanings are in [README.md § Configuration](../../../README.md)
-and `plugins/ltm/.claude-plugin/plugin.json` — that manifest is the source of truth
+and `plugins/engram/.claude-plugin/plugin.json` — that manifest is the source of truth
 for defaults; keep README and manifest in sync when either changes.
 
 ## See also

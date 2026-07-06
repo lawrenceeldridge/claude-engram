@@ -1,4 +1,4 @@
-# claude-ltm
+# claude-engram
 
 Token-first, cross-project **long-term memory + code/docs index** for Claude Code,
 packaged as a plugin. It captures your sessions off the interactive path, distils
@@ -27,7 +27,7 @@ Two budgets are optimised separately (see [DESIGN.md](DESIGN.md)):
 
 ## How memory behaves (cognitive model)
 
-Standard vector search recalls stale and irrelevant facts. claude-ltm layers a
+Standard vector search recalls stale and irrelevant facts. claude-engram layers a
 memory lifecycle on top, drawn from the **Atkinson–Shiffrin multi-store model** and
 the **Active Systems Consolidation Hypothesis** (details, and the honest limits of the
 mapping, in [DESIGN.md](DESIGN.md)):
@@ -75,15 +75,15 @@ serves ranked outlines:
   a `PostToolUse` hook re-indexes each file you Edit/Write so the outline never
   drifts from disk.
 
-## Memory-first enforcement (`LTM_ENFORCE`)
+## Memory-first enforcement (`ENGRAM_ENFORCE`)
 
 A `PreToolUse` guard steers you to the cheap path before an expensive one: consult
 `recall` / `search_code` / `search_docs` *first*, then Grep/Glob/Read to widen if
-those come back weak or empty. A `PostToolUse` marker records the moment any ltm
+those come back weak or empty. A `PostToolUse` marker records the moment any engram
 lookup tool runs (a maintenance `index_docs` doesn't count), so the guard can
 enforce *ordering* rather than nagging blindly.
 
-| `LTM_ENFORCE` | Behaviour |
+| `ENGRAM_ENFORCE` | Behaviour |
 |---|---|
 | `off` | Guard disabled. |
 | `advisory` *(default)* | Reminders only, never blocks. One nudge per session to check memory/index before a search — Grep/Glob **or a filesystem search via Bash** (`rg`, `grep -r`, `find -name`); a nudge before reading a large code file whole. |
@@ -99,17 +99,17 @@ rest of the session. It's fail-open — any error in the hook lets the tool thro
 ## Layout
 
 ```
-claude-ltm/
+claude-engram/
 ├── .claude-plugin/marketplace.json     # marketplace catalogue (lists the plugin)
-└── plugins/ltm/
+└── plugins/engram/
     ├── .claude-plugin/plugin.json      # plugin manifest + userConfig
     ├── hooks/hooks.json                # SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd, PreCompact
-    ├── commands/memory-viewer.md       # /ltm:memory-viewer
+    ├── commands/memory-viewer.md       # /engram:memory-viewer
     ├── core/                           # pure-Python core (Ports & Adapters): store, service, distill, indexer, chunking, symbol extractors
-    ├── bin/                            # hook entry points, CLI (ltm), MCP server, daemon
+    ├── bin/                            # hook entry points, CLI (engram), MCP server, daemon
     │   ├── recall_session_start.py     #   SessionStart — core memory + orientation + memory-first directive
     │   ├── recall_prompt.py            #   UserPromptSubmit — just-in-time recall
-    │   ├── prefer_memory.py            #   PreToolUse — memory-first guard (LTM_ENFORCE)
+    │   ├── prefer_memory.py            #   PreToolUse — memory-first guard (ENGRAM_ENFORCE)
     │   ├── mark_consulted.py           #   PostToolUse — records that memory was consulted
     │   ├── index_edit.py               #   PostToolUse — re-index edited files
     │   ├── credit_read.py              #   PostToolUse — credit bounded reads of indexed files (ledger)
@@ -124,7 +124,7 @@ claude-ltm/
 
 ## MCP tools
 
-The plugin exposes an `ltm-memory` MCP server so the model can query memory and the
+The plugin exposes an `engram-memory` MCP server so the model can query memory and the
 index on demand (these are what the memory-first guard steers toward):
 
 | Tool | Returns |
@@ -142,25 +142,25 @@ index on demand (these are what the memory-first guard steers toward):
 ## Try it without installing
 
 ```bash
-cd plugins/ltm
+cd plugins/engram
 python3 -m unittest discover -s tests        # smoke tests (all stdlib)
-python3 bin/ltm demo                         # capture sample facts, then recall
-python3 bin/ltm doctor                       # show config, project, counts
-python3 bin/ltm eval --backends hash         # recall-quality benchmark (add fastembed to compare)
-python3 bin/ltm viewer                       # browse at http://127.0.0.1:7801/
+python3 bin/engram demo                         # capture sample facts, then recall
+python3 bin/engram doctor                       # show config, project, counts
+python3 bin/engram eval --backends hash         # recall-quality benchmark (add fastembed to compare)
+python3 bin/engram viewer                       # browse at http://127.0.0.1:7801/
 ```
 
 ## Install as a plugin (dev)
 
 ```bash
-claude --plugin-dir ./plugins/ltm            # session-scoped, for iterating
+claude --plugin-dir ./plugins/engram            # session-scoped, for iterating
 ```
 
 Or add the marketplace and install:
 
 ```bash
-/plugin marketplace add /path/to/claude-ltm
-/plugin install ltm@claude-ltm
+/plugin marketplace add /path/to/claude-engram
+/plugin install engram@claude-engram
 ```
 
 Hooks then run automatically: memory is recalled and the project auto-indexed at
@@ -171,27 +171,27 @@ session summary) at stop / session end / pre-compact.
 ## CLI
 
 ```
-ltm doctor              show resolved config, project identity and fact count
-ltm capture             capture memory from stdin / --file / --transcript
-ltm recall <query>      run a just-in-time recall query for the current project
-ltm core                show the stable session-start memory block
-ltm projects            list every project in the global store
-ltm prune               delete all memory for the current project
-ltm sweep [--all]       archive stale facts (TTL expiry; --days N to override)
-ltm consolidate [--all] run the sleep pass: promote recalled STM, integrate near-duplicates + prune (if enabled)
-ltm nats status|start|stop  manage the opt-in NATS server (bus=nats)
-ltm queue [--all]       inspect the durable work queue (rescue backlog + dead-letter); --purge-dead/--purge-stage/--purge-all to clear
-ltm daemon              run the resident daemon (keeps the embedder warm)
-ltm viewer              launch the localhost viewer (STM / LTM / RnR / index tabs)
-ltm stats [--all]       token-savings ledger: injected (cost) vs saved (targeted + bounded reads + recall shortcuts), net
-ltm eval --backends … [--stm]  benchmark embedding backends (paired stats when ≥2); --stm adds the STM-tier lever scenario
-ltm replay [--transcript-dir …]  counterfactual token savings from past session transcripts (trace-driven, conservative)
-ltm drift               pin/check the embedding-drift canary
-ltm setup               provision the private fastembed venv (one-time)
-ltm demo                capture sample facts then recall (end-to-end proof)
+engram doctor              show resolved config, project identity and fact count
+engram capture             capture memory from stdin / --file / --transcript
+engram recall <query>      run a just-in-time recall query for the current project
+engram core                show the stable session-start memory block
+engram projects            list every project in the global store
+engram prune               delete all memory for the current project
+engram sweep [--all]       archive stale facts (TTL expiry; --days N to override)
+engram consolidate [--all] run the sleep pass: promote recalled STM, integrate near-duplicates + prune (if enabled)
+engram nats status|start|stop  manage the opt-in NATS server (bus=nats)
+engram queue [--all]       inspect the durable work queue (rescue backlog + dead-letter); --purge-dead/--purge-stage/--purge-all to clear
+engram daemon              run the resident daemon (keeps the embedder warm)
+engram viewer              launch the localhost viewer (STM / LTM / RnR / index tabs)
+engram stats [--all]       token-savings ledger: injected (cost) vs saved (targeted + bounded reads + recall shortcuts), net
+engram eval --backends … [--stm]  benchmark embedding backends (paired stats when ≥2); --stm adds the STM-tier lever scenario
+engram replay [--transcript-dir …]  counterfactual token savings from past session transcripts (trace-driven, conservative)
+engram drift               pin/check the embedding-drift canary
+engram setup               provision the private fastembed venv (one-time)
+engram demo                capture sample facts then recall (end-to-end proof)
 ```
 
-`ltm stats` is the effectiveness dashboard. It accounts both sides of the token
+`engram stats` is the effectiveness dashboard. It accounts both sides of the token
 budget from a local usage ledger: **cost** = bytes injected per prompt / at session
 start; **saved** = *measured* (a `get_symbol` / `get_doc_section` read of one unit —
 or a bounded `offset`/`limit` `Read` of an indexed file — instead of the whole file,
@@ -203,7 +203,7 @@ not a marketing number.
 ## Configuration
 
 Set via the plugin's `userConfig` (exposed to scripts as `CLAUDE_PLUGIN_OPTION_*`)
-or `LTM_*` env vars for standalone use:
+or `ENGRAM_*` env vars for standalone use:
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -217,7 +217,7 @@ or `LTM_*` env vars for standalone use:
 | `top_k` | `3` | facts injected per prompt — the small injected focus (Cowan ~4) |
 | `activated_k` | `0` | breadth the on-demand `recall` MCP tool searches (0 = use `top_k`); the broader "activated LTM" beyond the injected focus, no per-prompt token cost |
 | `core_scaffold` | `false` | render the session core as a titled scaffold (facts grouped by card title) instead of a flat list — an LT-WM retrieval structure; same char budget |
-| `spread_weight` | `0` | associative spreading activation (ACT-R): 0 = off (no edges, hot path untouched); >0 records co-occurrence/shared-entity edges at capture and boosts co-activated candidates at recall — `ltm eval`-tune before enabling |
+| `spread_weight` | `0` | associative spreading activation (ACT-R): 0 = off (no edges, hot path untouched); >0 records co-occurrence/shared-entity edges at capture and boosts co-activated candidates at recall — `engram eval`-tune before enabling |
 | `min_sim` | `0.12` | similarity threshold to inject |
 | `core_size` | `5` | stable facts injected at session start (0 disables) |
 | `max_chars` | `800` | hard cap on injected characters (token guard) |
@@ -238,19 +238,19 @@ Env-only knobs (no `userConfig` entry):
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `LTM_ENFORCE` | `advisory` | memory-first guard strength — `off` / `advisory` / `strict` (see above) |
-| `LTM_DAEMON` | *(unset)* | `1` makes the recall hook use the resident daemon instead of loading the model in-process |
-| `LTM_PYTHON` / `python` userConfig | *(blank)* | pin an interpreter that already has fastembed; blank = auto-provisioned managed venv |
+| `ENGRAM_ENFORCE` | `advisory` | memory-first guard strength — `off` / `advisory` / `strict` (see above) |
+| `ENGRAM_DAEMON` | *(unset)* | `1` makes the recall hook use the resident daemon instead of loading the model in-process |
+| `ENGRAM_PYTHON` / `python` userConfig | *(blank)* | pin an interpreter that already has fastembed; blank = auto-provisioned managed venv |
 
-Advanced ranking weights (`w_sim`, `w_recency`, `w_freq`) are tunable via `LTM_*`
+Advanced ranking weights (`w_sim`, `w_recency`, `w_freq`) are tunable via `ENGRAM_*`
 env vars; defaults `1.0 / 0.3 / 0.2`.
 
 ### Memory lifecycle — STM/LTM tiers & consolidation
 
 Fresh facts enter a short-term tier and promote to long-term on rehearsal; a
-consolidation ("sleep") pass runs at session checkpoints (or `ltm consolidate`).
+consolidation ("sleep") pass runs at session checkpoints (or `engram consolidate`).
 Recall is tier-agnostic and **pruning is off by default** — turn it on deliberately.
-Set via `userConfig` (or `LTM_*` env):
+Set via `userConfig` (or `ENGRAM_*` env):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -269,7 +269,7 @@ Detached capture and recovery run through a durable Command queue. The default
 crash recovery). Opt into **NATS JetStream** for durable, cross-process processing —
 the server is auto-provisioned (a checksum-verified `nats-server` binary, no Docker
 required) and it **fails open to `inproc`** whenever NATS is unavailable, so enabling
-it is safe. Set via `userConfig` (or `LTM_*` env):
+it is safe. Set via `userConfig` (or `ENGRAM_*` env):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -277,21 +277,21 @@ it is safe. Set via `userConfig` (or `LTM_*` env):
 | `bus_max_deliver` | `5` | delivery attempts before a work item is dead-lettered |
 | `bus_backoff` | `5,30,120,600` | retry backoff schedule, seconds (comma-separated) |
 | `lease_ttl` | `300` | seconds a claimed item is leased before reclaim (crash recovery) |
-| `bus_dead_after` | `604800` | dead-letter a pending item unprocessed this long (7 days); 0 disables. Inspect/clear with `ltm queue` |
-| `nats_url` | `nats://localhost:4222` | NATS URL — use a dedicated port so ltm doesn't share another server |
-| `nats_stream` | `LTM_WORK` | JetStream stream name |
+| `bus_dead_after` | `604800` | dead-letter a pending item unprocessed this long (7 days); 0 disables. Inspect/clear with `engram queue` |
+| `nats_url` | `nats://localhost:4222` | NATS URL — use a dedicated port so engram doesn't share another server |
+| `nats_stream` | `ENGRAM_WORK` | JetStream stream name |
 | `nats_provision` | `binary` | auto-start NATS: `binary` (download nats-server), `docker`, or `off` (bring your own) |
 | `nats_version` | `2.10.22` | pinned nats-server version for the binary provisioner |
 
 Enable NATS in `settings.json` (a dedicated port keeps it isolated):
 
 ```json
-"env": { "LTM_BUS": "nats", "LTM_NATS_URL": "nats://localhost:4225" }
+"env": { "ENGRAM_BUS": "nats", "ENGRAM_NATS_URL": "nats://localhost:4225" }
 ```
 
 The `nats-py` client is auto-installed into the managed venv on the next capture, so
 activation takes one restart (it stays on `inproc` until ready). Manage the server
-with `ltm nats status | start | stop`.
+with `engram nats status | start | stop`.
 
 ## Real semantic recall (recommended)
 
@@ -302,8 +302,8 @@ private venv** under the plugin data dir and downloads the model once — no man
 short-lived hook processes:
 
 ```bash
-python3 bin/ltm daemon                 # keep the model warm
-export LTM_DAEMON=1                     # recall hook uses the daemon, else in-process
+python3 bin/engram daemon                 # keep the model warm
+export ENGRAM_DAEMON=1                     # recall hook uses the daemon, else in-process
 ```
 
 ## Better distillation (atomic facts + explicit supersedes)
@@ -331,13 +331,13 @@ ollama pull qwen2.5:3b        # or llama3.2:3b
 
 ## Benchmarking retrieval quality
 
-`ltm eval` runs a labelled paraphrase set through the real quantised search path
+`engram eval` runs a labelled paraphrase set through the real quantised search path
 and reports Recall@1/@3, MRR@10, and operational cost. Backend spec is
 `name[@model][+float]`:
 
 ```bash
-python3 bin/ltm eval --backends "hash,fastembed,fastembed@BAAI/bge-small-en-v1.5,fastembed+float"
-python3 bin/ltm eval --backends hash --stm    # add the STM-tier lever scenario
+python3 bin/engram eval --backends "hash,fastembed,fastembed@BAAI/bge-small-en-v1.5,fastembed+float"
+python3 bin/engram eval --backends hash --stm    # add the STM-tier lever scenario
 ```
 
 The `--stm` scenario reports how `stm_recall_weight` trades off recall of fresh
@@ -371,11 +371,11 @@ walk up to the nearest `.git` / `pyproject.toml` / `package.json` / `go.mod` /
 path. This avoids the `basename(cwd)` fragmentation that mis-files memory in
 monorepos and subdirectory launches.
 
-Drop an empty **`.ltm-root`** file in a directory to pin it as the project root — it
+Drop an empty **`.engram-root`** file in a directory to pin it as the project root — it
 takes precedence over the marker-walk. Use it when a repo's subfolders each carry
 their own marker (a plugin package, an app's `backend/` + `frontend/`) and would
-otherwise split into separate projects: one `.ltm-root` at the repo/app root
-collapses them into a single project. The nearest `.ltm-root` ancestor wins.
+otherwise split into separate projects: one `.engram-root` at the repo/app root
+collapses them into a single project. The nearest `.engram-root` ancestor wins.
 
 ## Status
 

@@ -17,7 +17,7 @@ notification step (unlike the sibling projects this tooling was ported from).
 - `<scope>` is optional (`docs:` and `ci:` may omit it).
 - Subject is imperative mood, no trailing period, lower-case after the colon.
 - The existing history is the source of truth for style — e.g.
-  `feat(ltm): consult-first gate — hold Grep/Glob until memory/index was checked`.
+  `feat(engram): consult-first gate — hold Grep/Glob until memory/index was checked`.
 
 ## Allowed types
 
@@ -36,26 +36,26 @@ Append `!` (e.g. `feat!:`) or a `BREAKING CHANGE` footer for a major bump.
 
 ## Scopes
 
-Keep scopes to real areas of the tree. In practice `ltm` is the dominant scope
-(the plugin), matching current history (`feat(ltm):`, `fix(ltm):`). Others as needed:
+Keep scopes to real areas of the tree. In practice `engram` is the dominant scope
+(the plugin), matching current history (`feat(engram):`, `fix(engram):`). Others as needed:
 
 | Scope | Maps to |
 |-------|---------|
-| `ltm` | `plugins/ltm/` — the plugin itself (default) |
-| `core` | `plugins/ltm/core/` when the change is core-only and worth distinguishing |
-| `viewer` | `plugins/ltm/viewer/` |
-| `bench` | `plugins/ltm/bench/` |
+| `engram` | `plugins/engram/` — the plugin itself (default) |
+| `core` | `plugins/engram/core/` when the change is core-only and worth distinguishing |
+| `viewer` | `plugins/engram/viewer/` |
+| `bench` | `plugins/engram/bench/` |
 | `docs` | README, DESIGN, `.claude/`, CLAUDE.md |
 | `ci` | CI configuration |
 
-Don't invent deep sub-scopes; prefer `ltm` unless a narrower scope adds real signal.
+Don't invent deep sub-scopes; prefer `engram` unless a narrower scope adds real signal.
 
 ## Examples
 
-- `feat(ltm): add resident daemon fallback for warm embeddings`
-- `fix(ltm): single-flight capture to stop worker/daemon pileup`
-- `perf(ltm): int8 pre-filter before float cosine rescore`
-- `test(ltm): assert recall hook fails open when daemon is dead`
+- `feat(engram): add resident daemon fallback for warm embeddings`
+- `fix(engram): single-flight capture to stop worker/daemon pileup`
+- `perf(engram): int8 pre-filter before float cosine rescore`
+- `test(engram): assert recall hook fails open when daemon is dead`
 - `docs: shape .claude rules/skills for the plugin dev workflow`
 
 ## Branch & PR flow
@@ -64,7 +64,7 @@ Don't invent deep sub-scopes; prefer `ltm` unless a narrower scope adds real sig
   (Hard Prohibition #1 in [CLAUDE.md](../../../CLAUDE.md)).
 - **Never `--no-verify`.** Fix what the pre-commit / test step flags.
 - Full commit body, PR description template, and merge strategy live in the
-  [`ltm-git`](../../skills/ltm-git/SKILL.md) skill.
+  [`engram-git`](../../skills/engram-git/SKILL.md) skill.
 
 ## Attribution footer
 

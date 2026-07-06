@@ -4,9 +4,9 @@ alwaysApply: true
 
 # Hooks & Budgets
 
-The hooks are where claude-ltm touches the live turn, so they carry the strictest
-contracts. Wiring is in `plugins/ltm/hooks/hooks.json`; entry points are in
-`plugins/ltm/bin/`.
+The hooks are where claude-engram touches the live turn, so they carry the strictest
+contracts. Wiring is in `plugins/engram/hooks/hooks.json`; entry points are in
+`plugins/engram/bin/`.
 
 ## The hooks
 
@@ -15,7 +15,7 @@ contracts. Wiring is in `plugins/ltm/hooks/hooks.json`; entry points are in
 | `SessionStart` | `recall_session_start.py` | Inject stable project **core** + orientation + memory-first directive | Joins the cached prefix — read at ~0.1× on later turns |
 | `SessionStart` | `index_docs.py` | Auto-index the project (single-flight, file-capped) | Off the hot path |
 | `UserPromptSubmit` | `recall_prompt.py` | JIT recall — inject only facts clearing `min_sim` | Tail of context; tiny, per-prompt |
-| `PreToolUse` | `prefer_memory.py` | Memory-first guard (`LTM_ENFORCE`) | Must be cheap; fail-open |
+| `PreToolUse` | `prefer_memory.py` | Memory-first guard (`ENGRAM_ENFORCE`) | Must be cheap; fail-open |
 | `PostToolUse` | `mark_consulted.py`, `index_edit.py`, `credit_read.py` | Record that memory was consulted; re-index edited files; credit bounded reads of indexed files in the ledger | Off the hot path; fail-open |
 | `Stop` / `SessionEnd` / `PreCompact` | `capture.py` | Spawn **detached** capture worker | Fire-and-forget; zero interactive cost |
 
@@ -52,7 +52,7 @@ The read side is governed by hard caps, all configurable (see
 
 When you change hook behaviour, state the budget impact: does injected text grow?
 Does hot-path wall-clock grow? An increase must justify itself against recall quality
-measured by `ltm eval`.
+measured by `engram eval`.
 
 ## Cache placement (why SessionStart vs UserPromptSubmit)
 
@@ -67,4 +67,4 @@ UserPromptSubmit (pays full price every turn). See [DESIGN.md § Cache efficienc
 
 - [01-poeaa-and-layers.md](./01-poeaa-and-layers.md) — composition roots (`bin/*`) wire these hooks.
 - [DESIGN.md § Latency efficiency / Risks](../../../DESIGN.md) — the daemon, timeout, and fail-open mitigations.
-- [README.md § Memory-first enforcement](../../../README.md) — `LTM_ENFORCE` modes.
+- [README.md § Memory-first enforcement](../../../README.md) — `ENGRAM_ENFORCE` modes.

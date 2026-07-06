@@ -4,11 +4,11 @@ alwaysApply: true
 
 # Architecture
 
-> **Priority:** these rules protect the shape that makes claude-ltm cheap and safe.
+> **Priority:** these rules protect the shape that makes claude-engram cheap and safe.
 > Read alongside [../00-quality/](../00-quality/). Depth lives in
-> [DESIGN.md](../../../DESIGN.md) and the [`ltm-poeaa`](../../skills/ltm-poeaa/SKILL.md) skill.
+> [DESIGN.md](../../../DESIGN.md) and the [`engram-poeaa`](../../skills/engram-poeaa/SKILL.md) skill.
 
-claude-ltm is **CQRS + Hexagonal (Ports & Adapters)**. The two sides have opposite
+claude-engram is **CQRS + Hexagonal (Ports & Adapters)**. The two sides have opposite
 performance profiles and are split accordingly:
 
 - **Write side (capture)** — heavy, batch, latency-tolerant. Runs **detached** at
@@ -42,4 +42,4 @@ Stop/SessionEnd/PreCompact ─► spawn detached capture worker ← fire & forge
 ## See also
 
 - [DESIGN.md](../../../DESIGN.md) — the two-budget model, cache analysis, memory lifecycle.
-- [`ltm-poeaa`](../../skills/ltm-poeaa/SKILL.md) — pattern catalogue + this project's defaults.
+- [`engram-poeaa`](../../skills/engram-poeaa/SKILL.md) — pattern catalogue + this project's defaults.

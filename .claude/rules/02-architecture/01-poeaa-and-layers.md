@@ -4,7 +4,7 @@ alwaysApply: true
 
 # POEAA Patterns & Layering
 
-claude-ltm uses **Patterns of Enterprise Application Architecture** (POEAA) /
+claude-engram uses **Patterns of Enterprise Application Architecture** (POEAA) /
 Cosmic Python patterns deliberately. These are not decoration — they are the reason
 the plugin stays testable on the stdlib, swaps embedding backends without touching
 the core, and keeps capture off the hot path. The canonical map (from
@@ -65,9 +65,9 @@ persistence + cross-cutting modules at the root (the fastapi-best-practices conv
    stdlib-testable.
 4. **Null Object for empty recall.** No match → inject `""`, never a placeholder or
    an error. Irrelevant turns cost zero tokens.
-5. **New pattern? Invoke [`/ltm-poeaa`](../../skills/ltm-poeaa/SKILL.md) first** — it
+5. **New pattern? Invoke [`/engram-poeaa`](../../skills/engram-poeaa/SKILL.md) first** — it
    carries the catalogue, decision trees, anti-patterns, and this project's defaults.
-6. **Durable per-memory processing is a Command queue, not an Event bus.** claude-ltm has
+6. **Durable per-memory processing is a Command queue, not an Event bus.** claude-engram has
    **no** Events / pub-sub. A durable job-claim queue (`MemoryBus`) is permitted for
    detached capture / re-distil / consolidation — opt-in, behind a Separated Interface,
    default `inproc` (stdlib SQLite `work_queue`), opt-in `nats` (JetStream), **fail-open**

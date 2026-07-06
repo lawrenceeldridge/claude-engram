@@ -1,4 +1,4 @@
-# claude-ltm — design
+# claude-engram — design
 
 Token-first, cross-project long-term memory for Claude Code, packaged as a plugin.
 
@@ -34,7 +34,7 @@ Stop/SessionEnd/PreCompact ─► spawn detached capture worker   ← fire & for
 ```
 
 **Durable capture queue (built).** Detached capture publishes work items to a durable
-**Command queue** (`MemoryBus`) so a dropped connection or an `LTM_DISTILLER` outage
+**Command queue** (`MemoryBus`) so a dropped connection or an `ENGRAM_DISTILLER` outage
 retries rather than degrades — opt-in backend, behind a Separated Interface, default
 `inproc` (stdlib SQLite `work_queue` with retry / backoff / dead-letter / lease-recovery),
 opt-in `nats` (JetStream, auto-provisioned), **fail-open** to `inproc`, never on the recall
@@ -92,7 +92,7 @@ This is why recall is a **hybrid**: cache-friendly core + relevance-driven JIT.
 
 ## Embedding backend — measured, not assumed
 
-`ltm eval` runs a labelled paraphrase benchmark (Recall@1/@3, MRR@10) through the
+`engram eval` runs a labelled paraphrase benchmark (Recall@1/@3, MRR@10) through the
 real quantised search path. Findings that drove the defaults:
 
 | backend | Recall@1 | Recall@3 | MRR@10 | bytes/fact |
@@ -129,7 +129,7 @@ fall back to the heuristic on any failure so capture never breaks.
 ## Hard expiry (TTL sweep)
 
 Recency decay only *de-ranks* old facts; a TTL sweep *retires* them. On capture (if
-`ttl_days > 0`, off the interactive path) or via `ltm sweep`, active facts unseen for
+`ttl_days > 0`, off the interactive path) or via `engram sweep`, active facts unseen for
 longer than the TTL are marked `expired` — unless reinforced past `ttl_keep_frequency`
 (consolidation protects durable facts). Expiry is reversible (status flag, not delete),
 and recall already filters to `status='active'`.
@@ -176,16 +176,16 @@ memory-research models, made explicit on the *write side*, off the hot path.
 
 **Atkinson–Shiffrin multi-store model** — memory is staged, not flat:
 
-| Store / process | claude-ltm |
+| Store / process | claude-engram |
 |---|---|
 | Sensory register (raw, fleeting; *attention* selects) | transcript + incremental capture cursor; **distillation is the attention gate** (`core/transcript.py`, `core/distill.py`) |
 | Short-term store (fresh, capacity-bounded, *displaced* when full) | `tier='stm'` facts; `stm_capacity` bounds the active STM set, `store.displace_stm` sheds the weakest |
 | Rehearsal (STM→LTM transfer) | inline `store.reinforce` + `store.promote` (freq ≥ `promote_after_freq`); batch `replay` promotes STM that was *retrieved* |
-| Long-term store (durable, semantic) | `tier='ltm'` facts + decay + supersession + TTL |
+| Long-term store (durable, semantic) | `tier='engram'` facts + decay + supersession + TTL |
 | Retrieval (LTM→use) | `recall.search` → `render_block` |
 
 **Two distinct promotion signals — kept separate, not unified.** STM→LTM promotion
-fires two ways, from two independently-supported mechanisms, and claude-ltm keeps both:
+fires two ways, from two independently-supported mechanisms, and claude-engram keeps both:
 
 - **Rehearsal (repetition)** — inline in `service.add_records`; a fact re-captured
   enough times (`frequency ≥ promote_after_freq`) is promoted. This is Atkinson–Shiffrin
@@ -199,7 +199,7 @@ folded into one rule — each encodes a distinct memory mechanism.
 
 **Active Systems Consolidation Hypothesis + the Sequential Hypothesis** — an offline
 "sleep" pass (`core/consolidation/`) runs at session checkpoints (not every turn, like
-sleep itself), orchestrated by `consolidate()` and exposed as `ltm consolidate`. Its
+sleep itself), orchestrated by `consolidate()` and exposed as `engram consolidate`. Its
 stages run in order `replay → displace → integrate → refine → purge`; each maps to a
 mechanism and is individually gated and reversible:
 
@@ -212,7 +212,7 @@ mechanism and is individually gated and reversible:
   strongest survivor, archive the rest) and an opt-in **LLM tier** (the distiller either
   *abstracts* the cluster into one merged fact or *vetoes* the merge as genuinely distinct;
   fail-open to the floor). Runs before refine so the retention cut scores a deduplicated
-  set. Default-off (`integrate_threshold`) and `ltm eval`-gated.
+  set. Default-off (`integrate_threshold`) and `engram eval`-gated.
 - **Refine** (`refine.py`) — *SHY-style forgetting*: score every active fact with a pure
   **retention score** (`consolidation/scoring.py`) and archive the weakest. Two gated
   knobs make the cut *relative*, so it self-limits as the store grows (the SHY "only the
@@ -221,7 +221,7 @@ mechanism and is individually gated and reversible:
   `refine_prune_percentile` in `(0,1)` drops the weakest that fraction of the live active
   set (`≥1` = an absolute score floor). This keeps the active set small enough that
   brute-force search stays viable (see § the bytes layer / vector-store decision in the
-  STM-LTM design). Default-off and **`ltm eval`-gated** (it changes what is injected);
+  STM-LTM design). Default-off and **`engram eval`-gated** (it changes what is injected);
   archival is a reversible status flip (`status='pruned'`), never a delete.
 - **Rescue** (`service.rescue`) — re-distils degraded deltas parked on the durable queue
   when an LLM distiller was down, so a transient outage doesn't leave low-quality facts
@@ -258,7 +258,7 @@ choices, called out so the mapping isn't over-claimed:
   is domain-specific: a *fresh* fact is often the *most* relevant one (the thing being
   worked on right now), so accelerating STM decay would fight recall rather than help it.
   Any future STM-ranking change (e.g. defaulting `stm_recall_weight < 1`) is gated on first
-  extending `ltm eval` with a fresh/STM scenario so the effect can be measured.
+  extending `engram eval` with a fresh/STM scenario so the effect can be measured.
 - **"Rehearsal" and "consolidation" are now distinct terms.** Inline frequency-boost is
   *rehearsal* (Atkinson–Shiffrin maintenance); the offline sleep pass is *consolidation*
   (ASCH). Earlier revisions of this doc used "consolidation" for the inline boost —
@@ -295,8 +295,8 @@ of launch subdirectory; configurable for monorepo granularity via `markers`.
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
 | Durable queue becomes a de-facto dependency | `MemoryBus` is opt-in behind a Separated Interface; default `inproc` is stdlib SQLite; `nats` adapter fails open to `inproc`; core stays importable without a broker |
-| Consolidation prunes a still-useful fact | refine is default-off and `ltm eval`-gated; archival is a reversible status flip, not a delete; purge only removes rows past a long cold horizon |
-| STM leaks low-confidence facts into context | promotion is rehearsal/recall-gated; `stm_recall_weight` can down-rank STM; A/B with `ltm eval` |
+| Consolidation prunes a still-useful fact | refine is default-off and `engram eval`-gated; archival is a reversible status flip, not a delete; purge only removes rows past a long cold horizon |
+| STM leaks low-confidence facts into context | promotion is rehearsal/recall-gated; `stm_recall_weight` can down-rank STM; A/B with `engram eval` |
 
 ## Status of the levers
 
@@ -311,7 +311,7 @@ Done and measured:
   promotion, an offline `consolidate()` pass (replay / displace / integrate / refine /
   purge), and a pure retention score. Forgetting/integration knobs (`integrate_threshold`,
   `refine_keep_max`, `refine_prune_percentile`, `purge_horizon_days`) ship **default-off**,
-  to be `ltm eval`-tuned before enabling.
+  to be `engram eval`-tuned before enabling.
 - **REM-style integration** — the `integrate` stage: a stdlib heuristic dedup floor plus an
   opt-in LLM tier (`merge_cluster`) that abstracts a near-duplicate cluster into one fact or
   vetoes the merge. Reversible (`status='merged'`), fail-open, default-off.
@@ -325,7 +325,7 @@ Remaining:
   `embedding=fastembed` (and an LLM distiller for best quality); these cost a
   dependency / tokens (or a local model), so they are opt-in.
 - **STM ranking stays default tier-agnostic** — `stm_recall_weight=1.0`; the measurable
-  lever exists (`ltm eval --stm`) but flipping the default awaits eval tuning.
+  lever exists (`engram eval --stm`) but flipping the default awaits eval tuning.
 - **Eval set** is 297 facts / 244 queries (+ the STM scenario) after the 2026-07 mining
   pass — paired tests (McNemar / bootstrap) in the harness resolve ~0.05 deltas; the
   earlier 64/77 set is frozen as `bench/dataset-v1.json`.

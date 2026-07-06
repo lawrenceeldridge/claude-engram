@@ -16,7 +16,7 @@ every conversation (`alwaysApply: true`).
 | File | Covers |
 |---|---|
 | [01-code-refinement.md](./01-code-refinement.md) | Five refinement principles (preserve functionality, apply standards, enhance clarity, maintain balance, focus scope) and the development-workflow checklist — reshaped for a stdlib-first, token-conscious Python plugin. |
-| [02-testing.md](./02-testing.md) | The test model (`unittest`/`pytest` under `plugins/ltm/tests/`) plus the recall-quality benchmark (`ltm eval`). Thin pointer to the [`ltm-test`](../../skills/ltm-test/SKILL.md) skill for operational depth. |
+| [02-testing.md](./02-testing.md) | The test model (`unittest`/`pytest` under `plugins/engram/tests/`) plus the recall-quality benchmark (`engram eval`). Thin pointer to the [`engram-test`](../../skills/engram-test/SKILL.md) skill for operational depth. |
 
 ## See also
 

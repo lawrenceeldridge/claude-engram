@@ -2,12 +2,12 @@
 alwaysApply: true
 ---
 
-# claude-ltm Project
+# claude-engram Project
 
 > **Read first:** see [../00-quality/](../00-quality/) for the code-refinement
 > principles and testing model that apply to ALL code.
 
-claude-ltm is a **token-first, cross-project long-term memory + code/docs index**
+claude-engram is a **token-first, cross-project long-term memory + code/docs index**
 for Claude Code, packaged as a plugin. It captures sessions off the interactive
 path, distils atomic facts, embeds them compactly, and injects the *relevant* ones
 back into context via hooks — while also indexing code/docs into ranked outlines so
@@ -19,23 +19,23 @@ telemetry. The **core runs on the Python standard library alone**; semantic reca
 
 **This repo is the plugin's source, not an installed instance.** Work here maintains
 the plugin. `.claude/` + `CLAUDE.md` are dev-only and are never shipped; only
-`plugins/ltm/` reaches installers (see [../../../CLAUDE.md](../../../CLAUDE.md)).
+`plugins/engram/` reaches installers (see [../../../CLAUDE.md](../../../CLAUDE.md)).
 
 ## Files in this folder
 
 | File | Covers |
 |---|---|
-| [01-tooling.md](./01-tooling.md) | Python version, stdlib-first dependency contract, `ruff`, `unittest`/`pytest`, the self-provisioned managed venv, the `ltm` CLI. |
+| [01-tooling.md](./01-tooling.md) | Python version, stdlib-first dependency contract, `ruff`, `unittest`/`pytest`, the self-provisioned managed venv, the `engram` CLI. |
 | [02-commit-conventions.md](./02-commit-conventions.md) | Conventional Commits format, allowed types/scopes, branch + PR flow. GitHub-only — no Linear/Slack ceremony. |
 
 ## Repository structure
 
 The authoritative layout lives in [README.md § Layout](../../../README.md). Key dirs:
 
-- `plugins/ltm/core/` — pure-Python core (Ports & Adapters / CQRS).
-- `plugins/ltm/bin/` — composition roots: hook entry points, `ltm` CLI, MCP server, daemon.
-- `plugins/ltm/hooks/hooks.json` — the hook wiring.
-- `plugins/ltm/tests/`, `plugins/ltm/bench/`, `plugins/ltm/viewer/` — tests, benchmark, viewer.
+- `plugins/engram/core/` — pure-Python core (Ports & Adapters / CQRS).
+- `plugins/engram/bin/` — composition roots: hook entry points, `engram` CLI, MCP server, daemon.
+- `plugins/engram/hooks/hooks.json` — the hook wiring.
+- `plugins/engram/tests/`, `plugins/engram/bench/`, `plugins/engram/viewer/` — tests, benchmark, viewer.
 
 ## Before starting work
 

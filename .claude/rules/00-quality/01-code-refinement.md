@@ -17,7 +17,7 @@ fail-open contract is a behaviour change, not a refinement.
 
 Follow the patterns already established here:
 
-- **Stdlib-first core** — `plugins/ltm/core/**` imports cleanly with the standard
+- **Stdlib-first core** — `plugins/engram/core/**` imports cleanly with the standard
   library alone. Optional deps (`fastembed`) live behind adapters and self-provision.
 - **Error handling** — hooks and adapters **fail open**: prefer explicit checks and a
   graceful fallback over an exception that could reach the interactive turn.
@@ -64,7 +64,7 @@ Before writing code, verify your approach addresses:
 | **Fail-open** | If this runs in a hook, does it exit 0 and inject nothing on any error? |
 | **Layering** | Does it respect the Ports & Adapters seams (core vs adapters vs composition root in `bin/`)? |
 | **Type safety** | Are public functions fully annotated? |
-| **Testability** | How is it tested? For retrieval changes, does `ltm eval` still hold or improve? |
-| **Measurement** | For embedding/ranking/quantisation/distillation changes — did you A/B with `ltm eval` before shipping? |
+| **Testability** | How is it tested? For retrieval changes, does `engram eval` still hold or improve? |
+| **Measurement** | For embedding/ranking/quantisation/distillation changes — did you A/B with `engram eval` before shipping? |
 
 Present a short plan and wait for approval before implementing non-trivial changes.
