@@ -549,6 +549,8 @@ def recall_core_block(
 
 TOKENS_SAVED_PER_OK = 1200  # heuristic: an `ok` recall spares a grep + a couple of file reads
 BYTES_PER_TOKEN = 4  # rough char→token ratio for the byte-accounted ledger
+CACHE_WRITE_PREMIUM = 1.25  # first injection of the core block pays the cache-write surcharge
+CACHE_REREAD_FACTOR = 0.1  # every later turn re-reads the cached prefix at ~0.1× (DESIGN.md)
 
 
 def usage_summary(store: Store, project_key: str | None = None) -> dict:
@@ -556,8 +558,15 @@ def usage_summary(store: Store, project_key: str | None = None) -> dict:
 
     cost = bytes injected (per-prompt + session core); saved(measured) = whole-file reads
     avoided via get_symbol/get_doc_section (file - body); saved(estimated) = `ok` recalls
-    × a per-search heuristic. net = saved - cost. Passive injection that merely *might*
-    have prevented a search is not credited, so net is a conservative floor.
+    × a per-search heuristic. Passive injection that merely *might* have prevented a
+    search is not credited, so every net figure is a conservative floor.
+
+    Two cost views: `cost_tokens` charges injected bytes at face value (the historical
+    figure); `cost_tokens_cache_adjusted` prices the session-core block under the
+    prompt-cache model — a cache-write premium once per session plus a discounted
+    re-read on every later turn (recall events proxy turns, one JIT recall per prompt).
+    The headline `net_measured_tokens` pairs measured savings with whichever cost view
+    is larger and keeps the heuristic estimate out of the headline entirely.
     """
     recall = store.recall_stats(project_key)
     usage = store.usage_stats(project_key)
@@ -565,7 +574,14 @@ def usage_summary(store: Store, project_key: str | None = None) -> dict:
     def _s(field: str, *kinds: str) -> int:
         return sum(usage.get(k, {}).get(field, 0) for k in kinds)
 
-    cost = _s("bytes_in", "inject_prompt", "inject_core") // BYTES_PER_TOKEN
+    cost_prompt = _s("bytes_in", "inject_prompt") // BYTES_PER_TOKEN
+    cost_core = _s("bytes_in", "inject_core") // BYTES_PER_TOKEN
+    cost = cost_prompt + cost_core
+    n_core = _s("n", "inject_core")
+    core_per_session = cost_core / n_core if n_core else 0.0
+    cost_adjusted = round(
+        cost_prompt + cost_core * CACHE_WRITE_PREMIUM + core_per_session * CACHE_REREAD_FACTOR * recall["total"]
+    )
     # Measured saving: a targeted read of one unit instead of the whole file — via the ltm
     # tools (pull_symbol/pull_doc) OR a bounded offset/limit Read of an indexed file.
     saved_measured = _s("bytes_saved", "pull_symbol", "pull_doc", "read_bounded") // BYTES_PER_TOKEN
@@ -578,8 +594,10 @@ def usage_summary(store: Store, project_key: str | None = None) -> dict:
         "bounded_reads": _s("n", "read_bounded"),
         "ok_recalls": ok,
         "cost_tokens": cost,
+        "cost_tokens_cache_adjusted": cost_adjusted,
         "saved_measured_tokens": saved_measured,
         "saved_estimated_tokens": saved_estimated,
+        "net_measured_tokens": saved_measured - max(cost, cost_adjusted),
         "net_tokens": saved_measured + saved_estimated - cost,
     }
 

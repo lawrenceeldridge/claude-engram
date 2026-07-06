@@ -80,6 +80,34 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertEqual(s["injections"], 1)
         self.assertEqual(s["targeted_reads"], 1)
 
+    def test_usage_summary_cache_adjusted_cost_and_measured_net(self):
+        # Prompt injections stay at face value; the core block pays the cache-write
+        # premium plus a discounted re-read per recorded turn (recall events).
+        self.store.record_usage("p", "inject_prompt", bytes_in=400)  # 100 tokens
+        self.store.record_usage("p", "inject_core", bytes_in=4000)  # 1000 tokens, one session
+        for _ in range(10):  # 10 turns in that session
+            self.store.log_recall("p", "q", returned=0, top_sim=0.0, confidence=0.0, verdict="no_memory")
+        self.store.record_usage("p", "pull_symbol", bytes_saved=40000)  # 10000 tokens measured
+        s = service.usage_summary(self.store, "p")
+        # 100 + 1000*1.25 + (1000/1)*0.1*10 = 100 + 1250 + 1000 = 2350
+        self.assertEqual(s["cost_tokens"], 1100)
+        self.assertEqual(s["cost_tokens_cache_adjusted"], 2350)
+        # Headline excludes the estimate and charges the larger cost view.
+        self.assertEqual(s["net_measured_tokens"], 10000 - 2350)
+
+    def test_usage_summary_headline_excludes_estimated_savings(self):
+        self.store.record_usage("p", "pull_symbol", bytes_saved=4000)  # 1000 tokens measured
+        self.store.log_recall("p", "q", returned=1, top_sim=0.9, confidence=0.9, verdict="ok")  # est only
+        s = service.usage_summary(self.store, "p")
+        self.assertEqual(s["net_measured_tokens"], 1000)  # 1200-token estimate not in headline
+        self.assertEqual(s["net_tokens"], 1000 + 1200)  # blended figure keeps it
+
+    def test_usage_summary_empty_ledger_is_all_zero(self):
+        s = service.usage_summary(self.store, "p")
+        self.assertEqual(s["cost_tokens"], 0)
+        self.assertEqual(s["cost_tokens_cache_adjusted"], 0)
+        self.assertEqual(s["net_measured_tokens"], 0)
+
     def test_usage_summary_counts_bounded_reads_as_measured(self):
         self.store.record_usage("p", "pull_symbol", bytes_saved=4000)  # 1000 tokens
         self.store.record_usage("p", "read_bounded", bytes_saved=8000)  # 2000 tokens (bounded Read)

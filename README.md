@@ -184,7 +184,8 @@ ltm queue [--all]       inspect the durable work queue (rescue backlog + dead-le
 ltm daemon              run the resident daemon (keeps the embedder warm)
 ltm viewer              launch the localhost viewer (STM / LTM / RnR / index tabs)
 ltm stats [--all]       token-savings ledger: injected (cost) vs saved (targeted + bounded reads + recall shortcuts), net
-ltm eval --backends … [--stm]  benchmark embedding backends; --stm adds the STM-tier lever scenario
+ltm eval --backends … [--stm]  benchmark embedding backends (paired stats when ≥2); --stm adds the STM-tier lever scenario
+ltm replay [--transcript-dir …]  counterfactual token savings from past session transcripts (trace-driven, conservative)
 ltm drift               pin/check the embedding-drift canary
 ltm setup               provision the private fastembed venv (one-time)
 ltm demo                capture sample facts then recall (end-to-end proof)
@@ -208,6 +209,7 @@ or `LTM_*` env vars for standalone use:
 |---|---|---|
 | `embedding` | `hash` | `hash` (lexical stub, zero deps) or `fastembed` (real semantic model, self-provisions a venv) |
 | `embedding_model` | *(blank)* | fastembed model id; blank = `BAAI/bge-base-en-v1.5` (best measured recall) |
+| `embedding_truncate_dim` | `0` | Matryoshka truncation: keep the first N dims and re-normalise (0 = off). Only for Matryoshka-trained models (e.g. `nomic-ai/nomic-embed-text-v1.5`); changing it invalidates stored vectors — re-capture/re-index |
 | `distiller` | `claude` | `claude` (headless `claude -p`, Haiku), `ollama` (local, zero-token), or `heuristic` (line extraction, no LLM) |
 | `distiller_model` | *(blank)* | claude: model alias (blank = `haiku`); ollama: model name (blank = `qwen2.5:3b`) |
 | `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller (ignored under `claude`) |
@@ -342,17 +344,24 @@ The `--stm` scenario reports how `stm_recall_weight` trades off recall of fresh
 short-term facts against their older long-term competitors — the measurable check
 before changing any STM-ranking default (short-term is a *state*, not a faster clock).
 
-Measured on the bundled set (34 facts, 29 paraphrased queries):
+Measured on the bundled set (297 facts, 244 paraphrased queries — mined from real
+sessions, with 50 hard negatives; the earlier 64/77 set is frozen as
+`bench/dataset-v1.json` for reproducibility of published figures):
 
 | backend | Recall@1 | Recall@3 | MRR@10 | bytes/fact |
 |---|---|---|---|---|
-| hash (lexical stub) | 0.07 | 0.36 | 0.27 | 288 |
-| fastembed bge-small | 0.36 | 0.71 | 0.57 | 432 |
-| **fastembed bge-base (default)** | **0.79** | **0.86** | **0.85** | 864 |
+| hash (lexical stub) | 0.148 | 0.234 | 0.210 | 288 |
+| fastembed bge-small | 0.398 | 0.611 | 0.518 | 432 |
+| **fastembed bge-base (default)** | **0.463** | **0.656** | **0.574** | 864 |
 
-int8 quantization loss is negligible (int8 ≈ float), so the store stays compact;
-model size is the real lever. Use the harness to A/B any future change before
-shipping it.
+The harness also prints paired comparisons (McNemar exact on Recall@k, seeded
+bootstrap on MRR), which resolve smaller between-backend deltas than the
+per-backend intervals: bge-base beats bge-small at p=0.033 on this set, while
+retrieval-specialised and larger alternatives (arctic, mxbai-large) failed to
+beat it. int8 quantization loss is negligible (int8 ≈ float), so the store stays
+compact. For Matryoshka-trained models, `embedding_truncate_dim` trades ~3×
+smaller vectors for a statistically insignificant recall drop (measured on
+nomic-v1.5 at 256 dims). Use the harness to A/B any future change before shipping it.
 
 ## Project identity
 

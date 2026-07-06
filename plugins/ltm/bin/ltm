@@ -11,6 +11,7 @@ Subcommands:
   daemon      run the resident daemon (keeps the embedder warm)
   viewer      launch the localhost viewer
   stats       recall telemetry + token-savings ledger (cost vs saved, net)
+  replay      counterfactual token savings from past session transcripts
   drift       pin/check the embedding-drift canary
   demo        capture sample facts, then recall against them (end-to-end proof)
 """
@@ -235,16 +236,21 @@ def cmd_stats(args) -> int:
     print(f"facts   : {store.count()} active")
     print(f"recalls : {r['total']} total  {r['by_verdict']}")
     print("token ledger (heuristic, ~4 chars/token):")
-    print(f"  cost  — injected  : {s['injections']} injections, ~{s['cost_tokens']:,} tokens")
+    print(
+        f"  cost  — injected  : {s['injections']} injections, ~{s['cost_tokens']:,} tokens "
+        f"(~{s['cost_tokens_cache_adjusted']:,} cache-adjusted)"
+    )
     print(
         f"  saved — measured  : {s['targeted_reads']} targeted reads + "
         f"{s['bounded_reads']} bounded reads, "
         f"~{s['saved_measured_tokens']:,} tokens (whole-file reads avoided)"
     )
     print(
-        f"  saved — estimated : {s['ok_recalls']} recall shortcuts, ~{s['saved_estimated_tokens']:,} tokens (heuristic)"
+        f"  saved — estimated : {s['ok_recalls']} recall shortcuts, "
+        f"~{s['saved_estimated_tokens']:,} tokens (heuristic, excluded from headline)"
     )
-    print(f"  NET (saved-cost)  : ~{s['net_tokens']:,} tokens")
+    print(f"  NET measured      : ~{s['net_measured_tokens']:,} tokens (measured saved − max cost view)")
+    print(f"  NET incl. estimate: ~{s['net_tokens']:,} tokens")
     store.close()
     return 0
 
@@ -305,6 +311,80 @@ def cmd_eval(args) -> int:
     from bench.run_eval import main as run_eval
 
     return run_eval([b.strip() for b in args.backends.split(",") if b.strip()], stm=args.stm)
+
+
+def cmd_replay(args) -> int:
+    """Trace-driven counterfactual: replay past search sweeps against the index.
+
+    Reads recorded session transcripts, finds Grep/Glob/whole-file-Read sweeps,
+    re-queries the live index with each sweep's own search terms, and prices the
+    indexed path against what the sweep actually cost. Conservative by design —
+    see bench/replay.py.
+    """
+    from bench.replay import counterfactual, find_sweeps, parse_transcript, sweep_query
+    from core.index.index_recall import get_chunk, search_index
+
+    cfg = get_config()
+    project = _project(cfg, args)
+    tdir = Path(args.transcript_dir) if args.transcript_dir else _default_transcript_dir(project["path"])
+    files = sorted(tdir.glob("*.jsonl")) if tdir.is_dir() else []
+    if not files:
+        print(f"no transcripts found in {tdir}")
+        return 1
+
+    store = Store(cfg.db_path)
+    embedder = get_embedder(cfg)
+    totals = {"sweeps": 0, "creditable": 0, "actual": 0, "indexed": 0, "saved": 0}
+    skipped_files = 0
+    try:
+        for path in files:
+            try:
+                with path.open(encoding="utf-8", errors="replace") as fh:
+                    sweeps = find_sweeps(parse_transcript(fh))
+            except OSError:
+                skipped_files += 1
+                continue
+            for sweep in sweeps:
+                kind = "doc_section" if str(sweep["landing"]).endswith((".md", ".mdx")) else "code_symbol"
+                try:
+                    res = search_index(store, embedder, cfg, project, sweep_query(sweep), k=5, kind=kind)
+                except Exception:
+                    continue  # fail-soft: an unanswerable sweep earns no credit
+                hits = res.get("results") or []
+                hit_paths = [h.get("source_path") or "" for h in hits]
+                outline_bytes = sum(len(str(h.get(f, ""))) for h in hits for f in ("anchor", "summary", "source_path"))
+                body_bytes = 0
+                landing = str(sweep["landing"])
+                match = next((h for h in hits if h.get("source_path") and landing.endswith(h["source_path"])), None)
+                if match:
+                    try:
+                        chunk = get_chunk(store, project, match.get("anchor") or "")
+                        body_bytes = len(str(chunk.get("body") or ""))
+                    except Exception:
+                        body_bytes = 0
+                result = counterfactual(sweep, hit_paths, outline_bytes, body_bytes)
+                totals["sweeps"] += 1
+                totals["creditable"] += result["creditable"]
+                totals["actual"] += result["actual_tokens"]
+                if result["creditable"]:
+                    totals["indexed"] += result["indexed_tokens"]
+                    totals["saved"] += result["saved_tokens"]
+    finally:
+        store.close()
+
+    print(f"transcripts : {len(files)} files ({skipped_files} unreadable)")
+    print(f"sweeps      : {totals['sweeps']} found, {totals['creditable']} creditable via the index")
+    print(f"actual cost : ~{totals['actual']:,} tokens across all sweeps")
+    if totals["creditable"]:
+        print(f"indexed cost: ~{totals['indexed']:,} tokens for the creditable sweeps")
+        print(f"SAVED       : ~{totals['saved']:,} tokens (counterfactual floor, creditable sweeps only)")
+    return 0
+
+
+def _default_transcript_dir(project_path: str) -> Path:
+    """Claude Code stores transcripts under a slug of the project path."""
+    slug = project_path.replace("/", "-").replace(".", "-").replace("_", "-")
+    return Path.home() / ".claude" / "projects" / slug
 
 
 def cmd_demo(_args) -> int:
@@ -415,6 +495,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backends", default="hash", help="comma-separated: hash,fastembed")
     p.add_argument("--stm", action="store_true", help="also run the STM-tier lever (stm_recall_weight) scenario")
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("replay", help="counterfactual token savings from past session transcripts")
+    add_cwd(p)
+    p.add_argument("--transcript-dir", help="transcript directory (default: this project's)")
+    p.set_defaults(func=cmd_replay)
 
     p = sub.add_parser("demo", help="capture sample facts then recall")
     p.set_defaults(func=cmd_demo)

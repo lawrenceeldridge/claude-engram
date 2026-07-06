@@ -1,200 +1,1969 @@
 {
-  "description": "Labelled recall set. Queries are paraphrased away from the fact wording so lexical matching is stressed; some facts are hard-negative distractors (no query targets them: 16, 17, 33, 59, 63); many facts carry two or three paraphrase queries; some queries are multi-relevant (relevant lists more than one fact). relevant = indices into facts. Widened in the working-memory-levers work so between-condition Recall deltas of ~0.1 clear the Wilson 95% interval.",
+ "description": "Labelled recall set. Queries are paraphrased away from the fact wording so lexical matching is stressed; some facts are hard-negative distractors (no query targets them: 16, 17, 33, 59, 63); many facts carry two or three paraphrase queries; some queries are multi-relevant (relevant lists more than one fact). relevant = indices into facts. Widened in the working-memory-levers work so between-condition Recall deltas of ~0.1 clear the Wilson 95% interval. v2 (2026-07-06): +233 facts mined from the live store (human-reviewed, PII-scrubbed, contamination-filtered) with authored paraphrase queries.",
+ "facts": [
+  "The project deploys to AWS Lambda using the Serverless Framework.",
+  "Database migrations are managed with Alembic and run in CI before every deploy.",
+  "The API authenticates requests using short-lived JWT access tokens.",
+  "Frontend state is handled by Zustand rather than Redux.",
+  "Secrets are stored in AWS Secrets Manager and never committed to git.",
+  "The team runs a two-week sprint cadence with a demo every other Friday.",
+  "Unit tests use pytest and end-to-end tests use Playwright.",
+  "The primary database is PostgreSQL 16 hosted on Amazon RDS.",
+  "Background jobs are processed by a Celery worker pool backed by Redis.",
+  "Arabic is the default locale so layouts must be right-to-left.",
+  "Images are optimised and served through a CloudFront CDN.",
+  "The mobile app is built with React Native and Expo.",
+  "Merging code requires at least one approving review.",
+  "Rate limiting is enforced at the API gateway at 100 requests per minute.",
+  "Shared UI components live in a package called ui-kit.",
+  "Application logs are shipped to Datadog as structured JSON.",
+  "The onboarding document explains how to request database credentials.",
+  "A quick reference of common shell commands is pinned in the wiki.",
+  "The CI pipeline runs on GitHub Actions with a matrix across Python 3.10 to 3.13.",
+  "Feature flags are managed through LaunchDarkly.",
+  "The design system uses Tailwind CSS with a custom theme.",
+  "API responses use cursor-based pagination rather than offset pagination.",
+  "The staging environment is redeployed automatically on every merge to main.",
+  "Error tracking and alerting are handled by Sentry.",
+  "Full-text search is powered by an Elasticsearch cluster.",
+  "Transactional email is sent through Amazon SES with a dedicated sending domain.",
+  "The codebase is a monorepo managed with Turborepo.",
+  "Type checking is enforced in CI with mypy in strict mode.",
+  "Container images are built with Docker and pushed to Amazon ECR.",
+  "Analytics events are streamed through Kafka into a Snowflake warehouse.",
+  "Accessibility is tested with axe and must meet WCAG 2.1 AA.",
+  "The public REST API is documented with an OpenAPI spec served at /docs.",
+  "Local development spins up its dependencies with Docker Compose.",
+  "The support rota is published in the team calendar each month.",
+  "Cloud infrastructure is provisioned with Terraform and its state lives in an S3 backend.",
+  "The data pipeline is orchestrated with Apache Airflow DAGs.",
+  "Machine-learning models are tracked and versioned in MLflow.",
+  "The recommendation model is retrained nightly on the previous day's events.",
+  "Personally identifiable information is encrypted at rest with AES-256-GCM.",
+  "Access to the production environment requires a hardware security key and SSO.",
+  "The marketing site is server-side rendered with Next.js.",
+  "A GraphQL endpoint is exposed alongside REST for the mobile clients.",
+  "WebSocket connections carry real-time notifications to the browser.",
+  "The billing service integrates with Stripe for recurring subscriptions.",
+  "Customer data is partitioned by tenant within a shared PostgreSQL schema.",
+  "Nightly backups are written to a separate AWS account for disaster recovery.",
+  "The search index is rebuilt from scratch every Sunday at 02:00 UTC.",
+  "Product analytics dashboards are built in Metabase.",
+  "The team records architectural choices as written decision records.",
+  "Incident retrospectives are blameless and published internally.",
+  "Load testing is run with k6 before every major release.",
+  "The API version is pinned in the URL path as /v2.",
+  "Type stubs for untyped third-party libraries live in a typings directory.",
+  "The Kubernetes cluster autoscales worker nodes on CPU and queue depth.",
+  "Canary deployments route five percent of traffic before a full rollout.",
+  "Secrets are rotated automatically every ninety days.",
+  "The onboarding checklist is completed within a new hire's first week.",
+  "Documentation is written in Markdown and published with Docusaurus.",
+  "Feature branches are deleted automatically once their pull request merges.",
+  "The status page is hosted externally and updated during incidents.",
+  "Cost dashboards flag any service that exceeds its monthly budget.",
+  "The mobile app ships to beta testers through TestFlight.",
+  "Direct messages between users are protected with end-to-end encryption.",
+  "A weekly newsletter summarises shipped features for stakeholders.",
+  "Current semantic path stores model's full native dim with no truncation anywhere; this lever was latent but never exercised",
+  "Stronger 2025-generation models exist (EmbeddingGemma-300m, Qwen3-Embedding-0.6B) but require small new adapters in core/adapters/, wired by plugin selector, fail-open to hash per POEAA lock-in",
+  "Gateway + Separated Interface seam in core/adapters/ makes adding new embedding models straightforward without core changes",
+  "This is the embedding equivalent of 80s/90s packed-pixel formats or fixed-point arithmetic — a resource-constrained optimization that modern hardware enables but data structure doesn't yet use",
+  "SessionStart-vs-JIT recall pattern maps to overlay programming / bank switching (small kernel, page-in on demand)",
+  "Detached capture mirrors precompute-at-build-time; int8 quantisation mirrors fixed-point arithmetic from resource-constrained eras",
+  "Current usage_summary charges full price for SessionStart injection, but it joins cached prefix and re-reads at ~0.1× on every later turn",
+  "Measured floor (from get_symbol/get_doc_section/bounded reads with actual byte counts) is conservative; measured-only headline is credible",
+  "New module: core/consolidation/scoring.py defines retention_score(fact, now) reusing domain.scoring primitives (recency, frequency, context); pure function",
+  "Latency cost of raising cap 150→1500 is negligible (~1ms); token budget is unaffected (gated by min_sim/top_k/max_chars)",
+  "Attribution was wired into `recall_structured` (MCP tool, latency-tolerant) but never into `recall_prompt_block` (dominant per-turn path)",
+  "Latency budget: one indexed UPDATE + commit on hot path; sub-millisecond in isolation but writes to 5s-ceiling path",
+  "Mitigation 3: scope attribution to recall_prompt_block only (JIT, per-turn), NOT recall_core_block (SessionStart, stable, cached)",
+  "prune_threshold=0.10 archives facts whose retention score drops below this (score = freq * recency_decay)",
+  "Proposal §3 described 'global entity-level conflict merge' and 'gist abstraction'; neither shipped",
+  "Sequential Hypothesis's REM contribution (schema integration, clustering related facts) is the gap",
+  "New consolidate() stage: cluster near-duplicates, emit entity-level supersedes, abstract gist (LLM-backed, degrades gracefully)",
+  "Heuristic dedup ships everywhere; LLM integration available when distiller is configured and present",
+  "Atkinson–Shiffrin STM timescale is seconds; cross-session dev memory treats 'short-term' as a state, not a clock",
+  "OQ3 = A: Dedicated integrate_threshold config knob, default-off, independent from supersede_threshold for eval tuning",
+  "OQ3 decouples near-duplicate-clustering aggressiveness from exact supersession, avoiding operational coupling",
+  "Rejected alternative: multiplicative downscale (divide retention_score by frequency factor) — would break reproducibility because comparison sets would have different pass frequencies and different score decays",
+  "Clustering algorithm: cosine distance over stored int8 vectors; threshold configurable via integrate_threshold (default 0.0, off; must be < supersede_threshold to avoid semantic collision)",
+  "Documentation targets updated: README (CLI list, stats accounting), rules (credit_read.py hook table), generated design doc (removed stale 'not built' claims)",
+  "New method signature: merge_cluster(facts, threshold)→(merged_facts, stats)",
+  "LTM_INTEGRATE_THRESHOLD=0.92 set for near-identical-only STM→LTM merge",
+  "Phase 1 captures mistakes as kind='antipattern' facts via distillation pass, surfaced in recall",
+  "PR #16 created: `feat(ltm): anti-pattern catalogue — capture admitted mistakes and prevent repeats`",
+  "ltm-design skill is dev-only tooling under .claude/skills/, not shipped in the plugin",
+  "3. **#5 (use-feedback inhibition)** — stops steady-state waste; needs a usage signal you don't capture yet.",
+  "Q#1 activated_k: chose Option A (add knob defaulting to top_k, decouples activated-LTM breadth from injected focus breadth)",
+  "Phase 2: `activated_k` knob added to config, defaults to `top_k` (inert), wired MCP `recall_structured` path only",
+  "Phase 3: `render_scaffold` groups core facts by title, structured LT-WM block, cue field added to DistilledFact (inert, no persistence yet)",
+  "Phase 4: inhibition term added to retention score (weight 0 default), outcome columns + `mark_injected`/`mark_used` Store methods, pure `inhibition_signal` function",
+  "Phase 5: `fact_edges` table + `spread_weight` knob (default 0), pure `spread` and `extract_entities` functions, co-occurrence + shared-entity edges per Option B",
+  "PR #21 (6 working-memory levers: dataset widening, gist, focus/activated, scaffold, inhibition, spreading) merged",
+  "All 6 phases: inert by default (hot path byte-identical when all off), pure Functional Core for new logic, Repository for persistence, 334 tests (+32 new), migrations upgrade cleanly, no recall regression at baseline",
+  "First PR to *enable* (set non-zero weight/config) any lever carries the minor bump",
+  "Hot path (search, scoring, injection) remains byte-identical at all-levers-off defaults",
+  "Schema migrations (_v14_outcomes, _v15_edges) tested on unchanged behavior",
+  "Pure Functional Core (spread, inhibition_signal, extract_entities) is testable and measurable independently",
+  "Inert-by-default pattern: store/config additions pay zero cost until lever enabled",
+  "PR #20 (ltm-design skill frontmatter fix) merged — ltm-design skill now loads cleanly",
+  "Q#5 \"used\" signal: chose Option B (higher-fidelity multi-signal combining token-reappearance, edit-content, correction-turn, cross-session outcome)",
+  "Q#4 edges: chose Option B (co-occurrence AND shared-entity edges upfront, with conservative per-edge weighting to manage false-edge surface)",
+  "Default-off discipline gates all phases: code can ship inert until a measured comparison justifies enabling, keeping behavior and tests green",
+  "Per-phase commit strategy: each phase gets its own PR with commit message e.g. 'feat(ltm): gist chunking' (type/scope per ltm-git)",
+  "No version bump while default-off: bench-only / inert scaffolding = no version bump; only when a lever flips to enabled-by-default does it bump minor",
+  "Default-off safety: all levers ship inert/no-op until a measured comparison proves improvement; existing behavior and tests stay green through all phases",
+  "Unquoted `: ` in YAML scalar is parsed as invalid mapping key, making entire frontmatter unparseable",
+  "Fix restructured description to parenthetical format `claude-ltm (systems designs, ...)`, matching colon-free style of six sibling skills",
+  "Skill build checks description length against 1024-char limit and forbids angle brackets `<>`",
+  "Build does NOT verify frontmatter parses under yaml.safe_load()",
+  "Stronger validation habit would treat 'frontmatter parses as YAML' as primary check, length/`<>` as secondary",
+  "PR #19 landed on origin/main as squash commit 64ae312",
+  "Ran git pull to sync local main to the new commit",
+  "Recall's gate-and-cap machinery *is* an externalised **central executive** deciding what gets into the focus.",
+  "4. **#4 (spreading activation)** — precision play; highest complexity/storage cost, so weigh carefully.",
+  "SKILL.md spine: 12 non-negotiables, 6 system-research sections, statistical contract, working method (2138 words, 1012-char description)",
+  "Assets: paper_template.md (6-section skeleton + pandoc metadata), pandoc/paper.yaml + pandoc/header.tex (LaTeX, no exotic packages)",
+  "Script gracefully degrades when toolchain absent: prints brew install guidance, exits 1, leaves sources untouched",
+  "CLAUDE.md update (skill enumeration 6→7) is documentation, not plugin code change",
+  "Commit type = `docs` signals no version bump (matches precedent 'docs: shape .claude rules/skills…')",
+  "Version bump rule: only plugins/ltm/** changes trigger release increments per ltm-git habit",
+  "Frontmatter validation: name=folder, description <1024 chars, no <> in description field (angle brackets belong in argument-hint)",
+  "Default (no --publish): builds PDF beside source markdown in current directory",
+  "Graceful degradation: if pandoc or tectonic absent, prints `brew install pandoc tectonic` guidance, exits 1, leaves source files untouched, creates no PDF",
+  "Detection via Python subprocess; no hard dependencies on pandoc/tectonic in the script or codebase",
+  "argparse wired for --publish flag; script compiles and passes syntax check",
+  "Skill list now: ltm-analyse, ltm-context, ltm-design, ltm-git, ltm-plan, ltm-poeaa, ltm-test (7 total, alphabetical)",
+  "Initial description was 1025 chars (1 char over limit); trimmed to 1012 by removing em dash and tightening phrasing",
+  "Angle brackets in argument-hint (e.g., <change>, <slug>) are correct and match sibling skills (ltm-analyse, ltm-plan); no-<> rule applies only to description field",
+  "OQ2: Build tool is Python build_pdf.py with --publish flag for datetime-stamping, archiving, and root-promotion (not bash); default builds PDF beside source",
+  "OQ3: Optional .bib + pandoc-citeproc for academic citations (numbered in-text, auto-formatted refs); plain Markdown ## References section as fallback when .bib absent",
+  "Working drafts live in docs/generated/design-drafts/<slug>/ (gitignored); canonical PDF on repo root next to README.md/DESIGN.md",
+  "Settings.json**: Update `~/.claude/settings.json` with all the config opt-ins.",
+  "PR/release**: Commit and raise PRs on the <personal-account> gh cli account; bump plugin version to 0.14.0; fold per-feature version-bumping into the ltm-git release habit.",
+  "claude-ltm**: token-first cross-project long-term memory + code/docs index plugin for Claude Code. Stdlib-only core; opt-in adapters (fastembed, LLM distillers). Local-first.",
+  "CQRS + Hexagonal (Ports & Adapters)**: write side (capture, detached) vs read side (recall, hot-path).",
+  "POEAA capture-write bundle**: Command/Handler + Functional Core/Imperative Shell + Repository (not Active Record) + Gateway/Separated-Interface + Special-Case/Null-Object.",
+  "Distiller Strategy pattern**: HeuristicDistiller (default, stdlib), ClaudeCliDistiller, HTTPDistiller. `summarize`/`merge_cluster`/`extract_antipatterns` return None/[] for heuristic (Special Case).",
+  "render_block** injects ONLY `- {row['text']}` (one line per fact); title/subtitle/narrative NOT injected on JIT path.",
+  "VSCode `/plugin` commands don't expose marketplace sync in the extension UI; use CLI (`claude plugin marketplace update`) for manual control",
+  "Plugin reload updates hooks/deps but does NOT restart any running viewer process",
+  "Plugin caching/version was actually up-to-date (0.8.0); the UI appeared outdated only due to stale viewer (PID 10590 from 9:59 PM)",
+  "DESIGN.md § Sleep pass: updated to list `integrate` stage alongside replay/displace/refine/purge",
+  "core/recall/ is a Python package; the entire implementation lives in core/recall/__init__.py, not redundant",
+  "IDEs typically hide __init__.py by default in the file tree, creating a false appearance of emptiness",
+  "Package structure intentional: matches POEAA concern-grouping pattern with other core/ subpackages (domain/, ports/, index/)",
+  "Documented in .claude/rules/02-architecture/01-poeaa-and-layers.md as 'read side — search/render; from core.recall import …'",
+  "Used in service.py (30), hooks, and MCP server; removing or flattening would break imports",
+  "Leaves room for future module splits (render, ranking) without breaking import surface",
+  "Manifests locked at 0.13.1 from PR #9 through #16 despite multiple feature/fix additions",
+  "Local marketplace caches versions; no auto-update means users never received features from PRs #10–#16 without manual /plugin update",
+  "Root cause: version-bumping was optional and easy to skip, not a habitual step",
+  "Solution: version bump now Step 3 in ltm-git pr-create for feature/fix/perf PR types, keeping marketplace in sync with code changes",
+  "Implementation: formalized in PR #18 update to ltm-git skill",
+  "plugin.json and marketplace.json both bumped to 0.14.0",
+  "ruff format intentionally skipped on JSON (known corruption: adds trailing commas)",
+  "Version-only change (no Python code); reflects PR #16 anti-pattern catalogue feature",
+  "Step 2: User manually updates plugin to 0.14.0 via /plugin manager (interactive step; cannot be automated)",
+  "Step 4: Verify via ltm doctor (antipatterns: line appears) and capture (new code runs, LTM_* env vars read)",
+  "Docs/test/chore/ci/.claude PRs skip the version-bump step",
+  "Local-directory marketplace requires version bump to activate new features for users",
+  "Plugin `/plugin` update is what pulls new code; metadata refresh alone doesn't upgrade cached version",
+  "`ruff format --check` scoped to changed files in the PR only",
+  "PR #18 is dev-tooling (`.claude/**`), scope `docs`, does not bump version on itself",
+  "Plugin version 0.14.0 available in repository but not pulled to user cache",
+  "`gh` auth is currently set to user `<personal-account>` (owns <owner>/claude-ltm)",
+  "Use: `gh auth switch --user <work-account>`",
+  "Plugin versions are cached locally under `~/.claude/plugins/cache/claude-ltm/ltm/<version>/` and must be manually updated via `/plugin` UI",
+  "A restart refreshes marketplace metadata but does not bump an already-installed plugin's version number",
+  "Repository marketplace is a local directory pointing at this repo, advertising 0.13.1, creating ambiguity when version is static across content changes",
+  "Repository <owner>/claude-ltm has no CI configured",
+  "Active gh account <work-account> lacks push access to <owner>/claude-ltm (repo owned by <personal-account>)",
+  "Local main fast-forwarded successfully; feat/antipattern-catalogue branch deleted and remote pruned",
+  "Settings LTM_REFINE_PRUNE_PERCENTILE=0.05 is now safe—Phase 2 exemption shipped with the merge",
+  "Full implementation live: Phase 1 (capture as kind='antipattern'), Phase 2 (drift invalidation + archive), Phase 3 (PreToolUse warnings)",
+  "Two optional refinements remain deferred: recurrence-reinforce (Q6-C) and LLM applicability judgement (Q4b-C)",
+  "Phase 2 invalidates anti-patterns when referenced files disappear (drift signal), preserving reversibility by archiving to 'expired' status",
+  "Phase 3 PreToolUse hook warns before Bash/Edit/Write actions match any anti-pattern rule (project or global scope)",
+  "Phase 3 matching is lexical-only (≥2 token overlap), ≥600 char capped, deduped per (session, rule) to bound token cost",
+  "Store queried only for the four action tools (Bash/Edit/Write/MultiEdit) to minimize cost",
+  "Capped to 600 characters per injection; deduped per (session, rule) so each rule warns at most once per session",
+  "Lexical token matching only—no embedding on interactive path, fail-open on any error",
+  "End-to-end subprocess test confirms hook emits additionalContext and exits 0 under error conditions",
+  "Takes priority over search nudges in prefer_memory.py flow",
+  "LTM_REFINE_PRUNE_PERCENTILE=0.05 in settings.json entered shell env; test_consolidation.StageTests.setUp built cfg from get_config() and saw ambient value instead of code default",
+  "Four consolidation tests failed (test_prepare_stages, test_displace_stm, test_integrate, test_purge_expired) when lever was unset in setUp",
+  "Fix: pin all six consolidation levers to code defaults in StageTests.setUp (stm_capacity, keep_max, pct, merge_threshold, purge_horizon, integrate_threshold)",
+  "Per-test replace(...) overrides still work after setUp pin",
+  "Phase 1–3 covers capture, lifecycle, and prevention—the core loop",
+  "Recurrence reinforcement (strengthen fact on each prevention) deferred as optimization",
+  "Deferral is intentional, not a blocker; feature is shippable at Phase 3",
+  "Anti-pattern exemption (kind='antipattern' guard in refine()) and prune percentile setting are hard-coupled—must land in same commit to avoid pruning anti-patterns on main before exemption ships",
+  "Requires Claude Code restart to reach capture/checkpoint hooks",
+  "Settings validated via JSON schema check before commit",
+  "Retention score is a weighted sum of recency, salience, depth (each [0,1]) plus boosts",
+  "Percentile is self-limiting and does not require empirical score distribution data",
+  "Absolute floor (keep only facts scoring ≥X) would need empirical distribution to set safely",
+  "Percentile semantics ('drop weakest 5%') are intuitive and controllable by the user",
+  "Setting affects forgetting across all projects, so the value is fundamentally a user decision",
+  "TTL sweep() skips antipatterns (kind-agnostic originally, now exempted)",
+  "New invalidate.py module archives project rules when all referenced files are gone (drift signal)",
+  "Invalidate wired into consolidate() pipeline before purge stage",
+  "invalidate preserves reversibility: archives to 'expired' status, not delete",
+  "Conservative scope: archives only when *all* files gone, skips global/fileless rules",
+  "LTM promotion (tier='ltm' at capture) already shipped Phase 1, verified in this pass",
+  "displace_stm builds on stm_rows query (tier='stm' only)",
+  "integrate uses merge_candidates (tier='stm' scoped)",
+  "Both skip LTM-tier anti-patterns inherently; no guard needed",
+  "get_config() in tests saw LTM_INTEGRATE_THRESHOLD=0.92 from ambient env",
+  "Fix: pin integrate_threshold=0 in setUp, matching test_viewer._cfg hermeticity convention",
+  "'on' tests already override threshold explicitly, so pinning default is safe",
+  "Matches established codebase pattern: stdlib values pinned in test setup",
+  "ltm doctor output extended with per-project + global antipattern line counts",
+  "Viewer already surfaces anti-patterns as kind='antipattern' facts in fact listing",
+  "Dedicated filter facet deferred as polish (not built in Phase 2)",
+  "Doctor count visible in `ltm doctor` output; no UI changes needed",
+  "Antipattern surfacing scenario: R@3 1.000 (unchanged)",
+  "Zero budget impact: all changes in detached consolidation pass (write-side)",
+  "Recall unions global antipatterns into search + search_fused; reserved __global__ key routes global-scope facts from all projects into every recall",
+  "Dropped the per-session clear_session_kind pattern the initial plan borrowed from the summary distiller",
+  "Additive model uses fact_id dedup + supersession as idempotency — matches the catalogue's intent (lessons don't reset)",
+  "Prevents a clipped lesson (identified mid-session, then missing from a later extraction pass) from being permanently lost",
+  "Aligns with the LTM tier: accumulated facts stay until explicitly invalidated (drift, supersession) or dormancy-exempt Phase 2 skips them",
+  "Store.add and add_records both accept tier parameter (not discovered in initial plan sketch)",
+  "Anti-patterns can be promoted to LTM immediately at capture time via add_records(tier=\"ltm\")",
+  "LTM_ANTIPATTERNS=true added explicitly (already the default, but now visible in config)",
+  "Phase 1 builds anti-patterns as LTM-tier facts, but refine() is tier-agnostic (prunes both STM and LTM)",
+  "Without Phase 2 exemption (kind=\"antipattern\" skip in refine/displace/purge), anti-patterns can be evicted during consolidation",
+  "Phase 2 must ship before turning on LTM_REFINE_PRUNE_PERCENTILE or aggressive forgetting passes",
+  "Anti-patterns are currently bounded only by LTM_REFINE_KEEP_MAX=20000 (user is well under this)",
+  "Gate markers in Option B reusable later as PreToolUse trigger for Q8 (memory-first enforcement)",
+  "Two runtime details flagged for build-time confirmation: reserved global key name ('__global__') and exact injected-text char cap",
+  "Q2–Q3: cheap stdlib gate (admission markers) + LLM extraction; injected `text` is Strict Rule with terse DON'T/DO capped to ~180–200 chars",
+  "Q4–Q5: hard exemption from dormancy forgetting (but drift-obsolete/superseded still invalidate); scope is LLM-tagged (global reserved key vs project-local)",
+  "Q6: feed existing anti-patterns into prompt for LLM-driven dedup/supersession; recurrence-reinforce is fast-follow",
+  "Q7: gate+throttle-by-growth cadence (mirror summary distiller); enabled by default with independent config toggle",
+  "Q8: two-phase recall delivery — A (JIT UserPromptSubmit, free) then B (PreToolUse lexical/FTS warning, capped+fail-open)",
+  "Config toggle pattern: follows existing `Config` dataclass convention; independent flag (e.g., 'antipatterns') added per design Q7b",
+  "Re-entrancy backstop: `is_distiller_prompt` method in service layer already guards against capture recursion; anti-pattern extraction extends this",
+  "Forgetting exemption: `refine` method in store layer is the point where dormancy logic applies; anti-patterns bypass this for stale-marking only",
+  "Q2 gate mechanism suppresses most anti-pattern extractions; throttling by transcript growth keeps cost low even at frequent cadence",
+  "Q7a recommendation: gate+throttle-by-growth; reuse maybe_capture_summary throttle mechanism verbatim for consistent cost profile",
+  "Extraction validation: stdlib unittest covers gate markers, parse_antipatterns, scope classification, supersede-dedup with stub distiller",
+  "Default test path network-free: stub distiller returns known anti-patterns, no live LLM, preserves stdlib-first core contract",
+  "Addresses both distinct risks: (1) anti-patterns polluting normal recall precision; (2) anti-patterns not actually working",
+  "Tool-usage anti-patterns fire mid-turn on tool calls unrelated to the user's prompt topic, not via prompt-level JIT recall alone",
+  "JIT recall (UserPromptSubmit) injects anti-patterns by similarity to prompt; free, already works, covers prompt-topic cases",
+  "PreToolUse guard runs right when the model constructs the tool call — the exact place tool-usage mistakes happen",
+  "Option B phasing: ship A (JIT-only) first as zero-risk baseline, then B (add PreToolUse lexical/FTS guard) as committed follow-up",
+  "PreToolUse anti-pattern lookup must be lexical/FTS only (no embedding), capped, fail-open to preserve hot-path contract",
+  "Global anti-patterns (e.g., curl flag rules) surface everywhere; project-scoped rules stay local to origin",
+  "Dual-path solves flagship case: tool-usage rules surface where they're needed, not just where the prompt mentions the tool",
+  "B allows LLM to emit `supersedes` for true refinements and omit exact repeats",
+  "B directly parallels proven main-distiller pattern (pass `existing`, let LLM disambiguate)",
+  "Prevents duplicate/churn at source instead of post-facto supersession",
+  "Option C (recurrence-reinforce) locked as fast-follow, not MVP blocker",
+  "Anti-patterns are rare, keeping prompt expansion bounded and low-cost",
+  "Q3 decision locked: Option B — Strict Rule format with terse DON'T/DO in `text` field, capped to ~180–200 chars",
+  "Only `text` field reaches injected context; `narrative`/`subtitle` are viewer/structured-recall only",
+  "Do/Don't examples in `text` enable lexical/FTS recall on trigger vocabulary (e.g., 'curl', '--sandbox')",
+  "Single-line DTO contract preserved; length cap prevents `max_chars` blowout across multiple facts",
+  "Root cause and fuller prose examples remain in `subtitle`/`narrative` for viewer context and learning",
+  "Q4 decision: Hard exemption + immediate LTM promotion; anti-patterns skip refine/purge/displace and promote to LTM at capture",
+  "Removal only via supersession or manual curation, not time-based decay",
+  "Anti-patterns are standing rules, not decaying observations; dormancy should not trigger forgetting",
+  "Q4b decision: Supersession (A) implemented now; drift-driven obsolescence (B) as RNR mechanism, C (LLM judgement) deferred opt-in",
+  "LLM applicability judgement deferred as opt-in to avoid false-positive retirement of hard-won safety lessons",
+  "Global anti-patterns (tool/harness mistakes) stored under reserved global key and unioned into recall everywhere",
+  "Ambiguous classifications default to `project` to bias against cross-project pollution",
+  "Solves the `curl --sandbox` case (harness-level lesson) without polluting unrelated projects with repo-quirks",
+  "Option A (always-run LLM) wastes a full LLM call on every checkpoint, but most sessions have no catalogable mistakes",
+  "Option B (LLM + heuristic gate): pure stdlib pre-scan checks for admission markers (I mistakenly, that was wrong, my mistake, shouldn't have, user no/don't) to decide whether to invoke expensive LLM extraction",
+  "Option B preserves full LLM quality when mistakes detected, skips LLM call on clean sessions, degrades to clean no-op on heuristic installs (stdlib contract preserved)",
+  "Option C (heuristic fallback) stores raw admission sentences as degraded facts, but admissions are not imperative rules and pollute recall with non-actionable noise",
+  "Main distiller prompt explicitly suppresses admissions/corrections/chatter — bolting detection onto it would fight core design",
+  "I mistakenly put a Bash-tool flag into the curl command. Let me re-prepare and PUT cleanly (sandbox disabled via the tool parameter, not a curl flag).",
+  "Phase 1: LTM_DISABLE env flag honored by all 8 hooks; set on distiller subprocess to prevent recursive capture",
+  "Phase 1: capture_text backstop detects and drops distiller-prompt transcripts, defensive against nested session escape",
+  "Phase 2: get_bus drains pending inproc work_queue to NATS on backend switch; idempotent via msg_id republish",
+  "Phase 2: bus_dead_after config knob (~7d default) gates max-age dead-letter sweep; wired previously-uncalled reclaim_expired into capture worker",
+  "Phase 3: ltm queue CLI lists work items (all/pending/dead breakdown) and purges (--purge-dead/--purge-stage/--purge-all); top-level backend-neutral",
+  "Phase 3: viewer RnR header displays dead-letter count from store.dead_stale query",
+  "Production recursion confirmed by forensics: 38 stuck items contained verbatim distiller-prompt strings (only source: headless claude -p capture)",
+  "No LTM_DISABLE or re-entrancy guard exists in codebase (grep verified)",
+  "ClaudeCliDistiller._complete() at distill.py:465 spawns subprocess with no env= override, inheriting ltm plugin",
+  "get_bus() at membus.py:83-96 switches to NatsBus without draining inproc work_queue",
+  "Inproc queue is the real accumulation point (38 items stranded during NATS fallback)",
+  "One-way inproc→NATS drain is idempotent via msg_id republish, cheap to implement",
+  "Default None (mirrors existing `summarize` pattern for optional distiller methods)",
+  "Both OpenAI and Claude distillers implement merge_cluster with prompt→parser flow"
+ ],
+ "queries": [
+  {
+   "q": "how is the service shipped to production",
+   "relevant": [
+    0
+   ]
+  },
+  {
+   "q": "what runtime hosts our functions in production",
+   "relevant": [
+    0
+   ]
+  },
+  {
+   "q": "what keeps track of schema changes over time",
+   "relevant": [
+    1
+   ]
+  },
+  {
+   "q": "what applies incremental database schema updates",
+   "relevant": [
+    1
+   ]
+  },
+  {
+   "q": "how do we verify who is calling the api",
+   "relevant": [
+    2
+   ]
+  },
+  {
+   "q": "how are api sessions kept stateless and secure",
+   "relevant": [
+    2
+   ]
+  },
+  {
+   "q": "which library holds client-side ui state",
+   "relevant": [
+    3
+   ]
+  },
+  {
+   "q": "where do we keep credentials and api keys",
+   "relevant": [
+    4
+   ]
+  },
+  {
+   "q": "how frequently does the team show progress",
+   "relevant": [
+    5
+   ]
+  },
+  {
+   "q": "how long is an iteration and when is the demo",
+   "relevant": [
+    5
+   ]
+  },
+  {
+   "q": "what tool do we use for browser end-to-end checks",
+   "relevant": [
+    6
+   ]
+  },
+  {
+   "q": "what is the main data store",
+   "relevant": [
+    7
+   ]
+  },
+  {
+   "q": "which managed relational service backs the app",
+   "relevant": [
+    7
+   ]
+  },
+  {
+   "q": "how are long-running tasks handled off the request path",
+   "relevant": [
+    8
+   ]
+  },
+  {
+   "q": "what runs asynchronous work using a redis-backed queue",
+   "relevant": [
+    8
+   ]
+  },
+  {
+   "q": "which text direction should the interface use",
+   "relevant": [
+    9
+   ]
+  },
+  {
+   "q": "does the ui need to mirror for a right-to-left language",
+   "relevant": [
+    9
+   ]
+  },
+  {
+   "q": "how are static assets delivered quickly worldwide",
+   "relevant": [
+    10
+   ]
+  },
+  {
+   "q": "what serves images fast from edge locations",
+   "relevant": [
+    10
+   ]
+  },
+  {
+   "q": "what framework powers the phone application",
+   "relevant": [
+    11
+   ]
+  },
+  {
+   "q": "what is needed before code can be merged",
+   "relevant": [
+    12
+   ]
+  },
+  {
+   "q": "how do we stop clients from overwhelming the endpoints",
+   "relevant": [
+    13
+   ]
+  },
+  {
+   "q": "what caps how many calls a client can make each minute",
+   "relevant": [
+    13
+   ]
+  },
+  {
+   "q": "where do continuous integration jobs execute",
+   "relevant": [
+    18
+   ]
+  },
+  {
+   "q": "how do we toggle features without a redeploy",
+   "relevant": [
+    19
+   ]
+  },
+  {
+   "q": "what handles styling and theming",
+   "relevant": [
+    20
+   ]
+  },
+  {
+   "q": "what utility framework styles the components",
+   "relevant": [
+    20
+   ]
+  },
+  {
+   "q": "how do clients page through large result sets",
+   "relevant": [
+    21
+   ]
+  },
+  {
+   "q": "when does the pre-production environment refresh",
+   "relevant": [
+    22
+   ]
+  },
+  {
+   "q": "how are runtime exceptions surfaced to the team",
+   "relevant": [
+    23
+   ]
+  },
+  {
+   "q": "where are production errors aggregated and alerted",
+   "relevant": [
+    23
+   ]
+  },
+  {
+   "q": "what powers keyword search across content",
+   "relevant": [
+    24
+   ]
+  },
+  {
+   "q": "which engine indexes documents for searching",
+   "relevant": [
+    24
+   ]
+  },
+  {
+   "q": "how do we send account and notification emails",
+   "relevant": [
+    25
+   ]
+  },
+  {
+   "q": "how is the repository organised across packages",
+   "relevant": [
+    26
+   ]
+  },
+  {
+   "q": "how are the many packages built together efficiently",
+   "relevant": [
+    26
+   ]
+  },
+  {
+   "q": "where are built container images stored",
+   "relevant": [
+    28
+   ]
+  },
+  {
+   "q": "where does event data land for warehousing",
+   "relevant": [
+    29
+   ]
+  },
+  {
+   "q": "how do product events reach the analytics warehouse",
+   "relevant": [
+    29
+   ]
+  },
+  {
+   "q": "where is the http api contract described",
+   "relevant": [
+    31
+   ]
+  },
+  {
+   "q": "where can I find the machine-readable api schema",
+   "relevant": [
+    31
+   ]
+  },
+  {
+   "q": "how do we run dependencies for local development",
+   "relevant": [
+    32
+   ]
+  },
+  {
+   "q": "how is cloud infrastructure defined and versioned as code",
+   "relevant": [
+    34
+   ]
+  },
+  {
+   "q": "where is the provisioning state kept",
+   "relevant": [
+    34
+   ]
+  },
+  {
+   "q": "what schedules and orchestrates the batch data workflows",
+   "relevant": [
+    35
+   ]
+  },
+  {
+   "q": "where are trained model versions catalogued",
+   "relevant": [
+    36
+   ]
+  },
+  {
+   "q": "how often is the recommender refreshed with new data",
+   "relevant": [
+    37
+   ]
+  },
+  {
+   "q": "how is sensitive personal data protected in storage",
+   "relevant": [
+    38
+   ]
+  },
+  {
+   "q": "what is required to log into the production environment",
+   "relevant": [
+    39
+   ]
+  },
+  {
+   "q": "how are pages rendered for fast first paint and seo",
+   "relevant": [
+    40
+   ]
+  },
+  {
+   "q": "what query interface do the mobile apps use besides rest",
+   "relevant": [
+    41
+   ]
+  },
+  {
+   "q": "how does the browser receive live updates without polling",
+   "relevant": [
+    42
+   ]
+  },
+  {
+   "q": "what processes recurring customer payments",
+   "relevant": [
+    43
+   ]
+  },
+  {
+   "q": "how is one customer's data separated from another's",
+   "relevant": [
+    44
+   ]
+  },
+  {
+   "q": "where do disaster-recovery copies of the data live",
+   "relevant": [
+    45
+   ]
+  },
+  {
+   "q": "when is the search corpus fully regenerated",
+   "relevant": [
+    46
+   ]
+  },
+  {
+   "q": "what tool builds our business metric dashboards",
+   "relevant": [
+    47
+   ]
+  },
+  {
+   "q": "how does the team record decisions without meetings",
+   "relevant": [
+    48
+   ]
+  },
+  {
+   "q": "how are outages reviewed after the fact",
+   "relevant": [
+    49
+   ]
+  },
+  {
+   "q": "how do we check the system handles heavy traffic before shipping",
+   "relevant": [
+    50
+   ]
+  },
+  {
+   "q": "how is the api version signalled to callers",
+   "relevant": [
+    51
+   ]
+  },
+  {
+   "q": "how does the cluster add capacity under load",
+   "relevant": [
+    53
+   ]
+  },
+  {
+   "q": "how do we gradually expose a new release to users",
+   "relevant": [
+    54
+   ]
+  },
+  {
+   "q": "how frequently are credentials cycled",
+   "relevant": [
+    55
+   ]
+  },
+  {
+   "q": "what should a new joiner finish in their first week",
+   "relevant": [
+    56
+   ]
+  },
+  {
+   "q": "what tooling publishes the documentation site",
+   "relevant": [
+    57
+   ]
+  },
+  {
+   "q": "what happens to a branch once its pull request merges",
+   "relevant": [
+    58
+   ]
+  },
+  {
+   "q": "how are teams warned about overspending services",
+   "relevant": [
+    60
+   ]
+  },
+  {
+   "q": "how do beta testers get the ios build",
+   "relevant": [
+    61
+   ]
+  },
+  {
+   "q": "how are private messages secured between people",
+   "relevant": [
+    62
+   ]
+  },
+  {
+   "q": "what quality gates run in continuous integration",
+   "relevant": [
+    18,
+    27
+   ]
+  },
+  {
+   "q": "what kinds of automated testing does the project have",
+   "relevant": [
+    6,
+    30
+   ]
+  },
+  {
+   "q": "how is the ui checked for accessibility compliance",
+   "relevant": [
+    30
+   ]
+  },
+  {
+   "q": "how do we manage secrets and their lifecycle",
+   "relevant": [
+    4,
+    55
+   ]
+  },
+  {
+   "q": "how is data kept confidential in storage and in messaging",
+   "relevant": [
+    38,
+    62
+   ]
+  },
+  {
+   "q": "how does the team keep an async record of decisions and incidents",
+   "relevant": [
+    48,
+    49
+   ]
+  },
+  {
+   "q": "how do we de-risk a production release",
+   "relevant": [
+    50,
+    54
+   ]
+  },
+  {
+   "q": "do stored vectors keep every dimension the embedding model produces?",
+   "relevant": [
+    64
+   ]
+  },
+  {
+   "q": "what is involved in wiring up a newer 2025-era text embedding model?",
+   "relevant": [
+    65
+   ]
+  },
+  {
+   "q": "which architectural seam lets a different vector backend drop in without touching domain code?",
+   "relevant": [
+    66
+   ]
+  },
+  {
+   "q": "which old-school memory management trick does the two-tier context injection scheme echo?",
+   "relevant": [
+    68
+   ]
+  },
+  {
+   "q": "what vintage computing techniques do the deferred write pipeline and 8-bit vector storage resemble?",
+   "relevant": [
+    69
+   ]
+  },
+  {
+   "q": "after the first turn, what does the stable session block cost to keep re-reading?",
+   "relevant": [
+    70
+   ]
+  },
+  {
+   "q": "why can the conservative floor reported for avoided file reads be trusted?",
+   "relevant": [
+    71
+   ]
+  },
+  {
+   "q": "which module computes how worth-keeping a memory is, and is it side-effect free?",
+   "relevant": [
+    72
+   ]
+  },
+  {
+   "q": "how expensive is widening the candidate pool before ranking?",
+   "relevant": [
+    73
+   ]
+  },
+  {
+   "q": "why didn't the per-turn recall path get usefulness attribution at first?",
+   "relevant": [
+    74
+   ]
+  },
+  {
+   "q": "what write lands on the latency-critical path for attribution, and how heavy is it?",
+   "relevant": [
+    75
+   ]
+  },
+  {
+   "q": "which recall surface is deliberately exempt from attribution writes?",
+   "relevant": [
+    76
+   ]
+  },
+  {
+   "q": "at what score does a weak memory get retired into the archive?",
+   "relevant": [
+    77
+   ]
+  },
+  {
+   "q": "what does the sleep-style maintenance stage do with near-identical memories?",
+   "relevant": [
+    80
+   ]
+  },
+  {
+   "q": "is smart merging available when no language model is configured?",
+   "relevant": [
+    81
+   ]
+  },
+  {
+   "q": "how does the plugin reinterpret the classic seconds-scale short-term store for coding sessions?",
+   "relevant": [
+    82
+   ]
+  },
+  {
+   "q": "why not divide the keep-score by how often a fact was seen?",
+   "relevant": [
+    85
+   ]
+  },
+  {
+   "q": "how are similar memories grouped for merging and which knob controls it?",
+   "relevant": [
+    86
+   ]
+  },
+  {
+   "q": "what does the cluster-merge API return besides the merged facts?",
+   "relevant": [
+    88
+   ]
+  },
+  {
+   "q": "what similarity setting restricts merging to essentially identical short-term entries?",
+   "relevant": [
+    89
+   ]
+  },
+  {
+   "q": "is the scientific-paper authoring skill shipped to plugin installers?",
+   "relevant": [
+    92
+   ]
+  },
+  {
+   "q": "why does background activation breadth get its own setting instead of reusing the injection count?",
+   "relevant": [
+    94
+   ]
+  },
+  {
+   "q": "how are the stable session facts organised into a structured block, and what new field supports cueing?",
+   "relevant": [
+    96
+   ]
+  },
+  {
+   "q": "what mechanism quiets memories that keep getting shown but never used?",
+   "relevant": [
+    97
+   ]
+  },
+  {
+   "q": "how are relationships between memories recorded for spreading activation?",
+   "relevant": [
+    98
+   ]
+  },
+  {
+   "q": "which pull request delivered the six cognitive-model-inspired retrieval improvements?",
+   "relevant": [
+    99
+   ]
+  },
+  {
+   "q": "if none of the new retrieval levers are switched on, what happens to the hot path?",
+   "relevant": [
+    100
+   ]
+  },
+  {
+   "q": "which new pure functions can be measured in isolation?",
+   "relevant": [
+    104
+   ]
+  },
+  {
+   "q": "which signals combine to decide whether an injected memory was actually useful?",
+   "relevant": [
+    107
+   ]
+  },
+  {
+   "q": "how are the lever phases split across pull requests?",
+   "relevant": [
+    110
+   ]
+  },
+  {
+   "q": "when does shipping dormant opt-in code justify a release number change?",
+   "relevant": [
+    111
+   ]
+  },
+  {
+   "q": "what YAML pitfall broke a skill's metadata block?",
+   "relevant": [
+    113
+   ]
+  },
+  {
+   "q": "how was the skill description rewritten to avoid the parser-breaking character?",
+   "relevant": [
+    114
+   ]
+  },
+  {
+   "q": "what gap in the skill build checks let broken metadata reach the main branch?",
+   "relevant": [
+    116
+   ]
+  },
+  {
+   "q": "which cognitive role does the injection gating play in the working-memory analogy?",
+   "relevant": [
+    120
+   ]
+  },
+  {
+   "q": "how many hard requirements anchor the paper-writing skill's specification?",
+   "relevant": [
+    122
+   ]
+  },
+  {
+   "q": "which directory's changes are the trigger for cutting a new plugin release?",
+   "relevant": [
+    127
+   ]
+  },
+  {
+   "q": "what happens when the PDF toolchain is not installed?",
+   "relevant": [
+    130
+   ]
+  },
+  {
+   "q": "how many dev workflow skills exist and how are they ordered in the docs?",
+   "relevant": [
+    133
+   ]
+  },
+  {
+   "q": "where are angle brackets acceptable in skill metadata and where are they banned?",
+   "relevant": [
+    135
+   ]
+  },
+  {
+   "q": "what language is the document build script written in, and which flag promotes output to the repo root?",
+   "relevant": [
+    136
+   ]
+  },
+  {
+   "q": "how are academic citations handled when no bibliography file is present?",
+   "relevant": [
+    137
+   ]
+  },
+  {
+   "q": "where do in-progress paper drafts live versus the final published copy?",
+   "relevant": [
+    138
+   ]
+  },
+  {
+   "q": "how is the plugin split between its heavy ingestion half and its fast lookup half?",
+   "relevant": [
+    142
+   ]
+  },
+  {
+   "q": "which enterprise patterns make up the ingestion pipeline's design bundle?",
+   "relevant": [
+    143
+   ]
+  },
+  {
+   "q": "what are the three interchangeable summarisation engines?",
+   "relevant": [
+    144
+   ]
+  },
+  {
+   "q": "on the per-prompt path, which parts of a stored memory actually reach the model?",
+   "relevant": [
+    145
+   ]
+  },
+  {
+   "q": "how do you force a marketplace refresh when the IDE UI doesn't offer it?",
+   "relevant": [
+    146
+   ]
+  },
+  {
+   "q": "after upgrading the plugin, why might the browsing UI still show old data?",
+   "relevant": [
+    147
+   ]
+  },
+  {
+   "q": "where in the docs is the merge stage listed among the maintenance passes?",
+   "relevant": [
+    149
+   ]
+  },
+  {
+   "q": "where does the read-side package keep its actual code, given the folder looks empty?",
+   "relevant": [
+    150
+   ]
+  },
+  {
+   "q": "why is the lookup code a package rather than a single module?",
+   "relevant": [
+    152
+   ]
+  },
+  {
+   "q": "why did users stop receiving new features for several releases in a row?",
+   "relevant": [
+    157
+   ]
+  },
+  {
+   "q": "which step of the PR workflow now handles the release number?",
+   "relevant": [
+    159
+   ]
+  },
+  {
+   "q": "why is the auto-formatter kept away from the JSON manifests?",
+   "relevant": [
+    162
+   ]
+  },
+  {
+   "q": "which change categories skip touching the release number?",
+   "relevant": [
+    166
+   ]
+  },
+  {
+   "q": "does refreshing marketplace metadata alone upgrade an installed plugin?",
+   "relevant": [
+    168
+   ]
+  },
+  {
+   "q": "which files does the pre-push format check cover?",
+   "relevant": [
+    169
+   ]
+  },
+  {
+   "q": "where on disk are installed plugin versions kept?",
+   "relevant": [
+    174
+   ]
+  },
+  {
+   "q": "which three stages make up the mistake-catalogue feature as shipped?",
+   "relevant": [
+    181
+   ]
+  },
+  {
+   "q": "what retires a recorded mistake rule when the code it referenced vanishes?",
+   "relevant": [
+    183
+   ]
+  },
+  {
+   "q": "when do stored mistake warnings appear during a session?",
+   "relevant": [
+    184
+   ]
+  },
+  {
+   "q": "how does the pre-action warning decide a rule applies, and what bounds its output?",
+   "relevant": [
+    185
+   ]
+  },
+  {
+   "q": "for which tools does the pre-action guard even consult the store?",
+   "relevant": [
+    186
+   ]
+  },
+  {
+   "q": "how is the warning hook's fail-open behaviour proven?",
+   "relevant": [
+    189
+   ]
+  },
+  {
+   "q": "when both a warning and a search nudge could fire, which takes priority?",
+   "relevant": [
+    190
+   ]
+  },
+  {
+   "q": "what strengthening behaviour for repeated mistakes was postponed?",
+   "relevant": [
+    196
+   ]
+  },
+  {
+   "q": "why did the forgetting-exemption code and the pruning setting need to land together?",
+   "relevant": [
+    198
+   ]
+  },
+  {
+   "q": "after installing new hook code, what must happen before it runs?",
+   "relevant": [
+    199
+   ]
+  },
+  {
+   "q": "what ingredients make up a memory's keep-worthiness score?",
+   "relevant": [
+    201
+   ]
+  },
+  {
+   "q": "why was percentile-based forgetting chosen over an absolute score cutoff?",
+   "relevant": [
+    202
+   ]
+  },
+  {
+   "q": "what would we need to know before setting a fixed score floor for deletion?",
+   "relevant": [
+    203
+   ]
+  },
+  {
+   "q": "does the age-based cleanup touch catalogued mistakes?",
+   "relevant": [
+    206
+   ]
+  },
+  {
+   "q": "at what point do mistake rules enter the long-term tier?",
+   "relevant": [
+    211
+   ]
+  },
+  {
+   "q": "why don't the short-term displacement and merge stages need a special guard for mistake rules?",
+   "relevant": [
+    214
+   ]
+  },
+  {
+   "q": "what did the diagnostic command gain for the mistake catalogue?",
+   "relevant": [
+    219
+   ]
+  },
+  {
+   "q": "which side of the architecture absorbed the catalogue lifecycle work, and what did it cost the hot path?",
+   "relevant": [
+    224
+   ]
+  },
+  {
+   "q": "how do lessons learned in one repository reach sessions in another?",
+   "relevant": [
+    225
+   ]
+  },
+  {
+   "q": "what keeps re-capturing the same lesson from creating duplicates?",
+   "relevant": [
+    227
+   ]
+  },
+  {
+   "q": "is the mistake-catalogue feature on by default, and how is that visible?",
+   "relevant": [
+    232
+   ]
+  },
+  {
+   "q": "what risk did tier-agnostic pruning pose to catalogued lessons?",
+   "relevant": [
+    234
+   ]
+  },
+  {
+   "q": "absent the exemption, what was the only cap on catalogued lessons?",
+   "relevant": [
+    236
+   ]
+  },
+  {
+   "q": "what format and size are enforced for the injected text of a mistake rule?",
+   "relevant": [
+    239
+   ]
+  },
+  {
+   "q": "how often does the mistake-extraction pass run and what keeps it cheap?",
+   "relevant": [
+    242
+   ]
+  },
+  {
+   "q": "how are new feature switches added to configuration, following which convention?",
+   "relevant": [
+    244
+   ]
+  },
+  {
+   "q": "what stops the summarisation subprocess from capturing its own prompt?",
+   "relevant": [
+    245
+   ]
+  },
+  {
+   "q": "how is mistake extraction tested without network access?",
+   "relevant": [
+    249
+   ]
+  },
+  {
+   "q": "why isn't prompt-similarity recall enough to surface tool-usage lessons?",
+   "relevant": [
+    252
+   ]
+  },
+  {
+   "q": "which mistakes follow you across repositories and which stay put?",
+   "relevant": [
+    257
+   ]
+  },
+  {
+   "q": "how does feeding existing rules into the extractor prevent churn?",
+   "relevant": [
+    261
+   ]
+  },
+  {
+   "q": "which fields of a memory are for the browsing UI only?",
+   "relevant": [
+    265
+   ]
+  },
+  {
+   "q": "why do rules include concrete do/don't phrasing rather than abstract advice?",
+   "relevant": [
+    266
+   ]
+  },
+  {
+   "q": "how is a hard-won lesson protected from gradual forgetting?",
+   "relevant": [
+    269
+   ]
+  },
+  {
+   "q": "why was automated judgement of whether a lesson still applies left out?",
+   "relevant": [
+    273
+   ]
+  },
+  {
+   "q": "where are harness-level lessons stored so every project sees them?",
+   "relevant": [
+    274
+   ]
+  },
+  {
+   "q": "when the scope of a lesson is unclear, which way does classification lean?",
+   "relevant": [
+    275
+   ]
+  },
+  {
+   "q": "what cheap check runs before spending a model call on mistake extraction?",
+   "relevant": [
+    278
+   ]
+  },
+  {
+   "q": "why not just store raw confession sentences when no model is available?",
+   "relevant": [
+    280
+   ]
+  },
+  {
+   "q": "why does mistake extraction need its own pass instead of riding the main summariser?",
+   "relevant": [
+    281
+   ]
+  },
+  {
+   "q": "which environment flag makes every hook a no-op, and where is it applied?",
+   "relevant": [
+    283
+   ]
+  },
+  {
+   "q": "what happens to queued work when the message backend switches?",
+   "relevant": [
+    285
+   ]
+  },
+  {
+   "q": "how long can a queued job languish before the dead-letter sweep claims it?",
+   "relevant": [
+    286
+   ]
+  },
+  {
+   "q": "which command inspects and clears the durable work queue?",
+   "relevant": [
+    287
+   ]
+  },
+  {
+   "q": "what did the stuck queue items contain that pinpointed the recursion bug?",
+   "relevant": [
+    289
+   ]
+  },
+  {
+   "q": "which summarisation backends can merge a cluster of related memories?",
+   "relevant": [
+    296
+   ]
+  },
+  {
+   "q": "why did adding config to the user's settings file break unrelated unit tests?",
+   "relevant": [
+    191
+   ]
+  },
+  {
+   "q": "what convention keeps tests immune to ambient environment configuration?",
+   "relevant": [
+    218
+   ]
+  },
+  {
+   "q": "why is the once-per-session block cheap to keep in context?",
+   "relevant": [
+    70
+   ]
+  },
+  {
+   "q": "which setting decides the cutoff for archiving weak memories?",
+   "relevant": [
+    77
+   ]
+  },
+  {
+   "q": "what must the merge-grouping threshold stay below?",
+   "relevant": [
+    86
+   ]
+  },
+  {
+   "q": "which two bookkeeping calls track whether an injected fact got used?",
+   "relevant": [
+    97
+   ]
+  },
+  {
+   "q": "which two kinds of edges link related memories?",
+   "relevant": [
+    98
+   ]
+  },
+  {
+   "q": "how does the system pick between the built-in summariser and model-backed ones?",
+   "relevant": [
+    144
+   ]
+  },
+  {
+   "q": "does the just-in-time injection include titles or narrative context?",
+   "relevant": [
+    145
+   ]
+  },
+  {
+   "q": "what made the version number lag behind the shipped code for weeks?",
+   "relevant": [
+    157
+   ]
+  },
+  {
+   "q": "which hook event carries mistake warnings into the conversation?",
+   "relevant": [
+    184
+   ]
+  },
+  {
+   "q": "what special project key routes universal rules into every lookup?",
+   "relevant": [
+    225
+   ]
+  },
+  {
+   "q": "how does the guard limit how much warning text reaches a single turn?",
+   "relevant": [
+    185,
+    187
+   ]
+  },
+  {
+   "q": "is any vector math done when checking whether a mistake rule applies before a tool call?",
+   "relevant": [
+    188,
+    256
+   ]
+  },
+  {
+   "q": "what can still invalidate a catalogued lesson even though forgetting cannot?",
+   "relevant": [
+    183,
+    240,
+    270
+   ]
+  },
+  {
+   "q": "how do lessons get long-term status right away at write time?",
+   "relevant": [
+    211,
+    230,
+    231
+   ]
+  },
+  {
+   "q": "which design choices keep all the retrieval levers invisible until enabled?",
+   "relevant": [
+    100,
+    102,
+    105
+   ]
+  },
+  {
+   "q": "how do association links get created during a capture?",
+   "relevant": [
+    98,
+    108,
+    121
+   ]
+  },
+  {
+   "q": "why does the background activation setting exist separately from the injected-fact count?",
+   "relevant": [
+    94,
+    95
+   ]
+  },
+  {
+   "q": "what did the recursion forensics establish, and where was the missing guard?",
+   "relevant": [
+    289,
+    290,
+    291
+   ]
+  },
+  {
+   "q": "how does the drain between queue backends avoid duplicating work?",
+   "relevant": [
+    285,
+    292,
+    293,
+    294
+   ]
+  },
+  {
+   "q": "what two-stage delivery gets lessons to the model at the right moment?",
+   "relevant": [
+    243,
+    253,
+    254,
+    255
+   ]
+  },
+  {
+   "q": "when does the drift check archive a rule, and how reversible is that?",
+   "relevant": [
+    207,
+    208,
+    209,
+    210
+   ]
+  },
+  {
+   "q": "why did tests need the consolidation knobs pinned in their setup?",
+   "relevant": [
+    191,
+    192,
+    193,
+    215,
+    216
+   ]
+  },
+  {
+   "q": "which formatting rules govern what a mistake rule may inject?",
+   "relevant": [
+    239,
+    264,
+    267
+   ]
+  },
+  {
+   "q": "how are globally-scoped lessons kept from polluting unrelated repositories?",
+   "relevant": [
+    257,
+    274,
+    275,
+    276
+   ]
+  },
+  {
+   "q": "what does the clean-session shortcut save when no mistakes happened?",
+   "relevant": [
+    278,
+    279
+   ]
+  },
+  {
+   "q": "what is the fallback chain when the model-backed summariser can't run?",
+   "relevant": [
+    81,
+    144
+   ]
+  },
+  {
+   "q": "why does the stable block sit at session start rather than per prompt?",
+   "relevant": [
+    68,
+    70
+   ]
+  },
+  {
+   "q": "how does version drift between the repository and an installed plugin happen?",
+   "relevant": [
+    157,
+    168,
+    174,
+    175
+   ]
+  },
+  {
+   "q": "what makes retention scoring reproducible and testable?",
+   "relevant": [
+    72,
+    85
+   ]
+  },
+  {
+   "q": "when do merged near-duplicates replace their sources?",
+   "relevant": [
+    80,
+    86,
+    89
+   ]
+  },
+  {
+   "q": "which changes ride a release without bumping the version?",
+   "relevant": [
+    111,
+    166,
+    170
+   ]
+  },
+  {
+   "q": "how do the paper skill's outputs get promoted to the repository root?",
+   "relevant": [
+    136,
+    138
+   ]
+  },
+  {
+   "q": "which runtime signals will eventually gate re-showing a memory?",
+   "relevant": [
+    93,
+    97,
+    107
+   ]
+  },
+  {
+   "q": "what did the queue tooling gain for inspecting stuck work?",
+   "relevant": [
+    287,
+    288
+   ]
+  },
+  {
+   "q": "why do subprocess summarisers need explicit environment hygiene?",
+   "relevant": [
+    245,
+    283,
+    284
+   ]
+  },
+  {
+   "q": "what did the skill-metadata incident teach about validation order?",
+   "relevant": [
+    113,
+    116,
+    117
+   ]
+  },
+  {
+   "q": "how are lessons phrased so lexical search finds them at the right moment?",
+   "relevant": [
+    239,
+    266
+   ]
+  },
+  {
+   "q": "what tier scoping made part of the exemption work unnecessary?",
+   "relevant": [
+    212,
+    213,
+    214
+   ]
+  },
+  {
+   "q": "which mistake-catalogue capabilities were deliberately deferred from the first version?",
+   "relevant": [
+    182,
+    196,
+    262,
+    273
+   ]
+  },
+  {
+   "q": "why was the extraction pass judged affordable at a frequent cadence?",
+   "relevant": [
+    242,
+    247,
+    248
+   ]
+  },
+  {
+   "q": "which promised consolidation capabilities were identified as missing?",
+   "relevant": [
+    78,
+    79
+   ]
+  },
+  {
+   "q": "why does merging aggressiveness have its own knob instead of reusing the supersession threshold?",
+   "relevant": [
+    83,
+    84
+   ]
+  },
+  {
+   "q": "what proves retrieval quality survived the lifecycle changes untouched?",
+   "relevant": [
+    223,
+    224
+   ]
+  },
+  {
+   "q": "how is the package structure of the read side justified and recorded?",
+   "relevant": [
+    150,
+    152,
+    153,
+    154
+   ]
+  },
+  {
+   "q": "why did several releases advertise a stale version, and what fixed the habit?",
+   "relevant": [
+    156,
+    157,
+    158,
+    159
+   ]
+  },
+  {
+   "q": "what does a local-directory marketplace require before users see new behaviour?",
+   "relevant": [
+    167,
+    168
+   ]
+  },
+  {
+   "q": "which safety setting became usable only after the exemption merged?",
+   "relevant": [
+    180,
+    198
+   ]
+  },
+  {
+   "q": "how did the capture model change from per-session replacement to accumulation?",
+   "relevant": [
+    226,
+    227,
+    228
+   ]
+  },
+  {
+   "q": "why do accumulated lessons persist until something explicit removes them?",
+   "relevant": [
+    229,
+    269,
+    270,
+    271
+   ]
+  },
+  {
+   "q": "where does dormancy logic live, and how do standing rules bypass it?",
+   "relevant": [
+    246,
+    269
+   ]
+  },
+  {
+   "q": "which risks required the exemption to ship before aggressive forgetting?",
+   "relevant": [
+    233,
+    234,
+    235
+   ]
+  },
+  {
+   "q": "how does the extractor avoid wasting a model call on clean sessions?",
+   "relevant": [
+    277,
+    278,
+    279
+   ]
+  },
+  {
+   "q": "how does deduplication of lessons parallel the main summariser's design?",
+   "relevant": [
+    241,
+    259,
+    260,
+    261
+   ]
+  },
+  {
+   "q": "where do the fuller explanations of a rule live if not in the injected line?",
+   "relevant": [
+    265,
+    268
+   ]
+  },
+  {
+   "q": "what sequence of mechanisms retires an obsolete lesson today, and what waits for later?",
+   "relevant": [
+    183,
+    272
+   ]
+  },
+  {
+   "q": "how is the extraction path validated with a stand-in engine?",
+   "relevant": [
+    249,
+    250
+   ]
+  },
+  {
+   "q": "why is the tool-call moment the right place to warn about tool mistakes?",
+   "relevant": [
+    252,
+    254,
+    258
+   ]
+  },
+  {
+   "q": "how is graceful degradation of the document builder implemented and detected?",
+   "relevant": [
+    130,
+    131
+   ]
+  },
+  {
+   "q": "which metadata rules does the skill build enforce, and which does it miss?",
+   "relevant": [
+    116,
+    128,
+    135
+   ]
+  },
+  {
+   "q": "what discipline governs when the dormant levers may start changing behaviour?",
+   "relevant": [
+    101,
+    109,
+    112
+   ]
+  }
+ ],
+ "stm_scenario": {
+  "description": "Measures the stm_recall_weight lever end-to-end. Each fresh STM fact (odd index) has an older LTM competitor (the preceding even index) that shares the query's vocabulary. As stm_recall_weight falls from 1.0 toward 0, the STM gold facts must lose rank to their LTM competitors — a monotonic demonstration that the tier lever is measurable. ltm_indices marks the facts promoted to the long-term tier; the rest stay short-term. relevant = indices into stm_scenario.facts.",
   "facts": [
-    "The project deploys to AWS Lambda using the Serverless Framework.",
-    "Database migrations are managed with Alembic and run in CI before every deploy.",
-    "The API authenticates requests using short-lived JWT access tokens.",
-    "Frontend state is handled by Zustand rather than Redux.",
-    "Secrets are stored in AWS Secrets Manager and never committed to git.",
-    "The team runs a two-week sprint cadence with a demo every other Friday.",
-    "Unit tests use pytest and end-to-end tests use Playwright.",
-    "The primary database is PostgreSQL 16 hosted on Amazon RDS.",
-    "Background jobs are processed by a Celery worker pool backed by Redis.",
-    "Arabic is the default locale so layouts must be right-to-left.",
-    "Images are optimised and served through a CloudFront CDN.",
-    "The mobile app is built with React Native and Expo.",
-    "Merging code requires at least one approving review.",
-    "Rate limiting is enforced at the API gateway at 100 requests per minute.",
-    "Shared UI components live in a package called ui-kit.",
-    "Application logs are shipped to Datadog as structured JSON.",
-    "The onboarding document explains how to request database credentials.",
-    "A quick reference of common shell commands is pinned in the wiki.",
-    "The CI pipeline runs on GitHub Actions with a matrix across Python 3.10 to 3.13.",
-    "Feature flags are managed through LaunchDarkly.",
-    "The design system uses Tailwind CSS with a custom theme.",
-    "API responses use cursor-based pagination rather than offset pagination.",
-    "The staging environment is redeployed automatically on every merge to main.",
-    "Error tracking and alerting are handled by Sentry.",
-    "Full-text search is powered by an Elasticsearch cluster.",
-    "Transactional email is sent through Amazon SES with a dedicated sending domain.",
-    "The codebase is a monorepo managed with Turborepo.",
-    "Type checking is enforced in CI with mypy in strict mode.",
-    "Container images are built with Docker and pushed to Amazon ECR.",
-    "Analytics events are streamed through Kafka into a Snowflake warehouse.",
-    "Accessibility is tested with axe and must meet WCAG 2.1 AA.",
-    "The public REST API is documented with an OpenAPI spec served at /docs.",
-    "Local development spins up its dependencies with Docker Compose.",
-    "The support rota is published in the team calendar each month.",
-    "Cloud infrastructure is provisioned with Terraform and its state lives in an S3 backend.",
-    "The data pipeline is orchestrated with Apache Airflow DAGs.",
-    "Machine-learning models are tracked and versioned in MLflow.",
-    "The recommendation model is retrained nightly on the previous day's events.",
-    "Personally identifiable information is encrypted at rest with AES-256-GCM.",
-    "Access to the production environment requires a hardware security key and SSO.",
-    "The marketing site is server-side rendered with Next.js.",
-    "A GraphQL endpoint is exposed alongside REST for the mobile clients.",
-    "WebSocket connections carry real-time notifications to the browser.",
-    "The billing service integrates with Stripe for recurring subscriptions.",
-    "Customer data is partitioned by tenant within a shared PostgreSQL schema.",
-    "Nightly backups are written to a separate AWS account for disaster recovery.",
-    "The search index is rebuilt from scratch every Sunday at 02:00 UTC.",
-    "Product analytics dashboards are built in Metabase.",
-    "The team records architectural choices as written decision records.",
-    "Incident retrospectives are blameless and published internally.",
-    "Load testing is run with k6 before every major release.",
-    "The API version is pinned in the URL path as /v2.",
-    "Type stubs for untyped third-party libraries live in a typings directory.",
-    "The Kubernetes cluster autoscales worker nodes on CPU and queue depth.",
-    "Canary deployments route five percent of traffic before a full rollout.",
-    "Secrets are rotated automatically every ninety days.",
-    "The onboarding checklist is completed within a new hire's first week.",
-    "Documentation is written in Markdown and published with Docusaurus.",
-    "Feature branches are deleted automatically once their pull request merges.",
-    "The status page is hosted externally and updated during incidents.",
-    "Cost dashboards flag any service that exceeds its monthly budget.",
-    "The mobile app ships to beta testers through TestFlight.",
-    "Direct messages between users are protected with end-to-end encryption.",
-    "A weekly newsletter summarises shipped features for stakeholders."
+   "The service deploys to AWS Lambda using the Serverless Framework.",
+   "The service now deploys to Google Cloud Run using containers.",
+   "The primary datastore is PostgreSQL hosted on Amazon RDS.",
+   "The primary datastore is now CockroachDB for multi-region writes.",
+   "Background jobs run on a Celery worker pool backed by Redis.",
+   "Background jobs now run on Temporal durable workflows."
+  ],
+  "ltm_indices": [
+   0,
+   2,
+   4
   ],
   "queries": [
-    {"q": "how is the service shipped to production", "relevant": [0]},
-    {"q": "what runtime hosts our functions in production", "relevant": [0]},
-    {"q": "what keeps track of schema changes over time", "relevant": [1]},
-    {"q": "what applies incremental database schema updates", "relevant": [1]},
-    {"q": "how do we verify who is calling the api", "relevant": [2]},
-    {"q": "how are api sessions kept stateless and secure", "relevant": [2]},
-    {"q": "which library holds client-side ui state", "relevant": [3]},
-    {"q": "where do we keep credentials and api keys", "relevant": [4]},
-    {"q": "how frequently does the team show progress", "relevant": [5]},
-    {"q": "how long is an iteration and when is the demo", "relevant": [5]},
-    {"q": "what tool do we use for browser end-to-end checks", "relevant": [6]},
-    {"q": "what is the main data store", "relevant": [7]},
-    {"q": "which managed relational service backs the app", "relevant": [7]},
-    {"q": "how are long-running tasks handled off the request path", "relevant": [8]},
-    {"q": "what runs asynchronous work using a redis-backed queue", "relevant": [8]},
-    {"q": "which text direction should the interface use", "relevant": [9]},
-    {"q": "does the ui need to mirror for a right-to-left language", "relevant": [9]},
-    {"q": "how are static assets delivered quickly worldwide", "relevant": [10]},
-    {"q": "what serves images fast from edge locations", "relevant": [10]},
-    {"q": "what framework powers the phone application", "relevant": [11]},
-    {"q": "what is needed before code can be merged", "relevant": [12]},
-    {"q": "how do we stop clients from overwhelming the endpoints", "relevant": [13]},
-    {"q": "what caps how many calls a client can make each minute", "relevant": [13]},
-    {"q": "where do continuous integration jobs execute", "relevant": [18]},
-    {"q": "how do we toggle features without a redeploy", "relevant": [19]},
-    {"q": "what handles styling and theming", "relevant": [20]},
-    {"q": "what utility framework styles the components", "relevant": [20]},
-    {"q": "how do clients page through large result sets", "relevant": [21]},
-    {"q": "when does the pre-production environment refresh", "relevant": [22]},
-    {"q": "how are runtime exceptions surfaced to the team", "relevant": [23]},
-    {"q": "where are production errors aggregated and alerted", "relevant": [23]},
-    {"q": "what powers keyword search across content", "relevant": [24]},
-    {"q": "which engine indexes documents for searching", "relevant": [24]},
-    {"q": "how do we send account and notification emails", "relevant": [25]},
-    {"q": "how is the repository organised across packages", "relevant": [26]},
-    {"q": "how are the many packages built together efficiently", "relevant": [26]},
-    {"q": "where are built container images stored", "relevant": [28]},
-    {"q": "where does event data land for warehousing", "relevant": [29]},
-    {"q": "how do product events reach the analytics warehouse", "relevant": [29]},
-    {"q": "where is the http api contract described", "relevant": [31]},
-    {"q": "where can I find the machine-readable api schema", "relevant": [31]},
-    {"q": "how do we run dependencies for local development", "relevant": [32]},
-    {"q": "how is cloud infrastructure defined and versioned as code", "relevant": [34]},
-    {"q": "where is the provisioning state kept", "relevant": [34]},
-    {"q": "what schedules and orchestrates the batch data workflows", "relevant": [35]},
-    {"q": "where are trained model versions catalogued", "relevant": [36]},
-    {"q": "how often is the recommender refreshed with new data", "relevant": [37]},
-    {"q": "how is sensitive personal data protected in storage", "relevant": [38]},
-    {"q": "what is required to log into the production environment", "relevant": [39]},
-    {"q": "how are pages rendered for fast first paint and seo", "relevant": [40]},
-    {"q": "what query interface do the mobile apps use besides rest", "relevant": [41]},
-    {"q": "how does the browser receive live updates without polling", "relevant": [42]},
-    {"q": "what processes recurring customer payments", "relevant": [43]},
-    {"q": "how is one customer's data separated from another's", "relevant": [44]},
-    {"q": "where do disaster-recovery copies of the data live", "relevant": [45]},
-    {"q": "when is the search corpus fully regenerated", "relevant": [46]},
-    {"q": "what tool builds our business metric dashboards", "relevant": [47]},
-    {"q": "how does the team record decisions without meetings", "relevant": [48]},
-    {"q": "how are outages reviewed after the fact", "relevant": [49]},
-    {"q": "how do we check the system handles heavy traffic before shipping", "relevant": [50]},
-    {"q": "how is the api version signalled to callers", "relevant": [51]},
-    {"q": "how does the cluster add capacity under load", "relevant": [53]},
-    {"q": "how do we gradually expose a new release to users", "relevant": [54]},
-    {"q": "how frequently are credentials cycled", "relevant": [55]},
-    {"q": "what should a new joiner finish in their first week", "relevant": [56]},
-    {"q": "what tooling publishes the documentation site", "relevant": [57]},
-    {"q": "what happens to a branch once its pull request merges", "relevant": [58]},
-    {"q": "how are teams warned about overspending services", "relevant": [60]},
-    {"q": "how do beta testers get the ios build", "relevant": [61]},
-    {"q": "how are private messages secured between people", "relevant": [62]},
-    {"q": "what quality gates run in continuous integration", "relevant": [18, 27]},
-    {"q": "what kinds of automated testing does the project have", "relevant": [6, 30]},
-    {"q": "how is the ui checked for accessibility compliance", "relevant": [30]},
-    {"q": "how do we manage secrets and their lifecycle", "relevant": [4, 55]},
-    {"q": "how is data kept confidential in storage and in messaging", "relevant": [38, 62]},
-    {"q": "how does the team keep an async record of decisions and incidents", "relevant": [48, 49]},
-    {"q": "how do we de-risk a production release", "relevant": [50, 54]}
+   {
+    "q": "where does the service deploy",
+    "relevant": [
+     1
+    ]
+   },
+   {
+    "q": "what is the primary datastore",
+    "relevant": [
+     3
+    ]
+   },
+   {
+    "q": "how do background jobs run",
+    "relevant": [
+     5
+    ]
+   }
+  ]
+ },
+ "antipattern_scenario": {
+  "description": "Measures that globally-scoped anti-patterns surface cross-project via the recall union. The anti-patterns are stored under the reserved global key; recall runs from a DIFFERENT project whose only local facts are distractors, so a hit proves the union + retrieval works. Queries paraphrase the situation that should trigger each rule. relevant = indices into antipattern_scenario.antipatterns.",
+  "antipatterns": [
+   "Never put an AI-tool flag like --sandbox into a curl shell command; set it in the tool call schema instead",
+   "Never push directly to main; branch first and open a pull request",
+   "Never hand-edit a generated file; change the generator and regenerate it"
   ],
-  "stm_scenario": {
-    "description": "Measures the stm_recall_weight lever end-to-end. Each fresh STM fact (odd index) has an older LTM competitor (the preceding even index) that shares the query's vocabulary. As stm_recall_weight falls from 1.0 toward 0, the STM gold facts must lose rank to their LTM competitors — a monotonic demonstration that the tier lever is measurable. ltm_indices marks the facts promoted to the long-term tier; the rest stay short-term. relevant = indices into stm_scenario.facts.",
-    "facts": [
-      "The service deploys to AWS Lambda using the Serverless Framework.",
-      "The service now deploys to Google Cloud Run using containers.",
-      "The primary datastore is PostgreSQL hosted on Amazon RDS.",
-      "The primary datastore is now CockroachDB for multi-region writes.",
-      "Background jobs run on a Celery worker pool backed by Redis.",
-      "Background jobs now run on Temporal durable workflows."
-    ],
-    "ltm_indices": [0, 2, 4],
-    "queries": [
-      {"q": "where does the service deploy", "relevant": [1]},
-      {"q": "what is the primary datastore", "relevant": [3]},
-      {"q": "how do background jobs run", "relevant": [5]}
+  "distractors": [
+   "The recall hot path scans int8 vectors with a brute-force cosine.",
+   "Capture runs in a detached worker spawned at SessionEnd.",
+   "The viewer is a localhost stdlib http.server."
+  ],
+  "queries": [
+   {
+    "q": "how do I pass a sandbox disabled option to a curl request",
+    "relevant": [
+     0
     ]
-  },
-  "antipattern_scenario": {
-    "description": "Measures that globally-scoped anti-patterns surface cross-project via the recall union. The anti-patterns are stored under the reserved global key; recall runs from a DIFFERENT project whose only local facts are distractors, so a hit proves the union + retrieval works. Queries paraphrase the situation that should trigger each rule. relevant = indices into antipattern_scenario.antipatterns.",
-    "antipatterns": [
-      "Never put an AI-tool flag like --sandbox into a curl shell command; set it in the tool call schema instead",
-      "Never push directly to main; branch first and open a pull request",
-      "Never hand-edit a generated file; change the generator and regenerate it"
-    ],
-    "distractors": [
-      "The recall hot path scans int8 vectors with a brute-force cosine.",
-      "Capture runs in a detached worker spawned at SessionEnd.",
-      "The viewer is a localhost stdlib http.server."
-    ],
-    "queries": [
-      {"q": "how do I pass a sandbox disabled option to a curl request", "relevant": [0]},
-      {"q": "adding a tool sandbox flag onto the shell command line", "relevant": [0]},
-      {"q": "can I commit straight onto the main branch", "relevant": [1]},
-      {"q": "I want to edit the generated output file by hand", "relevant": [2]}
+   },
+   {
+    "q": "adding a tool sandbox flag onto the shell command line",
+    "relevant": [
+     0
     ]
-  },
-  "duplicate_cluster_scenario": {
-    "description": "Measures the integrate (gist-chunking) stage — Idea #3. The first three facts are a near-duplicate cluster (same content, reworded); the rest are distinct. After the heuristic integrate floor runs at the given threshold, the cluster must collapse to one survivor (active count drops) while recall of the cluster's answer is preserved (a query for that content still hits the survivor). relevant = indices into duplicate_cluster_scenario.facts; threshold is the cosine merge floor to test.",
-    "threshold": 0.9,
-    "facts": [
-      "The primary database is PostgreSQL 16 hosted on Amazon RDS.",
-      "The primary database is PostgreSQL 16 running on Amazon RDS.",
-      "The primary datastore is PostgreSQL 16 on Amazon RDS.",
-      "Background jobs are processed by a Celery worker pool backed by Redis.",
-      "Arabic is the default locale so layouts must be right-to-left.",
-      "Application logs are shipped to Datadog as structured JSON."
-    ],
-    "queries": [
-      {"q": "what is the primary database", "relevant": [0, 1, 2]},
-      {"q": "how are background jobs processed", "relevant": [3]}
+   },
+   {
+    "q": "can I commit straight onto the main branch",
+    "relevant": [
+     1
     ]
-  }
+   },
+   {
+    "q": "I want to edit the generated output file by hand",
+    "relevant": [
+     2
+    ]
+   }
+  ]
+ },
+ "duplicate_cluster_scenario": {
+  "description": "Measures the integrate (gist-chunking) stage — Idea #3. The first three facts are a near-duplicate cluster (same content, reworded); the rest are distinct. After the heuristic integrate floor runs at the given threshold, the cluster must collapse to one survivor (active count drops) while recall of the cluster's answer is preserved (a query for that content still hits the survivor). relevant = indices into duplicate_cluster_scenario.facts; threshold is the cosine merge floor to test.",
+  "threshold": 0.9,
+  "facts": [
+   "The primary database is PostgreSQL 16 hosted on Amazon RDS.",
+   "The primary database is PostgreSQL 16 running on Amazon RDS.",
+   "The primary datastore is PostgreSQL 16 on Amazon RDS.",
+   "Background jobs are processed by a Celery worker pool backed by Redis.",
+   "Arabic is the default locale so layouts must be right-to-left.",
+   "Application logs are shipped to Datadog as structured JSON."
+  ],
+  "queries": [
+   {
+    "q": "what is the primary database",
+    "relevant": [
+     0,
+     1,
+     2
+    ]
+   },
+   {
+    "q": "how are background jobs processed",
+    "relevant": [
+     3
+    ]
+   }
+  ]
+ }
 }

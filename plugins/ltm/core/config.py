@@ -65,6 +65,7 @@ def _data_dir() -> Path:
 class Config:
     embedding: str
     embedding_model: str
+    embedding_truncate_dim: int
     dim: int
     top_k: int
     activated_k: int
@@ -129,6 +130,7 @@ def get_config() -> Config:
     return Config(
         embedding=_opt("embedding", "hash"),
         embedding_model=_opt("embedding_model", ""),
+        embedding_truncate_dim=int(_num(_opt("embedding_truncate_dim", "0"), 0)),
         dim=int(_num(_opt("dim", "256"), 256)),
         top_k=top_k,
         activated_k=max(activated_k, top_k),

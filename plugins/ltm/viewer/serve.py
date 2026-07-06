@@ -372,12 +372,15 @@ async function loadLedger() {
   try {
     const pk = $('#project').value;
     const s = await (await fetch('/api/stats?project=' + encodeURIComponent(pk || ''))).json();
-    el.classList.toggle('neg', s.net_tokens < 0);
-    el.innerHTML = 'saved <b>~' + fmtTok(s.net_tokens) + '</b> tok';
-    el.title = 'net ~' + s.net_tokens.toLocaleString() + ' tokens (saved − cost)\\n'
-      + '  cost injected:   ~' + s.cost_tokens.toLocaleString() + ' (' + s.injections + ' injections)\\n'
+    const headline = (s.net_measured_tokens ?? s.net_tokens);
+    el.classList.toggle('neg', headline < 0);
+    el.innerHTML = 'saved <b>~' + fmtTok(headline) + '</b> tok';
+    el.title = 'net measured ~' + headline.toLocaleString() + ' tokens (measured saved − cost)\\n'
+      + '  cost injected:   ~' + s.cost_tokens.toLocaleString() + ' (' + s.injections + ' injections; ~'
+      + (s.cost_tokens_cache_adjusted ?? s.cost_tokens).toLocaleString() + ' cache-adjusted)\\n'
       + '  saved measured:  ~' + s.saved_measured_tokens.toLocaleString() + ' (' + s.targeted_reads + ' targeted + ' + (s.bounded_reads || 0) + ' bounded reads)\\n'
-      + '  saved estimated: ~' + s.saved_estimated_tokens.toLocaleString() + ' (' + s.ok_recalls + ' recall shortcuts)';
+      + '  saved estimated: ~' + s.saved_estimated_tokens.toLocaleString() + ' (' + s.ok_recalls + ' recall shortcuts; excluded from headline)\\n'
+      + '  net incl. estimate: ~' + s.net_tokens.toLocaleString();
   } catch (e) { /* fail-open: leave the last-known value */ }
 }
 

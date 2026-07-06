@@ -62,7 +62,10 @@ def get_embedder(cfg) -> EmbeddingGateway:
         try:
             from core.adapters.fastembed_gw import FastEmbedGateway
 
-            return FastEmbedGateway(cfg.embedding_model or None)
+            return FastEmbedGateway(
+                cfg.embedding_model or None,
+                truncate_dim=getattr(cfg, "embedding_truncate_dim", 0),
+            )
         except Exception as exc:  # fail-open to the stub — never break recall
             print(f"[ltm] fastembed unavailable ({exc}); using hash stub", file=sys.stderr)
     return HashEmbedding(dim=cfg.dim)

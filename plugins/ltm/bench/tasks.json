@@ -1,0 +1,29 @@
+{
+  "description": "Paired A/B task set for bench/run_ab.py — lookup-shaped tasks against this repo, answerable with or without the ltm plugin. answer_check is a case-insensitive regex the correct answer must match.",
+  "tasks": [
+    {"id": "t01", "prompt": "In this repo, which file and function compute the token-savings ledger summary shown by `ltm stats`? Answer with the file path and function name.", "answer_check": "usage_summary"},
+    {"id": "t02", "prompt": "Which file in this repo implements the fastembed embedding adapter?", "answer_check": "fastembed_gw"},
+    {"id": "t03", "prompt": "What is the default semantic embedding model used by this plugin when fastembed is enabled?", "answer_check": "bge-base-en-v1\\.5"},
+    {"id": "t04", "prompt": "Which Store method returns the active fact rows for a single project?", "answer_check": "active_rows_for_project"},
+    {"id": "t05", "prompt": "Does core/store.py follow the Repository pattern or Active Record? One word plus one sentence why.", "answer_check": "repository"},
+    {"id": "t06", "prompt": "Which hook events spawn the detached capture worker in this plugin?", "answer_check": "(stop|sessionend|precompact)"},
+    {"id": "t07", "prompt": "What is the hard timeout ceiling for this plugin's hooks, per the architecture rules?", "answer_check": "5\\s*s"},
+    {"id": "t08", "prompt": "Which config key caps the characters injected per hook by recall?", "answer_check": "max_chars"},
+    {"id": "t09", "prompt": "Which function renders the injected recall block, and what does it return when nothing clears the similarity gate?", "answer_check": "render_block"},
+    {"id": "t10", "prompt": "Which core module quantises embedding vectors to int8?", "answer_check": "quantize"},
+    {"id": "t11", "prompt": "Which `ltm` CLI subcommand runs the labelled recall-quality benchmark?", "answer_check": "\\beval\\b"},
+    {"id": "t12", "prompt": "In this plugin's config, what does min_sim control?", "answer_check": "(similarity|gate|threshold)"},
+    {"id": "t13", "prompt": "What is the default distiller in this plugin when no LLM is configured?", "answer_check": "heuristic"},
+    {"id": "t14", "prompt": "Which file wires this plugin's hook events to their entry points?", "answer_check": "hooks\\.json"},
+    {"id": "t15", "prompt": "According to this repo's conventions, which memory/index tools should be consulted before a broad Grep or Glob sweep?", "answer_check": "(recall|search_code)"},
+    {"id": "t16", "prompt": "What is the default MemoryBus backend in this plugin, and what technology backs its work queue?", "answer_check": "(inproc|sqlite)"},
+    {"id": "t17", "prompt": "What makes fact capture idempotent in this plugin — how are fact ids derived?", "answer_check": "(hash|fact_id)"},
+    {"id": "t18", "prompt": "Which `ltm` CLI subcommand prints the resolved config, project identity, and fact counts?", "answer_check": "doctor"},
+    {"id": "t19", "prompt": "Besides the int8 vector, what packed representation does the store keep per fact for fast prefiltering?", "answer_check": "(vec_bits|pack_bits|bit)"},
+    {"id": "t20", "prompt": "Which file serves the localhost memory viewer UI?", "answer_check": "serve\\.py"},
+    {"id": "t21", "prompt": "How does this plugin determine project identity — what mechanism, and which function implements it?", "answer_check": "(marker|resolve_project)"},
+    {"id": "t22", "prompt": "What promotes a fact from the STM tier to LTM in this plugin?", "answer_check": "(promote_after_freq|frequency|rehears)"},
+    {"id": "t23", "prompt": "Which hook event injects the stable session core, and why does that placement suit the prompt cache?", "answer_check": "sessionstart"},
+    {"id": "t24", "prompt": "Which module and function perform the consolidation 'integrate' (gist-chunking) stage?", "answer_check": "integrate"}
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "name": "ltm",
   "displayName": "Long-Term Memory",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -20,6 +20,12 @@
       "title": "Embedding model (fastembed)",
       "description": "fastembed model id. Blank uses BAAI/bge-base-en-v1.5 (best measured recall). BAAI/bge-small-en-v1.5 is lighter/faster.",
       "default": ""
+    },
+    "embedding_truncate_dim": {
+      "type": "string",
+      "title": "Embedding truncation (Matryoshka)",
+      "description": "Keep only the first N vector dimensions and re-normalise (0 = off). Only sensible for Matryoshka-trained models (e.g. nomic-ai/nomic-embed-text-v1.5), where 256 shrinks bytes/fact ~3x with modest recall loss. Changing this invalidates stored vectors — re-capture/re-index afterwards.",
+      "default": "0"
     },
     "python": {
       "type": "string",

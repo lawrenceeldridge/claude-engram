@@ -326,6 +326,8 @@ Remaining:
   dependency / tokens (or a local model), so they are opt-in.
 - **STM ranking stays default tier-agnostic** — `stm_recall_weight=1.0`; the measurable
   lever exists (`ltm eval --stm`) but flipping the default awaits eval tuning.
-- **Eval set is modest** (34 facts / 29 queries + the STM scenario) — widen for tighter numbers.
+- **Eval set** is 297 facts / 244 queries (+ the STM scenario) after the 2026-07 mining
+  pass — paired tests (McNemar / bootstrap) in the harness resolve ~0.05 deltas; the
+  earlier 64/77 set is frozen as `bench/dataset-v1.json`.
 - **LLM distiller latency/cost** is unbounded per session — batching / a cheaper
   model for distillation is a future tuning knob.

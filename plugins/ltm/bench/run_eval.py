@@ -20,8 +20,11 @@ Run:
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
+import math
 import os
+import random
 import statistics
 import sys
 import tempfile
@@ -45,47 +48,56 @@ from core.store import Store  # noqa: E402
 DATASET = Path(__file__).resolve().parent / "dataset.json"
 
 
-def parse_spec(spec: str) -> tuple[str, str | None, bool]:
+def parse_spec(spec: str) -> tuple[str, str | None, int, bool]:
+    """``name[@model][%truncate_dim][+float]`` — %N truncates Matryoshka vectors to N dims."""
     float_mode = spec.endswith("+float")
     core = spec[: -len("+float")] if float_mode else spec
+    core, _, trunc = core.partition("%")
     name, _, model = core.partition("@")
-    return name, (model or None), float_mode
+    return name, (model or None), int(trunc) if trunc else 0, float_mode
 
 
-def make_embedder(name: str, model: str | None, cfg) -> EmbeddingGateway:
+def make_embedder(name: str, model: str | None, truncate_dim: int, cfg) -> EmbeddingGateway:
     if name == "hash":
         return HashEmbedding(dim=cfg.dim)
     if name == "fastembed":
         from core.adapters.fastembed_gw import FastEmbedGateway
 
-        return FastEmbedGateway(model)
+        return FastEmbedGateway(model, truncate_dim=truncate_dim)
     raise ValueError(f"unknown backend {name!r}")
 
 
-def _score_queries(queries: list[dict], facts: list[str], rank_fn) -> tuple[float, float, float, float]:
+def _score_queries(queries: list[dict], facts: list[str], rank_fn) -> tuple[float, float, float, float, list[dict]]:
+    """Aggregate metrics plus per-query records, so backends evaluated on the same
+    queries can be compared with paired tests (`_print_pairwise`) rather than only
+    independent intervals."""
     hit1 = hit3 = mrr = 0.0
     latencies = []
+    per_query: list[dict] = []
     for item in queries:
         gold = {facts[i] for i in item["relevant"]}
         start = time.perf_counter()
         ranked = rank_fn(item["q"])
         latencies.append((time.perf_counter() - start) * 1000)
-        if ranked[:1] and ranked[0] in gold:
-            hit1 += 1
-        if any(text in gold for text in ranked[:3]):
-            hit3 += 1
+        q_hit1 = bool(ranked[:1] and ranked[0] in gold)
+        q_hit3 = any(text in gold for text in ranked[:3])
+        q_rr = 0.0
         for rank, text in enumerate(ranked[:10], start=1):
             if text in gold:
-                mrr += 1.0 / rank
+                q_rr = 1.0 / rank
                 break
+        hit1 += q_hit1
+        hit3 += q_hit3
+        mrr += q_rr
+        per_query.append({"q": item["q"], "hit1": q_hit1, "hit3": q_hit3, "rr": q_rr})
     n = len(queries)
-    return hit1 / n, hit3 / n, mrr / n, statistics.mean(latencies)
+    return hit1 / n, hit3 / n, mrr / n, statistics.mean(latencies), per_query
 
 
 def evaluate(spec: str, data: dict, base_cfg) -> dict:
-    name, model, float_mode = parse_spec(spec)
+    name, model, truncate_dim, float_mode = parse_spec(spec)
     cfg = replace(base_cfg, supersede_threshold=1.0, top_k=10, min_sim=-1.0)
-    embedder = make_embedder(name, model, cfg)
+    embedder = make_embedder(name, model, truncate_dim, cfg)
     facts, queries = data["facts"], data["queries"]
     embedder.embed_query("warm up the model")  # exclude cold load from timings
 
@@ -122,7 +134,7 @@ def evaluate(spec: str, data: dict, base_cfg) -> dict:
         def rank_fn(query: str) -> list[str]:
             return [row["text"] for _score, row in search(store, embedder, project, query, cfg, k=10, min_sim=-1.0)]
 
-    r1, r3, mrr, query_ms = _score_queries(queries, facts, rank_fn)
+    r1, r3, mrr, query_ms, per_query = _score_queries(queries, facts, rank_fn)
     if store is not None:
         store.close()
     return {
@@ -135,6 +147,7 @@ def evaluate(spec: str, data: dict, base_cfg) -> dict:
         "query_ms": query_ms,
         "bytes/fact": bytes_per_fact,
         "n": len(queries),
+        "per_query": per_query,
     }
 
 
@@ -152,6 +165,35 @@ def wilson(k: float, n: int, z: float = 1.96) -> tuple[float, float]:
     centre = (p + z * z / (2 * n)) / denom
     half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
     return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def mcnemar_exact(b: int, c: int) -> float:
+    """Exact two-sided McNemar p-value from discordant pair counts.
+
+    ``b`` = queries backend A got right and B wrong; ``c`` = the reverse.
+    Concordant pairs carry no information, so this is an exact sign test on
+    the discordant pairs — honest at the small counts this bench produces.
+    Returns 1.0 when there are no discordant pairs.
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, i) for i in range(min(b, c) + 1)) / 2.0**n
+    return min(1.0, 2.0 * tail)
+
+
+def bootstrap_ci(deltas: list[float], iters: int = 10_000, seed: int = 0) -> tuple[float, float]:
+    """Seeded percentile-bootstrap 95% CI for the mean of per-query deltas.
+
+    The seed is fixed so every run of the bench prints the same interval —
+    reproducibility over randomness, as with everything else in this harness.
+    """
+    if not deltas:
+        return 0.0, 0.0
+    rng = random.Random(seed)
+    n = len(deltas)
+    means = sorted(sum(deltas[rng.randrange(n)] for _ in range(n)) / n for _ in range(iters))
+    return means[int(0.025 * iters)], means[int(0.975 * iters)]
 
 
 def _fmt(value) -> str:
@@ -187,6 +229,31 @@ def _print_ci(results: list[dict]) -> None:
         print(f"  {r['backend']} (n={n}): " + "  ".join(parts))
 
 
+def _print_pairwise(results: list[dict]) -> None:
+    """Paired per-query comparisons: McNemar exact on the hit metrics, seeded
+    bootstrap on the MRR delta. Backends answer identical queries, so pairing
+    cancels between-query variance and resolves smaller deltas than the
+    independent Wilson intervals above."""
+    paired = [r for r in results if r.get("per_query")]
+    if len(paired) < 2:
+        return
+    print("\nPaired comparisons (positive delta favours the second backend; * = p<0.05 / CI excludes 0):")
+    for a, b in itertools.combinations(paired, 2):
+        rows = list(zip(a["per_query"], b["per_query"]))
+        print(f"  {a['backend']} -> {b['backend']}:")
+        for metric, label in (("hit1", "recall@1"), ("hit3", "recall@3")):
+            only_a = sum(1 for x, y in rows if x[metric] and not y[metric])
+            only_b = sum(1 for x, y in rows if y[metric] and not x[metric])
+            delta = (only_b - only_a) / len(rows)
+            p = mcnemar_exact(only_a, only_b)
+            mark = "*" if p < 0.05 else ""
+            print(f"    d{label} {delta:+.3f}  (discordant {only_a}/{only_b}, p={p:.3f}){mark}")
+        deltas = [y["rr"] - x["rr"] for x, y in rows]
+        lo, hi = bootstrap_ci(deltas)
+        mark = "*" if lo > 0 or hi < 0 else ""
+        print(f"    dmrr@10   {sum(deltas) / len(deltas):+.3f}  [{lo:+.3f}, {hi:+.3f}]{mark}")
+
+
 def evaluate_stm(data: dict, base_cfg, weights: tuple[float, ...] = (1.0, 0.5, 0.0)) -> list[dict]:
     """Measure the ``stm_recall_weight`` lever end-to-end on the STM scenario.
 
@@ -218,7 +285,7 @@ def evaluate_stm(data: dict, base_cfg, weights: tuple[float, ...] = (1.0, 0.5, 0
         def rank_fn(query: str, _cfg=cfg, _store=store, _emb=embedder, _proj=project) -> list[str]:
             return [row["text"] for _score, row in search(_store, _emb, _proj, query, _cfg, k=10, min_sim=-1.0)]
 
-        r1, r3, mrr, _ = _score_queries(queries, facts, rank_fn)
+        r1, r3, mrr, _, _ = _score_queries(queries, facts, rank_fn)
         store.close()
         rows_out.append({"stm_recall_weight": weight, "stm_recall@1": r1, "stm_recall@3": r3, "stm_mrr@10": mrr})
     return rows_out
@@ -266,7 +333,7 @@ def evaluate_antipatterns(data: dict, base_cfg) -> list[dict]:
     def rank_fn(query: str, _cfg=cfg, _store=store, _emb=embedder, _proj=project) -> list[str]:
         return [row["text"] for _score, row in search(_store, _emb, _proj, query, _cfg, k=10, min_sim=-1.0)]
 
-    r1, r3, mrr, _ = _score_queries(queries, antipatterns, rank_fn)
+    r1, r3, mrr, _, _ = _score_queries(queries, antipatterns, rank_fn)
     store.close()
     return [{"scope": "global", "recall@1": r1, "recall@3": r3, "mrr@10": mrr}]
 
@@ -307,10 +374,10 @@ def evaluate_integrate(data: dict, base_cfg) -> list[dict]:
         return [row["text"] for _s, row in search(store, embedder, project, query, cfg, k=10, min_sim=-1.0)]
 
     before = len(store.active_rows_for_project(project["key"]))
-    r1_before, r3_before, _, _ = _score_queries(queries, facts, rank_fn)
+    r1_before, r3_before, _, _, _ = _score_queries(queries, facts, rank_fn)
     merged = integrate(store, cfg, project, embedder=embedder)
     after = len(store.active_rows_for_project(project["key"]))
-    r1_after, r3_after, _, _ = _score_queries(queries, facts, rank_fn)
+    r1_after, r3_after, _, _, _ = _score_queries(queries, facts, rank_fn)
     store.close()
     return [
         {
@@ -355,6 +422,7 @@ def main(backends: list[str], stm: bool = False, antipatterns: bool = False, int
     print()
     _print_table(results)
     _print_ci(results)
+    _print_pairwise(results)
     if stm:
         stm_rows = evaluate_stm(data, cfg)
         if stm_rows:
