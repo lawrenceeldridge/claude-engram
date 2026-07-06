@@ -70,6 +70,7 @@ class Config:
     activated_k: int
     min_sim: float
     core_size: int
+    core_scaffold: bool
     max_chars: int
     index_top_k: int
     index_min_sim: float
@@ -132,6 +133,9 @@ def get_config() -> Config:
         activated_k=max(activated_k, top_k),
         min_sim=_num(_opt("min_sim", "0.12"), 0.12),
         core_size=int(_num(_opt("core_size", "5"), 5)),
+        # LT-WM retrieval structure: group the session core into a titled scaffold instead of
+        # a flat list. Default off preserves the current flat core block.
+        core_scaffold=_opt("core_scaffold", "false").lower() in ("1", "true", "yes", "on"),
         max_chars=int(_num(_opt("max_chars", "800"), 800)),
         # Passive index injection at UserPromptSubmit (0 = off). FTS-prefiltered then
         # cosine-reranked, so it stays hot-path-cheap regardless of index size.

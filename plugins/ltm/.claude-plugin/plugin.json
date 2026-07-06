@@ -96,6 +96,12 @@
       "min": 0,
       "max": 20
     },
+    "core_scaffold": {
+      "type": "boolean",
+      "title": "Structured session core",
+      "description": "Render the session core as a titled scaffold (facts grouped under their card title) instead of a flat list — a long-term-working-memory retrieval structure. Same character budget; off by default (flat).",
+      "default": false
+    },
     "max_chars": {
       "type": "number",
       "title": "Max injected characters",

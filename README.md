@@ -214,6 +214,7 @@ or `LTM_*` env vars for standalone use:
 | `antipatterns` | `true` | mine admitted mistakes into durable `antipattern` memories (a strict rule + do/don't), surfaced to prevent repeats; gated by an admission-marker scan, runs in the detached worker. No-op without an LLM distiller |
 | `top_k` | `3` | facts injected per prompt — the small injected focus (Cowan ~4) |
 | `activated_k` | `0` | breadth the on-demand `recall` MCP tool searches (0 = use `top_k`); the broader "activated LTM" beyond the injected focus, no per-prompt token cost |
+| `core_scaffold` | `false` | render the session core as a titled scaffold (facts grouped by card title) instead of a flat list — an LT-WM retrieval structure; same char budget |
 | `min_sim` | `0.12` | similarity threshold to inject |
 | `core_size` | `5` | stable facts injected at session start (0 disables) |
 | `max_chars` | `800` | hard cap on injected characters (token guard) |

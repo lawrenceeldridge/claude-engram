@@ -185,3 +185,49 @@ def render_block(header: str, hits: list[Hit], max_chars: int) -> tuple[str, lis
     if len(lines) == 1:
         return "", []
     return "\n".join(lines), ids
+
+
+def render_scaffold(header: str, hits: list[Hit], max_chars: int) -> tuple[str, list[str]]:
+    """LT-WM retrieval structure (Ericsson & Kintsch): render the session core as a titled
+    scaffold — facts grouped under their card ``title`` — rather than a flat list, so the
+    stable orientation block reads as an index card of the project's topics.
+
+    Same contract as ``render_block``: one line per fact, ``max_chars``-capped, returns the
+    included ids, and the Null Object (``("", [])``) on empty/all-truncated input. Untitled
+    facts group under a plain heading so behaviour is preserved when no titles exist.
+    """
+    if not hits:
+        return "", []
+    groups: dict[str, list[sqlite3.Row]] = {}
+    order: list[str] = []
+    for _score_value, row in hits:
+        title = (row["title"] or "").strip() if "title" in row.keys() else ""
+        key = title or "Notes"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    lines = [header]
+    ids: list[str] = []
+    used = len(header)
+    for key in order:
+        heading = f"  {key}:"
+        if used + len(heading) + 1 > max_chars:
+            break
+        pending = [heading]
+        pending_len = len(heading) + 1
+        rows_added = []
+        for row in groups[key]:
+            line = f"    - {row['text']}"
+            if used + pending_len + len(line) + 1 > max_chars:
+                break
+            pending.append(line)
+            pending_len += len(line) + 1
+            rows_added.append(row["id"])
+        if rows_added:  # only emit a heading that carries at least one fact
+            lines.extend(pending)
+            ids.extend(rows_added)
+            used += pending_len
+    if len(lines) == 1:
+        return "", []
+    return "\n".join(lines), ids

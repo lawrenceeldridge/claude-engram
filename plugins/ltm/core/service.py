@@ -27,7 +27,7 @@ from core.ports.distill import (
 from core.ports.embedding import EmbeddingGateway
 from core.ports.membus import WorkItem, get_bus
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
-from core.recall import render_block, search, search_fused
+from core.recall import render_block, render_scaffold, search, search_fused
 from core.store import Store
 from core.transcript import extract_incremental_parts, extract_text
 
@@ -501,7 +501,9 @@ def recall_core_block(
     # The core is a stable, recency-based orientation block, not a query-driven
     # retrieval — so its ids are discarded (attributing them would inflate recall_count
     # for merely-recent facts every session and pollute the retention signal).
-    block, _ids = render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+    header = f"Project memory ({project['label']}):"
+    render = render_scaffold if cfg.core_scaffold else render_block
+    block, _ids = render(header, hits, cfg.max_chars)
     if block:  # ledger: cost side — the once-per-session core injection
         store.record_usage(project["key"], "inject_core", bytes_in=len(block))
     return block

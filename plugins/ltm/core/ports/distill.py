@@ -148,6 +148,9 @@ class DistilledFact:
     observation_id: str = ""
     degraded: bool = False  # produced by the heuristic fallback, not the LLM — eligible for re-distillation
     scope: str = "project"  # 'project' | 'global' — only meaningful for anti-patterns (tool/harness lessons)
+    cue: str = ""  # optional LT-WM retrieval cue (Ericsson & Kintsch) — the context that should re-trigger
+    # this fact. Empty from the heuristic distiller (Null/Special-Case). Persistence + FTS matching are a
+    # follow-up that lands with a cue-emitting LLM distiller; the field is the stable interface for it.
 
 
 @dataclass
