@@ -83,5 +83,24 @@
       {"q": "what is the primary datastore", "relevant": [3]},
       {"q": "how do background jobs run", "relevant": [5]}
     ]
+  },
+  "antipattern_scenario": {
+    "description": "Measures that globally-scoped anti-patterns surface cross-project via the recall union. The anti-patterns are stored under the reserved global key; recall runs from a DIFFERENT project whose only local facts are distractors, so a hit proves the union + retrieval works. Queries paraphrase the situation that should trigger each rule. relevant = indices into antipattern_scenario.antipatterns.",
+    "antipatterns": [
+      "Never put an AI-tool flag like --sandbox into a curl shell command; set it in the tool call schema instead",
+      "Never push directly to main; branch first and open a pull request",
+      "Never hand-edit a generated file; change the generator and regenerate it"
+    ],
+    "distractors": [
+      "The recall hot path scans int8 vectors with a brute-force cosine.",
+      "Capture runs in a detached worker spawned at SessionEnd.",
+      "The viewer is a localhost stdlib http.server."
+    ],
+    "queries": [
+      {"q": "how do I pass a sandbox disabled option to a curl request", "relevant": [0]},
+      {"q": "adding a tool sandbox flag onto the shell command line", "relevant": [0]},
+      {"q": "can I commit straight onto the main branch", "relevant": [1]},
+      {"q": "I want to edit the generated output file by hand", "relevant": [2]}
+    ]
   }
 }

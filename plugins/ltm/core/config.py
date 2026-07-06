@@ -100,6 +100,7 @@ class Config:
     distiller_model: str
     distiller_base_url: str
     distiller_api_key: str
+    antipatterns: bool
     ttl_days: float
     ttl_keep_frequency: int
     recall_min_confidence: float
@@ -168,6 +169,9 @@ def get_config() -> Config:
         distiller_model=_opt("distiller_model", ""),
         distiller_base_url=_opt("distiller_base_url", "http://localhost:11434/v1"),
         distiller_api_key=_opt("distiller_api_key", ""),
+        # Anti-pattern catalogue: mine admitted mistakes into durable 'antipattern' memories.
+        # On by default, but a no-op unless an LLM distiller is configured (heuristic returns []).
+        antipatterns=_opt("antipatterns", "true").lower() in ("1", "true", "yes", "on"),
         ttl_days=_num(_opt("ttl_days", "0"), 0),
         ttl_keep_frequency=int(_num(_opt("ttl_keep_frequency", "3"), 3)),
         recall_min_confidence=_num(_opt("recall_min_confidence", "0.35"), 0.35),

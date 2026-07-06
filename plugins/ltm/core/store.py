@@ -644,6 +644,14 @@ class Store:
             "SELECT * FROM facts WHERE project_key = ? AND status = 'active'", (project_key,)
         ).fetchall()
 
+    def active_antipatterns(self, project_key: str) -> list[sqlite3.Row]:
+        """Active anti-pattern facts for a key — the recall union (global key) and the
+        'existing anti-patterns' fed to the extraction prompt both read this."""
+        return self.db.execute(
+            "SELECT * FROM facts WHERE project_key = ? AND status = 'active' AND kind = 'antipattern'",
+            (project_key,),
+        ).fetchall()
+
     def list_observations(
         self,
         project_key: str,
@@ -814,7 +822,11 @@ class Store:
         marked 'expired', not deleted, so the viewer can still show them.
         """
         cutoff = now - ttl_seconds
-        sql = "UPDATE facts SET status = 'expired' WHERE status = 'active' AND last_seen < ? AND frequency < ?"
+        # Anti-patterns never expire by dormancy — they are standing rules (see refine()).
+        sql = (
+            "UPDATE facts SET status = 'expired' WHERE status = 'active' "
+            "AND kind != 'antipattern' AND last_seen < ? AND frequency < ?"
+        )
         params: list = [cutoff, keep_frequency]
         if project_key:
             sql += " AND project_key = ?"

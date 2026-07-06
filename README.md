@@ -211,6 +211,7 @@ or `LTM_*` env vars for standalone use:
 | `distiller` | `claude` | `claude` (headless `claude -p`, Haiku), `ollama` (local, zero-token), or `heuristic` (line extraction, no LLM) |
 | `distiller_model` | *(blank)* | claude: model alias (blank = `haiku`); ollama: model name (blank = `qwen2.5:3b`) |
 | `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller (ignored under `claude`) |
+| `antipatterns` | `true` | mine admitted mistakes into durable `antipattern` memories (a strict rule + do/don't), surfaced to prevent repeats; gated by an admission-marker scan, runs in the detached worker. No-op without an LLM distiller |
 | `top_k` | `3` | facts injected per prompt |
 | `min_sim` | `0.12` | similarity threshold to inject |
 | `core_size` | `5` | stable facts injected at session start (0 disables) |

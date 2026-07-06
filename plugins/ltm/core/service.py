@@ -17,10 +17,16 @@ from core.config import Config
 from core.domain.confidence import compute_confidence
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
-from core.ports.distill import LLM_DISTILLERS, DistilledFact, get_distiller, is_distiller_prompt
+from core.ports.distill import (
+    LLM_DISTILLERS,
+    DistilledFact,
+    get_distiller,
+    has_admission_markers,
+    is_distiller_prompt,
+)
 from core.ports.embedding import EmbeddingGateway
 from core.ports.membus import WorkItem, get_bus
-from core.project import Project
+from core.project import GLOBAL_PROJECT_KEY, Project, global_project
 from core.recall import render_block, search, search_fused
 from core.store import Store
 from core.transcript import extract_incremental_parts, extract_text
@@ -56,6 +62,7 @@ def add_records(
     session_id: str,
     records: list[DistilledFact],
     kind: str = "fact",
+    tier: str = "stm",
 ) -> int:
     inserted = 0
     now = time.time()
@@ -90,6 +97,7 @@ def add_records(
             files=record.files,
             type=record.type,
             observation_id=record.observation_id,
+            tier=tier,
         )
         if victims:
             store.supersede(list(victims), fact_id)
@@ -249,6 +257,85 @@ def maybe_capture_summary(
     if not force and size - store.get_capture_cursor(key) < min_new_bytes:
         return 0
     inserted = capture_session_summary(store, embedder, cfg, project, session_id, transcript_path)
+    store.set_capture_cursor(key, size)
+    return inserted
+
+
+def capture_antipatterns(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    transcript_path: str,
+) -> int:
+    """Mine the session for mistakes the assistant admitted and catalogue them as durable
+    ``antipattern`` facts, so a future session avoids repeating them.
+
+    LLM-only (the heuristic distiller returns []). Records are promoted straight to LTM —
+    an anti-pattern is a standing rule, not a decaying observation. Additive, not
+    replace-on-rerun: the catalogue accumulates, deduped by content hash + supersession,
+    so a mid-session lesson isn't lost when a later re-scan clips it from the model's input.
+    Globally-scoped lessons (tool/harness) are routed to the reserved global project so they
+    surface in every project's recall.
+    """
+    text = extract_text(transcript_path)
+    if not text.strip():
+        return 0
+    existing = [
+        (row["id"], row["text"])
+        for key in (project["key"], GLOBAL_PROJECT_KEY)
+        for row in store.active_antipatterns(key)
+    ]
+    records = get_distiller(cfg).extract_antipatterns(text, existing)
+    if not records:
+        return 0
+    project_recs = [r for r in records if r.scope != "global"]
+    global_recs = [r for r in records if r.scope == "global"]
+    inserted = 0
+    if project_recs:
+        inserted += add_records(store, embedder, cfg, project, session_id, project_recs, kind="antipattern", tier="ltm")
+    if global_recs:
+        inserted += add_records(
+            store, embedder, cfg, global_project(), session_id, global_recs, kind="antipattern", tier="ltm"
+        )
+    return inserted
+
+
+_ANTIPATTERN_MIN_NEW_BYTES = 8000
+
+
+def maybe_capture_antipatterns(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    transcript_path: str,
+    *,
+    force: bool = False,
+    min_new_bytes: int = _ANTIPATTERN_MIN_NEW_BYTES,
+) -> int:
+    """Refresh the anti-pattern catalogue — gated by a cheap admission-marker scan and
+    throttled by transcript growth (mirrors ``maybe_capture_summary``).
+
+    Anti-patterns are far rarer than summaries, so the marker gate skips the LLM pass
+    entirely on mistake-free sessions; the growth cursor stops a checkpoint pass re-running
+    on the next Stop. All off the interactive path (the detached capture worker).
+    """
+    key = f"antipat:{project['key']}:{session_id or transcript_path}"
+    try:
+        size = os.path.getsize(transcript_path)
+    except OSError:
+        return 0
+    if not force and size - store.get_capture_cursor(key) < min_new_bytes:
+        return 0
+    # Gate: only pay for the LLM pass when the transcript plausibly admits a mistake. Advance
+    # the cursor either way so a mistake-free stretch isn't re-scanned every turn.
+    if not has_admission_markers(extract_text(transcript_path)):
+        store.set_capture_cursor(key, size)
+        return 0
+    inserted = capture_antipatterns(store, embedder, cfg, project, session_id, transcript_path)
     store.set_capture_cursor(key, size)
     return inserted
 

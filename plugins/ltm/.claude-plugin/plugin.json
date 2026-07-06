@@ -45,6 +45,12 @@
       "description": "OpenAI-compatible endpoint for the ollama/http distiller. Default is a local Ollama server.",
       "default": "http://localhost:11434/v1"
     },
+    "antipatterns": {
+      "type": "boolean",
+      "title": "Anti-pattern catalogue",
+      "description": "Mine sessions for mistakes the assistant admitted and store them as durable 'antipattern' memories (a strict rule + do/don't), surfaced later to prevent repeats. Gated by a cheap admission-marker scan and throttled like the session summary; runs in the detached capture worker. No-op unless an LLM distiller is configured.",
+      "default": true
+    },
     "ttl_days": {
       "type": "number",
       "title": "Memory TTL (days)",

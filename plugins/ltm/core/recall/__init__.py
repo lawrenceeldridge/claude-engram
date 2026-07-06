@@ -18,7 +18,7 @@ from core.domain.lexical import token_set
 from core.domain.quantize import cosine, dequantize_int8
 from core.domain.scoring import frequency_boost, priority, recency_decay
 from core.ports.embedding import EmbeddingGateway
-from core.project import Project
+from core.project import GLOBAL_PROJECT_KEY, Project
 from core.store import Store
 
 Hit = tuple[float, sqlite3.Row]
@@ -28,6 +28,19 @@ FusedHit = tuple[float, float, sqlite3.Row]
 
 def _row_vec(row: sqlite3.Row) -> list[float]:
     return dequantize_int8(row["vec_int8"], row["scale"])
+
+
+def _recall_rows(store: Store, project_key: str) -> list[sqlite3.Row]:
+    """Active facts for the project, unioned with globally-scoped anti-patterns.
+
+    A narrow, kind-only exception to project scoping: a tool/harness lesson applies in every
+    project. Adds nothing (and costs nothing) when no global anti-patterns exist — the common
+    case, and always true in the eval store, so recall is unchanged there.
+    """
+    rows = store.active_rows_for_project(project_key)
+    if project_key != GLOBAL_PROJECT_KEY:
+        rows = rows + store.active_antipatterns(GLOBAL_PROJECT_KEY)
+    return rows
 
 
 def _score(rows, query_vec, cfg: Config, now: float, min_sim: float, penalty: float):
@@ -70,7 +83,7 @@ def search(
     now = now if now is not None else time.time()
 
     query_vec = embedder.embed_query(query)
-    scored = _score(store.active_rows_for_project(project["key"]), query_vec, cfg, now, min_sim, 1.0)
+    scored = _score(_recall_rows(store, project["key"]), query_vec, cfg, now, min_sim, 1.0)
     if cross and len(scored) < k:
         others = [r for r in store.active_rows() if r["project_key"] != project["key"]]
         scored += _score(others, query_vec, cfg, now, min_sim, 0.9)
@@ -105,7 +118,7 @@ def search_fused(
 
     rows_by_id: dict[str, sqlite3.Row] = {}
     candidates: dict[str, tuple[float, int, sqlite3.Row]] = {}
-    for row in store.active_rows_for_project(project["key"]):
+    for row in _recall_rows(store, project["key"]):
         if row["dim"] and row["dim"] != qdim:
             continue
         rows_by_id[row["id"]] = row
@@ -116,6 +129,8 @@ def search_fused(
         candidates[row["id"]] = (sim, overlap, row)
 
     fts_ids = store.fts_search(project["key"], query, limit=max(k * 4, 50))
+    if project["key"] != GLOBAL_PROJECT_KEY:  # global anti-patterns are first-class in the FTS channel too
+        fts_ids = fts_ids + store.fts_search(GLOBAL_PROJECT_KEY, query, limit=max(k * 4, 50))
     for fid in fts_ids:
         if fid not in candidates and fid in rows_by_id:
             row = rows_by_id[fid]

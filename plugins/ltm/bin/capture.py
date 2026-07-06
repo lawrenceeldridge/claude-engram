@@ -73,7 +73,7 @@ def _run_worker(payload_path: str) -> None:
     from core.config import get_config
     from core.ports.embedding import get_embedder
     from core.project import resolve_project
-    from core.service import capture_transcript_incremental, maybe_capture_summary
+    from core.service import capture_transcript_incremental, maybe_capture_antipatterns, maybe_capture_summary
     from core.store import Store
 
     cfg = get_config()
@@ -100,6 +100,11 @@ def _run_worker(payload_path: str) -> None:
         # each turn without a full-transcript LLM call every turn.
         checkpoint = payload.get("hook_event_name") in ("SessionEnd", "PreCompact")
         maybe_capture_summary(store, embedder, cfg, project, session_id, transcript_path, force=checkpoint)
+        # Anti-pattern catalogue: same cadence as the summary (throttle + force on checkpoints),
+        # but additionally gated by a cheap admission-marker scan so mistake-free sessions cost
+        # nothing. No-op unless enabled and an LLM distiller is configured.
+        if cfg.antipatterns:
+            maybe_capture_antipatterns(store, embedder, cfg, project, session_id, transcript_path, force=checkpoint)
         if cfg.ttl_days > 0:
             import time
 

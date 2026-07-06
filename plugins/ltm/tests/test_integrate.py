@@ -69,7 +69,9 @@ class IntegrateShellTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["LTM_DATA_DIR"] = self.tmp.name
-        self.cfg = replace(get_config(), distiller="heuristic")
+        # Pin integrate_threshold to the code default (off) so the suite is hermetic against an
+        # ambient LTM_INTEGRATE_THRESHOLD in the environment; the "on" tests override it locally.
+        self.cfg = replace(get_config(), distiller="heuristic", integrate_threshold=0)
         self.store = Store(self.cfg.db_path)
         self.project = {"key": "test", "path": "/tmp/test", "label": "test"}
 

@@ -97,6 +97,44 @@ _NARRATION_OPENERS = (
     "we can now",
 )
 
+# Openers that mark the assistant conceding an error, or the user flagging one. Used ONLY
+# to *gate* the (LLM-only) anti-pattern extraction pass — so it doesn't fire a model call
+# on a mistake-free session. This is not extraction: it decides whether the pass is worth
+# running; the LLM does the real judgement. Kept lenient (recall over precision) — a false
+# positive costs one skipped-cheap check, and we'd rather run the pass than miss a lesson.
+_ADMISSION_MARKERS = (
+    "i mistakenly",
+    "i incorrectly",
+    "my mistake",
+    "i was wrong",
+    "that was wrong",
+    "i shouldn't have",
+    "i should not have",
+    "i made a mistake",
+    "i made an error",
+    "let me fix that",
+    "let me correct",
+    "my apologies",
+    "i apologise",
+    "i apologize",
+    "that's not right",
+    "that isn't right",
+    "no, don't",
+    "no, do not",
+    "you broke",
+    "don't do that",
+)
+
+
+def has_admission_markers(text: str) -> bool:
+    """Cheap stdlib pre-scan: does the transcript plausibly contain a mistake admission?
+
+    A *gate* only — it decides whether the LLM-only anti-pattern pass is worth invoking,
+    never what gets stored. Pure function (Functional Core), so it is stdlib-testable.
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in _ADMISSION_MARKERS)
+
 
 @dataclass
 class DistilledFact:
@@ -109,6 +147,7 @@ class DistilledFact:
     type: str = ""
     observation_id: str = ""
     degraded: bool = False  # produced by the heuristic fallback, not the LLM — eligible for re-distillation
+    scope: str = "project"  # 'project' | 'global' — only meaningful for anti-patterns (tool/harness lessons)
 
 
 @dataclass
@@ -188,6 +227,16 @@ class Distiller(ABC):
         """
         return None
 
+    def extract_antipatterns(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
+        """Mistakes the assistant admitted this session, as durable anti-patterns — or [].
+
+        LLM-only, like ``summarize``: the heuristic distiller cannot judge whether a mistake
+        was made, so it returns [] (Special Case — a heuristic install catalogues nothing, at
+        zero cost). ``existing`` = (id, rule) of already-catalogued anti-patterns, so the LLM
+        can refine (``supersedes``) rather than duplicate.
+        """
+        return []
+
 
 class HeuristicDistiller(Distiller):
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
@@ -263,7 +312,7 @@ def _coerce_items(output: str) -> list:
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
-            for key in ("facts", "observations", "items", "memories"):
+            for key in ("facts", "observations", "items", "memories", "antipatterns"):
                 if isinstance(data.get(key), list):
                     return data[key]
             for value in data.values():
@@ -451,6 +500,106 @@ def parse_summary(output: str) -> DistilledFact | None:
     return DistilledFact(text=text, title=title, narrative=narrative, type="session_summary") if text else None
 
 
+# Only ``text`` is injected at recall (render_block is one-line-per-fact), so the anti-pattern's
+# imperative rule + a terse DON'T/DO must live there — the DON'T's literal tokens also drive the
+# lexical/FTS channels. Root cause + fuller example go in narrative (viewer / structured recall).
+_ANTIPATTERN_TEXT_CAP = 200
+
+
+def _antipattern_text(strict_rule: str, dont: str, do: str, cap: int = _ANTIPATTERN_TEXT_CAP) -> str:
+    text = strict_rule.strip().rstrip(".")
+    tail = []
+    if dont.strip():
+        tail.append(f"DON'T {dont.strip().rstrip('.')}")
+    if do.strip():
+        tail.append(f"DO {do.strip().rstrip('.')}")
+    if tail:
+        text = f"{text} — " + "; ".join(tail)
+    return text[:cap].rstrip()
+
+
+_ANTIPATTERN_PROMPT = """You review a coding-assistant session for MISTAKES THE ASSISTANT MADE and
+admitted (or was corrected on) — so a future session can avoid repeating them.
+
+Record ONLY a genuine, GENERALISABLE mistake that will plausibly recur: a wrong approach, a
+misused tool, a false assumption. Ignore one-off typos, environment hiccups, and anything already
+covered by the existing anti-patterns below (unless you are refining one).
+
+Output ONLY a JSON object of the form {{"antipatterns": [ ... ]}}. Each entry:
+  {{"title": "<short name for the anti-pattern, <=60 chars>",
+    "scope": "<global|project>",
+    "anti_pattern": "<one sentence: what the assistant did wrong>",
+    "root_cause": "<why it happened — the boundary the assistant missed>",
+    "strict_rule": "<a single imperative rule that prevents it, present tense, self-contained>",
+    "dont": "<the wrong action, concrete — a command/snippet if apt>",
+    "do": "<the correct action, concrete — a command/snippet if apt>",
+    "supersedes": ["<id of an existing anti-pattern this one refines>", ...]}}
+
+Rules:
+- `scope` = "global" ONLY for tool/harness/language-general lessons that apply in ANY project
+  (e.g. misusing a CLI flag). Use "project" for anything specific to THIS codebase. When in
+  doubt, use "project".
+- `strict_rule` must be self-contained and name the trigger context — it is what a future
+  session sees first, before any other field.
+- Keep `dont`/`do` concrete and short; a literal command or flag is ideal.
+- If there is no genuine, generalisable mistake, return {{"antipatterns": []}}.
+
+Existing anti-patterns (id: rule):
+{existing}
+
+Session transcript:
+{transcript}
+"""
+
+
+def _build_antipattern_prompt(text: str, existing: list[tuple[str, str]]) -> str:
+    existing_block = "\n".join(f"{fid}: {ftext}" for fid, ftext in existing) or "(none)"
+    return _ANTIPATTERN_PROMPT.format(existing=existing_block, transcript=_clip(text))
+
+
+def parse_antipatterns(output: str) -> list[DistilledFact]:
+    """Pure parser: LLM anti-pattern JSON -> DistilledFacts (``type="antipattern"``).
+
+    ``text`` = strict rule + terse DON'T/DO (the injected line); ``subtitle`` = what went
+    wrong; ``narrative`` = root cause + full DON'T/DO (viewer / structured recall only).
+    """
+    records: list[DistilledFact] = []
+    for item in _coerce_items(output):
+        if not isinstance(item, dict):
+            continue
+        strict = str(item.get("strict_rule", "")).strip()
+        if not strict:
+            continue
+        dont = str(item.get("dont", "")).strip()
+        do = str(item.get("do", "")).strip()
+        text = _antipattern_text(strict, dont, do)
+        if not text:
+            continue
+        root = str(item.get("root_cause", "")).strip()
+        narrative = "\n".join(
+            part
+            for part in (
+                f"Root cause: {root}" if root else "",
+                f"DON'T: {dont}" if dont else "",
+                f"DO: {do}" if do else "",
+            )
+            if part
+        )
+        scope = str(item.get("scope", "")).strip().lower()
+        records.append(
+            DistilledFact(
+                text=text,
+                supersedes=[s for s in _str_list(item.get("supersedes")) if s.lower() not in _NON_IDS],
+                title=str(item.get("title", "")).strip(),
+                subtitle=str(item.get("anti_pattern", "")).strip(),
+                narrative=narrative,
+                type="antipattern",
+                scope="global" if scope == "global" else "project",
+            )
+        )
+    return records
+
+
 class ClaudeCliDistiller(Distiller):
     """Headless ``claude -p``. Defaults to Haiku — cheap and fast for extraction."""
 
@@ -489,6 +638,12 @@ class ClaudeCliDistiller(Distiller):
 
     def merge_cluster(self, texts: list[str]) -> str | None:
         return parse_merge(self._complete(_build_merge_prompt(texts)))
+
+    def extract_antipatterns(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
+        try:
+            return parse_antipatterns(self._complete(_build_antipattern_prompt(text, existing)))
+        except Exception:
+            return []
 
 
 class HTTPDistiller(Distiller):
@@ -544,6 +699,12 @@ class HTTPDistiller(Distiller):
     def merge_cluster(self, texts: list[str]) -> str | None:
         return parse_merge(self._complete(_build_merge_prompt(texts)))
 
+    def extract_antipatterns(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
+        try:
+            return parse_antipatterns(self._complete(_build_antipattern_prompt(text, existing)))
+        except Exception:
+            return []
+
 
 # Distiller backends that call out to an LLM — so they can transiently fail (and are the
 # ones that support merge_cluster). Shared by the capture rescue path and the integrate tier.
@@ -556,6 +717,7 @@ _DISTILLER_PROMPT_PREFIXES = (
     "You extract durable long-term memory",
     "Summarise this coding-assistant session",
     "You are consolidating long-term memory",
+    "You review a coding-assistant session",
 )
 
 

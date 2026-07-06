@@ -42,6 +42,12 @@ def refine(store, cfg, project, now: float | None = None, weights: RetentionWeig
     now = now if now is not None else time.time()
     scored: list[tuple[float, str]] = []
     for row in store.active_rows_for_project(project["key"]):
+        # Anti-patterns are standing rules, not decaying observations — exempt from
+        # dormancy-based pruning. They are invalidated only by supersession or the drift
+        # stage, never by low retention; otherwise a rarely-recalled lesson would be pruned
+        # precisely when it has been dormant long enough for the model to need reminding.
+        if row["kind"] == "antipattern":
+            continue
         feats = features_from_row(row, surprise=store.supersede_count(row["id"]))
         scored.append((retention(feats, now, cfg.half_life_days, weights), row["id"]))
     scored.sort(key=lambda pair: pair[0])  # weakest first

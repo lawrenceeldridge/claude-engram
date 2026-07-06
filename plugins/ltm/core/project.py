@@ -29,6 +29,17 @@ class Project(TypedDict):
     label: str
 
 
+# Reserved key for globally-scoped memory that applies across every project. Only
+# anti-patterns (tool/harness lessons) use it today; a real project can never collide
+# because project keys are 16-hex-char sha256 digests (see resolve_project).
+GLOBAL_PROJECT_KEY = "__global__"
+
+
+def global_project() -> Project:
+    """The synthetic project that owns globally-scoped anti-patterns."""
+    return {"key": GLOBAL_PROJECT_KEY, "path": "", "label": "global"}
+
+
 def resolve_project(cwd: str | None, markers: tuple[str, ...]) -> Project:
     start = Path(cwd).resolve() if cwd else Path.cwd()
     ancestors = (start, *start.parents)

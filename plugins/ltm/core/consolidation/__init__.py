@@ -30,6 +30,7 @@ def consolidate(store, cfg, project, now: float | None = None, embedder=None) ->
     archival is reversible (only purge deletes, and only long-cold rows).
     """
     from core.consolidation.integrate import integrate
+    from core.consolidation.invalidate import invalidate_stale_antipatterns
     from core.consolidation.refine import refine
     from core.consolidation.replay import replay
 
@@ -37,5 +38,15 @@ def consolidate(store, cfg, project, now: float | None = None, embedder=None) ->
     displaced = store.displace_stm(project["key"], cfg.stm_capacity) if cfg.stm_capacity > 0 else 0
     merged = integrate(store, cfg, project, now, embedder=embedder)
     pruned = refine(store, cfg, project, now)
+    # Anti-patterns are dormancy-exempt (refine/sweep skip them); they leave the active set
+    # only by supersession or here, when the files they warn about no longer exist on disk.
+    invalidated = invalidate_stale_antipatterns(store, project, now)
     purged = store.purge(cfg.purge_horizon_days * 86400, now) if cfg.purge_horizon_days > 0 else 0
-    return {"promoted": promoted, "displaced": displaced, "merged": merged, "pruned": pruned, "purged": purged or 0}
+    return {
+        "promoted": promoted,
+        "displaced": displaced,
+        "merged": merged,
+        "pruned": pruned,
+        "invalidated": invalidated,
+        "purged": purged or 0,
+    }

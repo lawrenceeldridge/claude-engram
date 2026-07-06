@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.ports.embedding import get_embedder  # noqa: E402
-from core.project import resolve_project  # noqa: E402
+from core.project import GLOBAL_PROJECT_KEY, resolve_project  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
@@ -50,6 +50,9 @@ def cmd_doctor(args) -> int:
     print(f"project   : {project['label']}  [{project['key']}]")
     print(f"            {project['path']}")
     print(f"facts     : {store.count()} total / {len(store.rows_for_project(project['key']))} in this project")
+    ap_proj = len(store.active_antipatterns(project["key"]))
+    ap_global = len(store.active_antipatterns(GLOBAL_PROJECT_KEY))
+    print(f"antipatterns: {ap_proj} in this project / {ap_global} global")
     store.close()
     return 0
 
