@@ -76,6 +76,7 @@ load on every conversation (`alwaysApply: true`); area folders can be `paths:`-s
 Skills (invokable workflows) live in `.claude/skills/` and are prefixed `ltm-`:
 [`ltm-analyse`](./.claude/skills/ltm-analyse/SKILL.md),
 [`ltm-context`](./.claude/skills/ltm-context/SKILL.md),
+[`ltm-design`](./.claude/skills/ltm-design/SKILL.md),
 [`ltm-git`](./.claude/skills/ltm-git/SKILL.md),
 [`ltm-plan`](./.claude/skills/ltm-plan/SKILL.md),
 [`ltm-poeaa`](./.claude/skills/ltm-poeaa/SKILL.md),

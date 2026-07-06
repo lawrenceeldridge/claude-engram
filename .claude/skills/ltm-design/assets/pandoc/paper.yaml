@@ -1,0 +1,22 @@
+# pandoc defaults for claude-ltm design papers.
+# Academic styling via tectonic (self-contained LaTeX; auto-fetches packages).
+# Consumed by scripts/build_pdf.py, which adds the header include and — only when a
+# references.bib exists beside the source — the citeproc flags.
+
+from: markdown+smart+tex_math_dollars
+pdf-engine: tectonic
+
+toc: true
+toc-depth: 3
+number-sections: true
+
+variables:
+  documentclass: article
+  papersize: a4
+  fontsize: 11pt
+  geometry: "margin=1in"
+  linestretch: 1.15
+  colorlinks: true
+  linkcolor: blue
+  urlcolor: blue
+  citecolor: blue

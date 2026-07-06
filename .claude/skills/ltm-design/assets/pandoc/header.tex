@@ -1,0 +1,19 @@
+% Minimal header-includes for claude-ltm design papers.
+% Kept to widely-available packages so tectonic needs nothing exotic.
+
+% Tighter, professional tables (pandoc emits booktabs rules).
+\usepackage{booktabs}
+
+% Better spacing around the title block and abstract.
+\usepackage{setspace}
+
+% Slightly denser lists (research papers do not need loose spacing).
+\usepackage{enumitem}
+\setlist{itemsep=2pt, topsep=4pt}
+
+% Keep long identifiers (paths, config keys) from overflowing the margin.
+\usepackage{seqsplit}
+
+% A quiet running header with the short title is intentionally NOT set here to
+% avoid clashing with the article class defaults; add fancyhdr in a per-paper
+% override only if a specific paper needs it.
