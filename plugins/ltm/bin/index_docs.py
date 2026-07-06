@@ -103,6 +103,10 @@ def _run_worker(payload_path: str) -> None:
 
 
 def main() -> int:
+    from _bootstrap import hooks_disabled
+
+    if hooks_disabled():
+        return 0  # inside an ltm-spawned `claude -p` — stay inert
     if "--worker" in sys.argv:
         _run_worker(sys.argv[-1])
         return 0

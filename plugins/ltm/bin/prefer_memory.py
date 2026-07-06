@@ -125,6 +125,10 @@ def _is_indexed(file_path: str) -> bool:
 
 
 def main() -> int:
+    from _bootstrap import hooks_disabled
+
+    if hooks_disabled():
+        return 0  # inside an ltm-spawned `claude -p` — stay inert
     enforce = os.environ.get("LTM_ENFORCE", "advisory").lower()
     if enforce == "off":
         return 0

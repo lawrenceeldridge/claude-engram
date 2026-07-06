@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import urllib.request
@@ -462,7 +463,11 @@ class ClaudeCliDistiller(Distiller):
         args = [self.cmd, "-p"]
         if self.model:
             args += ["--model", self.model]
-        result = subprocess.run(args, input=prompt, capture_output=True, text=True, timeout=self.timeout)
+        # The nested `claude -p` is itself a Claude session that would fire ltm's hooks and
+        # capture this very prompt (a self-referential loop). LTM_DISABLE makes those hooks
+        # no-op, breaking the recursion at its root.
+        env = {**os.environ, "LTM_DISABLE": "1"}
+        result = subprocess.run(args, input=prompt, capture_output=True, text=True, timeout=self.timeout, env=env)
         if result.returncode != 0:
             raise RuntimeError((result.stderr or "llm error")[:200])
         return result.stdout
@@ -543,6 +548,20 @@ class HTTPDistiller(Distiller):
 # Distiller backends that call out to an LLM — so they can transiently fail (and are the
 # ones that support merge_cluster). Shared by the capture rescue path and the integrate tier.
 LLM_DISTILLERS = frozenset({"claude", "llm", "ollama", "http", "openai"})
+
+# Opening lines of our own distiller / summary / merge prompts. A transcript that begins
+# with one of these is a nested `claude -p` distiller call that got captured as if it were a
+# session — defensive backstop behind the LTM_DISABLE hook guard, so capture drops it.
+_DISTILLER_PROMPT_PREFIXES = (
+    "You extract durable long-term memory",
+    "Summarise this coding-assistant session",
+    "You are consolidating long-term memory",
+)
+
+
+def is_distiller_prompt(text: str) -> bool:
+    """True if ``text`` is (the start of) one of our own distiller prompts — must not be stored."""
+    return text.lstrip()[:120].startswith(_DISTILLER_PROMPT_PREFIXES)
 
 
 def get_distiller(cfg) -> Distiller:

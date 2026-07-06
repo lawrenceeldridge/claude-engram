@@ -17,7 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _bootstrap import plugin_root, reexec_if_pinned
+from _bootstrap import hooks_disabled, plugin_root, reexec_if_pinned
 
 reexec_if_pinned()
 plugin_root()
@@ -124,6 +124,8 @@ def _run_worker(payload_path: str) -> None:
 
 
 def main() -> int:
+    if hooks_disabled():
+        return 0  # inside an ltm-spawned `claude -p` — don't capture the distiller session
     if "--worker" in sys.argv:
         _run_worker(sys.argv[-1])
         return 0

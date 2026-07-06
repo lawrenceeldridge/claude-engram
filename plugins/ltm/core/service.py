@@ -17,7 +17,7 @@ from core.config import Config
 from core.domain.confidence import compute_confidence
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
-from core.ports.distill import LLM_DISTILLERS, DistilledFact, get_distiller
+from core.ports.distill import LLM_DISTILLERS, DistilledFact, get_distiller, is_distiller_prompt
 from core.ports.embedding import EmbeddingGateway
 from core.ports.membus import WorkItem, get_bus
 from core.project import Project
@@ -117,6 +117,8 @@ def capture_text(
     session_id: str,
     text: str,
 ) -> int:
+    if is_distiller_prompt(text):
+        return 0  # a nested `claude -p` distiller session captured itself — never store it
     distiller = get_distiller(cfg)
     existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
     records = distiller.distill(text, existing)

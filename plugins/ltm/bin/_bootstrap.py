@@ -64,6 +64,18 @@ def reexec_if_pinned() -> None:
         pass
 
 
+def hooks_disabled() -> bool:
+    """True when ltm hooks must no-op — set inside ltm-spawned Claude sessions.
+
+    The ``claude`` distiller runs headless ``claude -p`` in the detached capture worker;
+    that nested Claude session would otherwise fire ltm's own hooks and capture the
+    distiller *prompt* as if it were a session (a self-referential loop that pollutes
+    memory and stuffs the rescue queue). ``ClaudeCliDistiller`` sets ``LTM_DISABLE=1`` in
+    that subprocess's environment; every hook entry point checks this first and exits 0.
+    """
+    return os.environ.get("LTM_DISABLE") == "1"
+
+
 def plugin_root() -> Path:
     env = os.environ.get("CLAUDE_PLUGIN_ROOT")
     root = Path(env) if env else Path(__file__).resolve().parent.parent

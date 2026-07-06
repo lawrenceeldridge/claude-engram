@@ -30,6 +30,10 @@ MEMORY_FIRST_POLICY = (
 
 
 def main() -> int:
+    from _bootstrap import hooks_disabled
+
+    if hooks_disabled():
+        return 0  # inside an ltm-spawned `claude -p` — stay inert
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
