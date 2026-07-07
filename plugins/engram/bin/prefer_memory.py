@@ -46,6 +46,12 @@ _BASH_GREP_FLAGS = re.compile(r"(?:-[A-Za-z]*[rR]\b|--include|--exclude)")
 _BASH_FIND = re.compile(r"\bfind\b")
 _BASH_FIND_FLAGS = re.compile(r"-(?:i?name|i?path|regex)\b")
 
+# Destructive plugin/data command: `claude plugin uninstall|remove` deletes the plugin
+# data dir (memory store + provisioned venv) unless `--keep-data` is passed. This exact
+# command once wiped the whole store, so gate it before it runs.
+_PLUGIN_UNINSTALL = re.compile(r"\bclaude\s+plugins?\s+(?:uninstall|remove)\b", re.I)
+_KEEP_DATA = re.compile(r"--keep-data\b")
+
 
 def _is_bash_search(command: str) -> bool:
     """True when a Bash command scans the filesystem for code/content (rg/ag/ack, grep -r,
@@ -141,6 +147,36 @@ def _tool_query(tool: str, tool_input: dict) -> str:
     return str(tool_input.get("file_path", ""))
 
 
+def _uninstall_warning(tool: str, tool_input: dict) -> str | None:
+    """Warn before a raw `claude plugin uninstall` that would delete the engram store.
+
+    Fires only for our own plugin, only when `--keep-data` is absent. Pure/lexical and
+    fail-open — the caller emits it as advisory context, never a block.
+    """
+    if tool != "Bash":
+        return None
+    cmd = str(tool_input.get("command", ""))
+    if not _PLUGIN_UNINSTALL.search(cmd) or _KEEP_DATA.search(cmd):
+        return None
+    if "engram" not in cmd.lower():
+        return None
+    try:
+        from _bootstrap import plugin_root
+
+        plugin_root()
+        from core.config import get_config
+
+        data_dir = str(get_config().data_dir)
+    except Exception:
+        data_dir = "~/.claude/plugins/data/engram-<marketplace>"
+    return (
+        "claude-engram — STOP: a plain `claude plugin uninstall` DELETES the memory store and "
+        f"provisioned venv at {data_dir} (the harness removes the plugin data dir by default). "
+        "Use `engram uninstall` instead — it keeps your memory; add `--purge-data` only if you "
+        "truly want it gone. Or append `--keep-data` to this command to preserve the store."
+    )
+
+
 def _antipattern_warning(session: str, tool: str, tool_input: dict) -> str | None:
     """A capped warning naming catalogued anti-patterns relevant to this tool action, or None.
 
@@ -209,6 +245,13 @@ def main() -> int:
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     session = payload.get("session_id") or str(os.getppid())
+
+    # Destructive-uninstall guard — highest priority: `claude plugin uninstall` without
+    # --keep-data deletes the whole store, and it has. Warn (fail-open) before it runs.
+    uninstall = _uninstall_warning(tool, tool_input)
+    if uninstall:
+        _emit_context(uninstall)
+        return 0
 
     # Anti-pattern prevention: warn before an action that would repeat a catalogued mistake.
     # Highest-value signal, so it takes priority over the search/read nudges (a hook emits one

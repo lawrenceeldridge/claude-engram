@@ -177,6 +177,7 @@ engram recall <query>      run a just-in-time recall query for the current proje
 engram core                show the stable session-start memory block
 engram projects            list every project in the global store
 engram prune               delete all memory for the current project
+engram uninstall           uninstall the plugin, KEEPING memory (--purge-data to also remove it; --dry-run to preview)
 engram sweep [--all]       archive stale facts (TTL expiry; --days N to override)
 engram consolidate [--all] run the sleep pass: promote recalled STM, integrate near-duplicates + prune (if enabled)
 engram nats status|start|stop  manage the opt-in NATS server (bus=nats)
@@ -199,6 +200,23 @@ real file-minus-span bytes) plus *estimated* (each `ok` recall verdict scored as
 avoided grep+read, heuristic). The **net** is saved − cost. Passive injection that
 merely *might* have saved a search isn't credited, so net is a conservative floor,
 not a marketing number.
+
+### Uninstalling (your memory is kept by default)
+
+`claude plugin uninstall <plugin>` **deletes the plugin's data directory by default** —
+for engram that is the SQLite memory store *and* the provisioned venv (pass `--keep-data`
+to the raw command to preserve it). To make destruction opt-in rather than the default,
+uninstall through the plugin instead:
+
+```bash
+engram uninstall               # uninstalls but KEEPS your memory (passes --keep-data)
+engram uninstall --purge-data  # also removes the store + venv — explicit opt-in
+engram uninstall --dry-run     # print exactly what would happen; change nothing
+```
+
+The memory store lives at `~/.claude/plugins/data/engram-<marketplace>/`; removing that
+directory is the only way to erase it. A `PreToolUse` guard also warns before a raw
+`claude plugin uninstall` that lacks `--keep-data`, so an accidental wipe is caught first.
 
 ## Configuration
 

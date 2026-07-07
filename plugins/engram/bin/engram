@@ -8,6 +8,7 @@ Subcommands:
   core        show the stable session-start memory block
   projects    list every project in the global store
   prune       delete all memory for the current project
+  uninstall   uninstall the plugin, keeping memory (add --purge-data to remove it)
   daemon      run the resident daemon (keeps the embedder warm)
   viewer      launch the localhost viewer
   stats       recall telemetry + token-savings ledger (cost vs saved, net)
@@ -115,6 +116,45 @@ def cmd_prune(args) -> int:
     print(f"pruned {n} fact(s) from {project['label']}")
     store.close()
     return 0
+
+
+def cmd_uninstall(args) -> int:
+    """Uninstall the plugin, KEEPING the memory store by default.
+
+    `claude plugin uninstall` deletes the plugin data dir (store + provisioned venv)
+    unless `--keep-data` is passed — so this wrapper always passes it, and only removes
+    the data on an explicit `--purge-data`. Destruction is opt-in, never the default.
+    """
+    import shutil
+    import subprocess
+
+    cfg = get_config()
+    data_dir = cfg.data_dir
+    plugin_id = os.environ.get("ENGRAM_PLUGIN_ID", "engram@claude-engram")
+    cmd = ["claude", "plugin", "uninstall", plugin_id, "--keep-data", "-y"]
+
+    if args.dry_run:
+        print("[dry-run] would run:", " ".join(cmd))
+        print(f"[dry-run] would then {'PURGE' if args.purge_data else 'KEEP'} the store at {data_dir}")
+        return 0
+
+    print(f"uninstalling {plugin_id} (memory kept — the harness's --keep-data is always passed)…")
+    try:
+        rc = subprocess.run(cmd).returncode
+    except OSError as exc:
+        print(f"[engram] could not run `claude plugin uninstall` ({exc}); data left intact at {data_dir}", file=sys.stderr)
+        rc = 1
+
+    if args.purge_data:
+        if data_dir.exists():
+            shutil.rmtree(data_dir, ignore_errors=True)
+            print(f"purged the memory store and venv at {data_dir}")
+        else:
+            print(f"nothing to purge — no data dir at {data_dir}")
+    else:
+        print(f"memory KEPT at {data_dir}")
+        print(f"  remove it later with:  engram uninstall --purge-data   (or:  rm -rf {data_dir})")
+    return rc
 
 
 def cmd_sweep(args) -> int:
@@ -443,6 +483,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("prune", help="delete this project's memory")
     add_cwd(p)
     p.set_defaults(func=cmd_prune)
+
+    p = sub.add_parser("uninstall", help="uninstall the plugin, keeping memory (--purge-data to remove it)")
+    p.add_argument("--purge-data", action="store_true", help="also delete the memory store + venv (explicit opt-in)")
+    p.add_argument("--dry-run", action="store_true", help="print what would happen; change nothing")
+    p.set_defaults(func=cmd_uninstall)
 
     p = sub.add_parser("sweep", help="archive stale facts (TTL expiry)")
     add_cwd(p)

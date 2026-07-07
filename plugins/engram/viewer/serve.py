@@ -59,6 +59,7 @@ PAGE = """<!doctype html>
   .badge[data-type=bugfix]{background:#da3633}  .badge[data-type=refactor]{background:#1f6feb}
   .badge[data-type=decision]{background:#9e6a03} .badge[data-type=discovery]{background:#57606a}
   .badge[data-type=session_summary]{background:#bb8009} .badge[data-type=prompt]{background:#8250df}
+  .badge[data-type=antipattern]{background:#cf222e}
   .toggles { margin-inline-start:auto; display:flex; gap:4px; }
   .toggle { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:transparent;
             border:1px solid var(--border2); border-radius:6px; padding:3px 8px; cursor:pointer; }
@@ -76,6 +77,7 @@ PAGE = """<!doctype html>
   .meta { color:var(--muted); font:12px ui-monospace,Menlo,monospace; margin-top:10px; }
   .score { color:#3fb950; }
   .card[data-type=session_summary]{ border-inline-start:3px solid #bb8009; background:#15130c; }
+  .card[data-type=antipattern]{ border-inline-start:3px solid #cf222e; background:#1a1210; }
   .card[data-type=prompt]{ border-inline-start:3px solid #8250df; background:#131022; }
   .prompt { color:#c9d1d9; white-space:pre-wrap; }
   .summary-sec { margin-top:10px; }
@@ -182,7 +184,7 @@ async function loadProjects() {
   return rows.length;
 }
 function badge(c) {
-  const t = c.type || (c.kind==='session_summary'?'session_summary':'discovery');
+  const t = c.type || (c.kind==='session_summary'?'session_summary':(c.kind==='antipattern'?'antipattern':'discovery'));
   return `<span class="badge" data-type="${esc(t)}">${esc(t.replace('_',' '))}</span>`;
 }
 function filesHTML(c) {
@@ -216,6 +218,13 @@ function cardHTML(c, flash) {
   }
   if (c.kind === 'session_summary') {
     return `<div class="${cls}" data-type="session_summary"><div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
+  }
+  if (c.kind === 'antipattern') {
+    // Structured like a summary: title heading, the terse rule as the lead, then the
+    // narrative's "Label: text" lines as titled sections.
+    const rule = (c.facts && c.facts[0]) || c.subtitle || '';
+    const ruleHTML = rule ? `<div class="subtitle">${esc(rule)}</div>` : '';
+    return `<div class="${cls}" data-type="antipattern"><div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${ruleHTML}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
   }
   const facts = `<ul class="facts">${(c.facts||[]).map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
   const narr = c.narrative ? `<div class="narr">${esc(c.narrative)}</div>` : '';

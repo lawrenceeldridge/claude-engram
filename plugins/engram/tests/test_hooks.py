@@ -173,6 +173,35 @@ class PreToolUseGuardTests(unittest.TestCase):
     def test_enforce_off_is_silent(self):
         self.assertEqual(self._run({"tool_name": "Grep", "tool_input": {"pattern": "foo"}}, enforce="off"), "")
 
+    def _bash(self, command: str) -> str:
+        # isolate the data dir so the destructive-uninstall guard is tested independently of
+        # whatever anti-patterns happen to be in the real store
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "ENGRAM_ENFORCE": "advisory", "ENGRAM_DATA_DIR": tmp}
+            r = subprocess.run(
+                [sys.executable, str(ROOT / "bin" / "prefer_memory.py")],
+                input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "session_id": self.sess}),
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            return r.stdout.strip()
+
+    def test_raw_uninstall_warns(self):
+        out = self._bash("claude plugin uninstall engram@claude-engram")
+        self.assertIn("STOP", out)
+        self.assertIn("engram uninstall", out)  # points at the safe wrapper
+
+    def test_uninstall_with_keep_data_is_silent(self):
+        self.assertEqual(self._bash("claude plugin uninstall engram@claude-engram --keep-data"), "")
+
+    def test_engram_uninstall_wrapper_is_silent(self):
+        # our own safe command must not trip its own guard
+        self.assertEqual(self._bash("engram uninstall --purge-data"), "")
+
+    def test_other_plugin_uninstall_is_silent(self):
+        self.assertEqual(self._bash("claude plugin uninstall cost-guard@cost-guard"), "")
+
     def test_large_code_read_advises(self):
         out = self._run({"tool_name": "Read", "tool_input": {"file_path": self._big_py()}})
         self.assertIn("get_symbol", out)
@@ -258,6 +287,29 @@ class PreToolUseGuardTests(unittest.TestCase):
             self.assertIn('"permissionDecision": "deny"', out)
         finally:
             os.environ.pop("ENGRAM_DATA_DIR", None)
+
+
+class UninstallCommandTests(unittest.TestCase):
+    """`engram uninstall` keeps memory by default; --purge-data is the explicit opt-in."""
+
+    def _dry(self, *flags: str) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "ENGRAM_DATA_DIR": tmp, "ENGRAM_REEXECED": "1"}
+            r = subprocess.run(
+                [sys.executable, str(ROOT / "bin" / "engram"), "uninstall", "--dry-run", *flags],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            return r.stdout
+
+    def test_default_keeps_data_and_passes_keep_data(self):
+        out = self._dry()
+        self.assertIn("--keep-data", out)  # the harness flag that prevents deletion
+        self.assertIn("KEEP", out)
+
+    def test_purge_data_is_explicit_opt_in(self):
+        self.assertIn("PURGE", self._dry("--purge-data"))
 
 
 if __name__ == "__main__":
