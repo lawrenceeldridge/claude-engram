@@ -32,6 +32,13 @@
 % page content while keeping the page itself portrait in print order.
 \usepackage{pdflscape}
 
+% Boxes-and-arrows diagrams (Bitcoin-paper style). tectonic auto-fetches.
+% Character protrusion + font expansion: clears small overfull boxes cleanly.
+\usepackage{microtype}
+
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, calc}
+
 % A quiet running header with the short title is intentionally NOT set here to
 % avoid clashing with the article class defaults; add fancyhdr in a per-paper
 % override only if a specific paper needs it.
