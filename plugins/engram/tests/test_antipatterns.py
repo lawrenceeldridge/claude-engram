@@ -63,6 +63,12 @@ class AdmissionGateTests(unittest.TestCase):
             "That was wrong — let me fix that.",
             "No, don't do it that way.",
             "My apologies, I made an error there.",
+            # the assistant's own corrective phrasing (previously slipped the gate)
+            "My perl edit corrupted the LaTeX; let me revert.",
+            "I misread the build output as clean.",
+            "That was a self-inflicted bug; I broke the alias.",
+            "You're right, that was my error.",
+            "I forgot to update the manifest; scratch that.",
         ):
             self.assertTrue(has_admission_markers(text), text)
 
