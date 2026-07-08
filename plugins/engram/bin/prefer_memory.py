@@ -208,8 +208,13 @@ def _antipattern_warning(session: str, tool: str, tool_input: dict) -> str | Non
             rows = store.active_antipatterns(project["key"]) + store.active_antipatterns(GLOBAL_PROJECT_KEY)
         finally:
             store.close()
+        # Match on the rule text AND its narrative: the concrete DON'T/DO command tokens now live in
+        # the narrative (not the injected rule line), so they must be included to keep the warning firing.
         scored = sorted(
-            ((len(qtokens & token_set(row["text"])), row["id"], row["text"]) for row in rows),
+            (
+                (len(qtokens & token_set(f"{row['text']} {row['narrative'] or ''}")), row["id"], row["text"])
+                for row in rows
+            ),
             key=lambda t: t[0],
             reverse=True,
         )

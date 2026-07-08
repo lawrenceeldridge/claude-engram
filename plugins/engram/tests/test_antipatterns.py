@@ -93,16 +93,17 @@ class ParseAntipatternsTests(unittest.TestCase):
         self.assertEqual(r.scope, "global")
         self.assertEqual(r.title, "Bash Tool Parameter Injection")
         self.assertEqual(r.subtitle, _CURL["anti_pattern"])
-        self.assertTrue(r.text.startswith("Never put AI-tool flags"))
-        self.assertIn("DON'T", r.text)
+        # text is the rule ALONE, whole; DON'T/DO/root-cause live in the narrative (shown once).
+        self.assertEqual(r.text, _CURL["strict_rule"])
+        self.assertNotIn("DON'T", r.text)
         self.assertIn("Root cause:", r.narrative)
+        self.assertIn("DON'T: curl -X PUT", r.narrative)
+        self.assertIn("DO: set sandbox:false", r.narrative)
 
-    def test_realistic_rule_stored_in_full(self):
-        # A normal rule + DON'T/DO is well under the guard, so it is stored WHOLE
-        # (no mid-word cut, no ellipsis) — recall/FTS see the complete rule.
+    def test_rule_stored_whole_no_ellipsis(self):
+        # A normal rule is well under the guard, so it is stored whole — no ellipsis, no mid-word cut.
         r = parse_antipatterns(json.dumps({"antipatterns": [_CURL]}))[0]
-        self.assertIn("DON'T curl -X PUT https://api/data --sandbox disabled", r.text)
-        self.assertIn("DO set sandbox:false", r.text)
+        self.assertEqual(r.text, _CURL["strict_rule"])
         self.assertFalse(r.text.endswith("…"))
 
     def test_scope_defaults_to_project(self):
@@ -125,23 +126,21 @@ class ParseAntipatternsTests(unittest.TestCase):
 
 
 class TextCapTests(unittest.TestCase):
-    def test_rule_first_then_dont_do(self):
-        text = _antipattern_text("Never do X", "run bad-cmd", "run good-cmd")
-        self.assertTrue(text.startswith("Never do X"))
-        self.assertIn("DON'T run bad-cmd", text)
-        self.assertIn("DO run good-cmd", text)
+    def test_text_is_the_rule_alone(self):
+        # DON'T/DO are NOT bundled into text — it is just the rule (trailing period stripped).
+        text = _antipattern_text("Never do X.")
+        self.assertEqual(text, "Never do X")
 
-    def test_runaway_guard_trims_on_word_boundary(self):
-        # Pathologically long DON'T/DO: the guard trims to <= cap, keeps the rule,
-        # ends with an ellipsis, and cuts on a word boundary (never mid-word).
+    def test_runaway_guard_trims_a_long_rule_on_word_boundary(self):
+        # A pathologically long rule: the guard trims to <= cap, ends with an ellipsis,
+        # and cuts on a word boundary (never mid-word).
         words = "alpha beta gamma delta epsilon zeta eta theta".split()
-        text = _antipattern_text("Rule words here", " ".join(words * 10), "y", cap=60)
+        text = _antipattern_text("Rule " + " ".join(words * 10), cap=60)
         self.assertLessEqual(len(text), 60)
-        self.assertTrue(text.startswith("Rule words here"))
+        self.assertTrue(text.startswith("Rule alpha"))
         self.assertTrue(text.endswith("…"))
         body = text[:-1].rstrip()  # drop the ellipsis
-        # the trim landed on a whole word from the input — the last token is complete
-        self.assertIn(body.split()[-1], set(words) | {"DON'T"})
+        self.assertIn(body.split()[-1], set(words) | {"Rule"})  # last token is whole
 
 
 class BackstopTests(unittest.TestCase):

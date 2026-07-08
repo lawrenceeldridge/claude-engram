@@ -550,15 +550,14 @@ def parse_summary(output: str) -> DistilledFact | None:
     return DistilledFact(text=text, title=title, narrative=narrative, type="session_summary") if text else None
 
 
-# ``text`` is the anti-pattern's imperative rule + a terse DON'T/DO: it is what a future session
-# sees first (injected at recall, one line per fact) and its tokens drive the lexical/FTS channels,
-# so it must be stored WHOLE — a mid-word cut here corrupts the rule and confuses later recall.
-# The injection paths already bound the token budget by whole lines (recall's ``max_chars``, the
-# PreToolUse warning's own cap), so no destructive store-time cap is needed. The generous limit
-# below is only a runaway guard against a pathological LLM, and it trims on a WORD boundary with an
-# ellipsis — never mid-word. Root cause + fuller example also live in narrative (viewer / structured
-# recall; narrative is FTS-indexed too).
-_ANTIPATTERN_TEXT_CAP = 500
+# ``text`` is the anti-pattern's imperative rule ALONE — it is what a future session sees first
+# (injected at recall / the PreToolUse warning, one line per fact). The DON'T/DO examples and root
+# cause live in ``narrative`` only, so they render once (as the viewer's titled sections) rather than
+# being duplicated into this line, and they never force a mid-line ellipsis. Matching/FTS still see
+# those tokens: FTS indexes ``narrative`` too, and the warning matcher scores text + narrative. A
+# single imperative rule is naturally short; the word-boundary guard below is only a runaway backstop
+# against a pathological rule and never cuts mid-word.
+_ANTIPATTERN_TEXT_CAP = 400
 
 
 def _soft_trim(text: str, cap: int) -> str:
@@ -570,16 +569,9 @@ def _soft_trim(text: str, cap: int) -> str:
     return f"{head}…" if head else text[:cap].rstrip()
 
 
-def _antipattern_text(strict_rule: str, dont: str, do: str, cap: int = _ANTIPATTERN_TEXT_CAP) -> str:
-    text = strict_rule.strip().rstrip(".")
-    tail = []
-    if dont.strip():
-        tail.append(f"DON'T {dont.strip().rstrip('.')}")
-    if do.strip():
-        tail.append(f"DO {do.strip().rstrip('.')}")
-    if tail:
-        text = f"{text} — " + "; ".join(tail)
-    return _soft_trim(text, cap)
+def _antipattern_text(strict_rule: str, cap: int = _ANTIPATTERN_TEXT_CAP) -> str:
+    """The injected line for an anti-pattern: the imperative rule, whole (DON'T/DO go in narrative)."""
+    return _soft_trim(strict_rule.strip().rstrip("."), cap)
 
 
 _ANTIPATTERN_PROMPT = """You review a coding-assistant session for MISTAKES THE ASSISTANT MADE and
@@ -636,7 +628,7 @@ def parse_antipatterns(output: str) -> list[DistilledFact]:
             continue
         dont = str(item.get("dont", "")).strip()
         do = str(item.get("do", "")).strip()
-        text = _antipattern_text(strict, dont, do)
+        text = _antipattern_text(strict)  # the rule alone; DON'T/DO live in narrative below
         if not text:
             continue
         root = str(item.get("root_cause", "")).strip()
