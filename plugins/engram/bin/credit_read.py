@@ -66,7 +66,9 @@ def main() -> int:
         # how the indexer stored source_path — otherwise source_state never resolves.
         real = os.path.realpath(file_path)
         cfg = get_config()
-        project = resolve_project(str(Path(real).parent), cfg.markers)
+        project = resolve_project(
+            str(Path(real).parent), cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir
+        )
         rel = os.path.relpath(real, project["path"])
         store = Store(cfg.db_path)
         try:

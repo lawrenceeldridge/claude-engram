@@ -15,7 +15,7 @@ These ten patterns describe **how objects map onto tables**. They are largely or
 
 **When to use.** Always — anywhere persistent identity matters.
 
-**claude-engram applicability.** ✅ **Default — a content hash, not a surrogate auto-increment.** `fact_id = hash(project_key, text)` and `chunk_id(project_key, source_path, anchor)`. Identity is *derived from content*, which is exactly what makes capture idempotent — re-capturing the same fact resolves to the same id and becomes a no-op-or-reinforce rather than a duplicate (see `03-or-behavioral.md` § Unit of Work). Every row is also tagged by **project key** (the marker-walk identity — see `DESIGN.md` § Project identity), so one store cleanly separates many projects. No auto-increment sequence is needed; the content hash gives free deduplication.
+**claude-engram applicability.** ✅ **Default — a content hash, not a surrogate auto-increment.** `fact_id = hash(project_key, text)` and `chunk_id(project_key, source_path, anchor)`. Identity is *derived from content*, which is exactly what makes capture idempotent — re-capturing the same fact resolves to the same id and becomes a no-op-or-reinforce rather than a duplicate (see `03-or-behavioral.md` § Unit of Work). Every row is also tagged by **project key** (the workspace-root identity — see `DESIGN.md` § Project identity), so one store cleanly separates many projects. No auto-increment sequence is needed; the content hash gives free deduplication.
 
 ---
 

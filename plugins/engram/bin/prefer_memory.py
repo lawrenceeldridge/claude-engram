@@ -124,7 +124,7 @@ def _is_indexed(file_path: str) -> bool:
 
         cfg = get_config()
         path = Path(file_path).resolve()  # match index_file's resolved source paths (symlink-safe)
-        project = resolve_project(str(path.parent), cfg.markers)
+        project = resolve_project(str(path.parent), cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
         root = Path(project["path"]).resolve() if project.get("path") else path.parent
         if not path.is_relative_to(root):
             return False
@@ -202,7 +202,7 @@ def _antipattern_warning(session: str, tool: str, tool_input: dict) -> str | Non
         qtokens = token_set(query)
         if not qtokens:
             return None
-        project = resolve_project(os.getcwd(), cfg.markers)
+        project = resolve_project(os.getcwd(), cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
         store = Store(cfg.db_path)
         try:
             rows = store.active_antipatterns(project["key"]) + store.active_antipatterns(GLOBAL_PROJECT_KEY)

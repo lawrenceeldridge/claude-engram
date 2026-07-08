@@ -100,7 +100,10 @@ Skills (invokable workflows) live in `.claude/skills/` and are prefixed `engram-
 6. **Measure retrieval changes** — anything touching embeddings, ranking, quantisation,
    or distillation is A/B'd with `python3 bin/engram eval` before it ships. See
    [DESIGN.md § Embedding backend — measured, not assumed](./DESIGN.md).
-7. **Project identity is a marker-walk**, never `basename(cwd)` — see
+7. **Project identity defaults to the workspace root** (`identity=workspace`): the folder
+   Claude was started in (`CLAUDE_PROJECT_DIR`, else cwd), hashed for a collision-free key
+   with its basename as the label. `identity=marker` is the legacy marker-walk; `.engram-root`
+   overrides both. Never use the raw `basename(cwd)` as the *key* — hash the path. See
    [DESIGN.md § Project identity](./DESIGN.md).
 8. **GitHub only** — this repo uses git + GitHub PRs. There is no Linear/Slack
    integration; do not add ticket-ID or Slack-notification ceremony to commits or PRs.

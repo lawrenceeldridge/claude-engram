@@ -274,13 +274,25 @@ every row tagged with a project key. Recall defaults to the current project;
 `cross_project` enables a penalised fallback. The viewer is the one component
 that intentionally spans all projects.
 
-### Project identity — marker-walk (not `basename(cwd)`)
+### Project identity — the workspace root (hashed)
 
-Keying on `basename(cwd)` fragments monorepos, subdirectory launches, and
-same-named folders. Instead we walk up from `cwd` to
-the nearest marker (`.git`, `pyproject.toml`, …) and key on that directory's
-absolute path (hashed), with its basename as a display label. Stable regardless
-of launch subdirectory; configurable for monorepo granularity via `markers`.
+A memory belongs to **the folder the session was opened in** (`identity=workspace`,
+default): the directory Claude Code was started in (`CLAUDE_PROJECT_DIR`, stable across a
+terminal `cd`), else `cwd`. That folder's absolute path is hashed into the key and its
+basename is the display label. This tracks the human's chosen boundary: a monorepo
+subfolder opened as a workspace (`…/dune/moj-sak`) stays its own project rather than
+folding into the git root (`ips-applications`), and a repo opened at its top
+(`…/claude-engram`) does not fragment into a nested package (`plugins/engram`). Hashing the
+path — not using the basename as the *key* — keeps identity collision-free where the label
+is not (two `backend/` folders → distinct keys, shared label).
+
+Earlier designs walked up from `cwd` to the nearest project marker (`.git`,
+`pyproject.toml`, …). That over-corrects in two directions: it folds a workspace subfolder
+up into a monorepo root, and it splits a repo whose subpackages carry their own markers
+(the `plugins/engram/pyproject.toml` fragmentation observed in this very repo). It survives
+as `identity=marker` for sessions launched from deep subdirectories that *should*
+consolidate upward. In both modes an explicit `.engram-root` sentinel overrides the choice
+(nearest ancestor wins), configurable for monorepo granularity via `markers`.
 
 ## Risks
 

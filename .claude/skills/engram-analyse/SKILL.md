@@ -350,8 +350,9 @@ states which it touches.
 distillation are opt-in adapters); every hook fails open (exit 0, 5s ceiling); capture
 / distillation / embedding never run on the interactive path; memory access goes
 through `core/store.py` (Repository, not Active Record); retrieval changes are A/B'd
-with `engram eval` before shipping; project identity is a marker-walk, not
-`basename(cwd)`. The two retrieval surfaces — memory (`recall`) and the code/docs index
+with `engram eval` before shipping; project identity defaults to the workspace root
+(`CLAUDE_PROJECT_DIR`/cwd, hashed key), with `identity=marker` and `.engram-root` overrides.
+The two retrieval surfaces — memory (`recall`) and the code/docs index
 (`search_code`/`search_docs` → `get_symbol`/`get_doc_section`) — share the project key.
 
 ## Examples

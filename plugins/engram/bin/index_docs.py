@@ -81,7 +81,7 @@ def _run_worker(payload_path: str) -> None:
         return
     try:
         root = payload.get("cwd") or os.getcwd()
-        project = resolve_project(root, cfg.markers)
+        project = resolve_project(root, cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
         index_root = project["path"] or root
         store = Store(cfg.db_path)
         # Merkle rollup: if the file tree is unchanged since the last index, skip the

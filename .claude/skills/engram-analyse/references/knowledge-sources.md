@@ -124,7 +124,7 @@ Runnable tools that produce evidence for an analysis.
 
 | # | Command | Produces | Workflows |
 |---|---------|----------|-----------|
-| 26 | `python3 bin/engram doctor` | Resolved config, project identity (marker-walk), fact counts | All (grounding) |
+| 26 | `python3 bin/engram doctor` | Resolved config, project identity (workspace root / marker / .engram-root), fact counts | All (grounding) |
 | 27 | `python3 bin/engram eval --backends "hash,fastembed"` | Recall@1/@3, MRR@10, bytes/fact through the real quantised search path | Budget, Test |
 | 28 | `python3 -m unittest discover -s tests` | Test suite result (stdlib, no network) | Test, Risk (rollback verification) |
 

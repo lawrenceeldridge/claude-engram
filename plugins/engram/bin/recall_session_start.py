@@ -71,7 +71,7 @@ def main() -> int:
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-        project = resolve_project(cwd, cfg.markers)
+        project = resolve_project(cwd, cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
         store = Store(cfg.db_path)
         orientation = orientation_block(store, project)
         block = recall_core_block(store, cfg, project) if cfg.core_size > 0 else ""

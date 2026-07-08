@@ -243,6 +243,7 @@ or `ENGRAM_*` env vars for standalone use:
 | `index_min_sim` | `0.18` | similarity threshold for a passive index hit |
 | `index_max_chars` | `400` | hard cap on the passive index block per prompt |
 | `cross_project` | `false` | fall back to other projects when in-project recall is weak |
+| `identity` | `workspace` | how a project is keyed: `workspace` = the folder you opened (`CLAUDE_PROJECT_DIR`, else cwd); `marker` = walk up to the nearest project marker. `.engram-root` overrides both |
 | `half_life_days` | `30` | recency half-life; lower = forgets faster |
 | `supersede_threshold` | `0.85` | new-fact similarity that retires an older one (1.0 disables) |
 | `ttl_days` | `0` | archive facts unseen this long on capture (0 disables hard expiry) |
@@ -383,17 +384,26 @@ nomic-v1.5 at 256 dims). Use the harness to A/B any future change before shippin
 
 ## Project identity
 
-Memory and the index are keyed by a **marker-walk**: from the working directory we
-walk up to the nearest `.git` / `pyproject.toml` / `package.json` / `go.mod` /
-`Cargo.toml` / `pom.xml` (configurable via `markers`) and key on that directory's
-path. This avoids the `basename(cwd)` fragmentation that mis-files memory in
-monorepos and subdirectory launches.
+Memory and the index are keyed by **the folder you opened** (`identity=workspace`, the
+default): the directory Claude Code was started in (`CLAUDE_PROJECT_DIR`, stable even if
+the terminal `cd`s), falling back to the working directory. That folder's absolute path
+is hashed into a stable key and its basename becomes the label. This matches the human's
+chosen boundary — a monorepo subfolder opened as a workspace
+(`…/ips-applications/applications/dune/moj-sak`) stays its own `moj-sak` project rather
+than being folded into the monorepo root, and a repo opened at its top (`…/claude-engram`)
+does not fragment into a nested package (`plugins/engram`). Hashing the path (not using the
+basename as the *key*) keeps it collision-free: two different `backend/` folders get
+distinct keys though they share a label.
 
-Drop an empty **`.engram-root`** file in a directory to pin it as the project root — it
-takes precedence over the marker-walk. Use it when a repo's subfolders each carry
-their own marker (a plugin package, an app's `backend/` + `frontend/`) and would
-otherwise split into separate projects: one `.engram-root` at the repo/app root
-collapses them into a single project. The nearest `.engram-root` ancestor wins.
+Two escape hatches:
+
+- **`identity=marker`** restores the legacy behaviour — walk up from the working directory
+  to the nearest `.git` / `pyproject.toml` / `package.json` / `go.mod` / `Cargo.toml` /
+  `pom.xml` (configurable via `markers`) and key on that. Useful when sessions are launched
+  from deep subdirectories and should consolidate upward.
+- An empty **`.engram-root`** file **overrides both modes**: drop one in a directory to pin
+  it as the project root (the nearest `.engram-root` ancestor wins). Use it to consolidate a
+  monorepo subtree, or to pin a root when neither mode fits.
 
 ## Status
 

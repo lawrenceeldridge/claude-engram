@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "displayName": "Long-Term Memory",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -140,6 +140,12 @@
       "title": "Cross-project fallback",
       "description": "If in-project recall is weak, fall back to other projects' memory (slightly penalised).",
       "default": false
+    },
+    "identity": {
+      "type": "string",
+      "title": "Project identity",
+      "description": "workspace = key memory on the folder you opened (CLAUDE_PROJECT_DIR, else cwd), so a monorepo subfolder stays its own project; marker = walk up to the nearest project marker (.git etc.). A .engram-root file overrides both.",
+      "default": "workspace"
     },
     "half_life_days": {
       "type": "number",

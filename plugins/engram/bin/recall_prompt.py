@@ -44,11 +44,13 @@ def main() -> int:
         from core.store import Store
 
         cfg = get_config()
-        project = resolve_project(cwd, cfg.markers)
+        project = resolve_project(cwd, cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
 
         # Prefer the warm daemon (avoids per-prompt model load); fall back in-process.
+        # Pass the already-resolved project so the long-lived daemon never re-resolves
+        # with its own (wrong-session) CLAUDE_PROJECT_DIR.
         block = None
-        resp = request(cfg.sock_path, {"op": "recall", "cwd": cwd, "prompt": prompt})
+        resp = request(cfg.sock_path, {"op": "recall", "project": dict(project), "cwd": cwd, "prompt": prompt})
         if resp is not None and "block" in resp:
             block = resp["block"]
 

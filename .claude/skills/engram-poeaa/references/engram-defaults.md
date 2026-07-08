@@ -125,7 +125,7 @@ the pattern set". The absence is the design.
 - **Identity Field — content hash.** `fact_id = hash(project_key, text)` and
   `chunk_id(project_key, source_path, anchor)`. Identity is derived from content, which
   is what makes capture idempotent. Every row is **tagged by project key** (the
-  marker-walk identity — see `DESIGN.md` § Project identity).
+  project-key identity — see `DESIGN.md` § Project identity).
 - **Serialized LOB — quantised embedding blobs.** The int8 vector (primary search rep)
   and the binary sign-bit vector (32× smaller Hamming pre-filter) are stored as opaque
   blob columns. They are read and written whole, never filtered inside — a textbook

@@ -91,7 +91,9 @@ def _run_worker() -> None:
                 store, embedder = Store(cfg.db_path), get_embedder(cfg)  # loaded once per burst
             for fp in files:
                 try:
-                    project = resolve_project(str(Path(fp).parent), cfg.markers)
+                    project = resolve_project(
+                        str(Path(fp).parent), cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir
+                    )
                     index_file(store, embedder, cfg, project, fp)
                 except Exception:
                     pass  # fail-open per file — one bad edit can't stall the rest

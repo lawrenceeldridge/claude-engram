@@ -262,7 +262,7 @@ class _Engine:
     def _project(self, ref: str | None):
         from core.project import resolve_project
 
-        current = resolve_project(None, self.cfg.markers)
+        current = resolve_project(None, self.cfg.markers, identity=self.cfg.identity, project_dir=self.cfg.project_dir)
         if not ref:
             return current
         needle = ref.lower()

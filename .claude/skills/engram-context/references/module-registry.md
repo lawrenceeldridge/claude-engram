@@ -69,7 +69,7 @@ core to Claude Code.
 | File | Role |
 |---|---|
 | `config.py` | Resolve config from `userConfig` (`CLAUDE_PLUGIN_OPTION_*`) / `ENGRAM_*` env. |
-| `project.py` | Project identity via marker-walk (never `basename(cwd)`). |
+| `project.py` | Project identity — workspace root by default (`CLAUDE_PROJECT_DIR`/cwd, hashed key); `identity=marker` walks up to a marker; `.engram-root` overrides. |
 | `__init__.py` | Package init / public surface. |
 
 ---

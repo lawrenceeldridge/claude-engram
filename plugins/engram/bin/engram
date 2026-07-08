@@ -38,7 +38,12 @@ from core.store import Store  # noqa: E402
 
 
 def _project(cfg, args):
-    return resolve_project(getattr(args, "cwd", None) or os.getcwd(), cfg.markers)
+    return resolve_project(
+        getattr(args, "cwd", None) or os.getcwd(),
+        cfg.markers,
+        identity=cfg.identity,
+        project_dir=cfg.project_dir,
+    )
 
 
 def cmd_doctor(args) -> int:
@@ -142,7 +147,9 @@ def cmd_uninstall(args) -> int:
     try:
         rc = subprocess.run(cmd).returncode
     except OSError as exc:
-        print(f"[engram] could not run `claude plugin uninstall` ({exc}); data left intact at {data_dir}", file=sys.stderr)
+        print(
+            f"[engram] could not run `claude plugin uninstall` ({exc}); data left intact at {data_dir}", file=sys.stderr
+        )
         rc = 1
 
     if args.purge_data:

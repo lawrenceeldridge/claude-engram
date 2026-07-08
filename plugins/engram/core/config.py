@@ -112,6 +112,8 @@ class Config:
     viewer_port: int
     viewer_autostart: bool
     markers: tuple[str, ...]
+    identity: str
+    project_dir: str | None
     data_dir: Path
     db_path: Path
     sock_path: Path
@@ -197,6 +199,15 @@ def get_config() -> Config:
         viewer_port=int(_num(_opt("viewer_port", "7801"), 7801)),
         viewer_autostart=_opt("viewer_autostart", "true").lower() in ("1", "true", "yes", "on"),
         markers=markers,
+        # Project identity: 'workspace' (default) keys memory on the folder Claude was
+        # started in (CLAUDE_PROJECT_DIR, else cwd) — matching the human's chosen workspace,
+        # so a monorepo subfolder opened as a workspace stays its own project. 'marker' is
+        # the legacy behaviour: walk up to the nearest project marker. `.engram-root`
+        # overrides both. See DESIGN.md § Project identity.
+        identity=_opt("identity", "workspace").strip().lower(),
+        # The dir Claude Code was started in (stable across terminal `cd`); the workspace
+        # anchor for identity='workspace'. Provided to hooks/MCP by Claude Code.
+        project_dir=os.environ.get("CLAUDE_PROJECT_DIR") or None,
         data_dir=data_dir,
         db_path=data_dir / "memory.db",
         sock_path=data_dir / "engram.sock",

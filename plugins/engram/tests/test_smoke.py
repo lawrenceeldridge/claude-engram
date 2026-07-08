@@ -137,16 +137,17 @@ class ProvisionTests(unittest.TestCase):
 
 class ProjectTests(unittest.TestCase):
     def test_marker_walk_finds_root_from_subdir(self):
+        # identity='marker' is the legacy walk-up mode (the default is now 'workspace').
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "myrepo"
             (root / ".git").mkdir(parents=True)
             deep = root / "apps" / "web" / "src"
             deep.mkdir(parents=True)
             self.assertEqual(
-                resolve_project(str(deep), (".git",))["key"],
-                resolve_project(str(root), (".git",))["key"],
+                resolve_project(str(deep), (".git",), identity="marker")["key"],
+                resolve_project(str(root), (".git",), identity="marker")["key"],
             )
-            self.assertEqual(resolve_project(str(deep), (".git",))["label"], "myrepo")
+            self.assertEqual(resolve_project(str(deep), (".git",), identity="marker")["label"], "myrepo")
 
 
 class LoopTests(unittest.TestCase):

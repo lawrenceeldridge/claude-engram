@@ -62,7 +62,7 @@ to the row/dataclass types.
 Is it memory (a fact) or index data (a code/doc chunk)?
     └─ yes ──► through core/store.py — Store.add(...) / replace_source_chunks(...)
                  └─ Identity Field: content-hash fact_id / chunk_id  (makes capture idempotent)
-                 └─ tag the row with the project key (marker-walk identity)
+                 └─ tag the row with the project key (workspace-root identity)
                  └─ the quantised vector is an Embedded Value inlined on the row
                  └─ the int8 + binary blobs are a Serialized LOB — stored whole, never filtered inside
 ```

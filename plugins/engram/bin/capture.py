@@ -81,7 +81,12 @@ def _run_worker(payload_path: str) -> None:
     if not _acquire_lock(lock):
         return  # another capture worker is running; the cursor covers this delta next time
     try:
-        project = resolve_project(payload.get("cwd") or os.getcwd(), cfg.markers)
+        project = resolve_project(
+            payload.get("cwd") or os.getcwd(),
+            cfg.markers,
+            identity=cfg.identity,
+            project_dir=payload.get("project_dir") or cfg.project_dir,
+        )
         transcript_path = payload.get("transcript_path")
         if not transcript_path or not Path(transcript_path).exists():
             return
@@ -147,6 +152,11 @@ def main() -> int:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return 0
+
+    # Stamp the workspace root (this hook's env) into the payload so the detached worker
+    # resolves the right project even if it doesn't inherit CLAUDE_PROJECT_DIR.
+    if "project_dir" not in payload and os.environ.get("CLAUDE_PROJECT_DIR"):
+        payload["project_dir"] = os.environ["CLAUDE_PROJECT_DIR"]
 
     try:
         fd, payload_path = tempfile.mkstemp(prefix="engram-cap-", suffix=".json")

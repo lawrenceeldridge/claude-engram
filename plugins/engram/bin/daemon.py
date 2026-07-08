@@ -79,6 +79,21 @@ def serve() -> None:
             pass
 
 
+def _project_from_req(req: dict, cfg, resolve_project):
+    """Resolve the request's project on the daemon side.
+
+    The daemon is long-lived and serves many sessions, so it must never re-resolve using
+    its OWN ``CLAUDE_PROJECT_DIR`` (that of whichever session happened to start it). It
+    prefers the caller's already-resolved ``project`` and otherwise resolves from the
+    request's ``cwd`` + ``project_dir`` (both carried per-request), only the mode
+    (``identity``) coming from the daemon's config.
+    """
+    pre = req.get("project")
+    if pre:
+        return pre
+    return resolve_project(req.get("cwd"), cfg.markers, identity=cfg.identity, project_dir=req.get("project_dir"))
+
+
 def _serve(cfg, lock: Path) -> None:
     from core.ports.embedding import get_embedder
     from core.project import resolve_project
@@ -111,14 +126,14 @@ def _serve(cfg, lock: Path) -> None:
                 if op == "ping":
                     resp = {"ok": True}
                 elif op == "recall":
-                    project = resolve_project(req.get("cwd"), cfg.markers)
+                    project = _project_from_req(req, cfg, resolve_project)
                     resp = {"block": recall_prompt_block(store, embedder, cfg, project, req.get("prompt", ""))}
                 elif op == "core":
-                    project = resolve_project(req.get("cwd"), cfg.markers)
+                    project = _project_from_req(req, cfg, resolve_project)
                     resp = {"block": recall_core_block(store, cfg, project)}
                 elif op == "recall_structured":
                     # MCP delegates here so recall shares the daemon's warm embedder — no write/read space drift.
-                    project = req.get("project") or resolve_project(req.get("cwd"), cfg.markers)
+                    project = _project_from_req(req, cfg, resolve_project)
                     resp = recall_structured(store, embedder, cfg, project, req.get("query", ""), k=req.get("k"))
                 else:
                     resp = {"error": f"unknown op {op!r}"}
