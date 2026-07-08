@@ -46,6 +46,12 @@ def _content_id(project_key: str, text: str) -> str:
     return hashlib.sha256(f"{project_key}\x00{norm}".encode()).hexdigest()[:24]
 
 
+def _sensory_id(project_key: str, session_id: str, url: str) -> str:
+    """Id for a sensory snapshot — one row per (project, session, url), so a re-glance of
+    the same page updates that row (rehearsal) instead of inserting a duplicate."""
+    return hashlib.sha256(f"{project_key}\x00{session_id}\x00{url}".encode()).hexdigest()[:24]
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
   id            TEXT PRIMARY KEY,
@@ -406,6 +412,29 @@ def _v12_index_meta(db: sqlite3.Connection) -> None:
     )
 
 
+def _v16_sensory(db: sqlite3.Connection) -> None:
+    # Sensory register (Atkinson-Shiffrin): the tier BEFORE STM. Holds ephemeral page
+    # accessibility-text snapshots (iconic memory) at large capacity; most decay unread,
+    # while an 'attended' one (re-glanced >= sensory_promote_after) is distilled into an
+    # STM fact in the detached worker (promoted_fact_id). A SEPARATE table by design — it
+    # carries NO embedding and must never be queried by recall. Off by default
+    # (sensory=false), so it stays empty until enabled.
+    db.executescript(
+        "CREATE TABLE IF NOT EXISTS sensory ("
+        "  id               TEXT PRIMARY KEY,"
+        "  project_key      TEXT NOT NULL,"
+        "  session_id       TEXT,"
+        "  url              TEXT,"
+        "  text             TEXT NOT NULL,"
+        "  created_at       REAL,"
+        "  glance_count     INTEGER NOT NULL DEFAULT 1,"
+        "  attended         INTEGER NOT NULL DEFAULT 0,"
+        "  promoted_fact_id TEXT"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_sensory_project ON sensory(project_key, created_at);"
+    )
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -426,6 +455,7 @@ _MIGRATIONS = [
     _v13_usage,
     _v14_outcomes,
     _v15_edges,
+    _v16_sensory,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -738,6 +768,62 @@ class Store:
         return self.db.execute(
             "SELECT * FROM facts WHERE project_key = ? AND status = 'active'", (project_key,)
         ).fetchall()
+
+    # --- Sensory register (iconic) — a separate table, never read by recall ---
+
+    def add_sensory(self, project_key: str, session_id: str, url: str, text: str, now: float | None = None) -> str:
+        """Record a page snapshot in the sensory register. Upsert by (project, session, url):
+        a re-glance of the same page refreshes recency and bumps glance_count (the rehearsal
+        signal) rather than duplicating. Returns the sensory id."""
+        sid = _sensory_id(project_key, session_id or "", url or "")
+        self.db.execute(
+            "INSERT INTO sensory (id, project_key, session_id, url, text, created_at, glance_count, attended) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, 0) "
+            "ON CONFLICT(id) DO UPDATE SET glance_count = glance_count + 1, "
+            "created_at = excluded.created_at, text = excluded.text",
+            (sid, project_key, session_id or "", url or "", text, _now(now)),
+        )
+        self.db.commit()
+        return sid
+
+    def sensory_rows(self, project_key: str, limit: int | None = None) -> list[sqlite3.Row]:
+        """Sensory snapshots for a project, newest first (the viewer's Sensory panel)."""
+        sql = "SELECT * FROM sensory WHERE project_key = ? ORDER BY created_at DESC, rowid DESC"
+        params: list = [project_key]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self.db.execute(sql, tuple(params)).fetchall()
+
+    def mark_attended(self, sensory_id: str, promoted_fact_id: str | None = None) -> None:
+        """Flag a snapshot as attended (promoted to STM), linking the fact it became."""
+        self.db.execute(
+            "UPDATE sensory SET attended = 1, promoted_fact_id = ? WHERE id = ?",
+            (promoted_fact_id, sensory_id),
+        )
+        self.db.commit()
+
+    def sweep_sensory(self, project_key: str, capacity: int, ttl_seconds: float, now: float | None = None) -> int:
+        """Decay the register: HARD-DELETE snapshots older than ttl_seconds or beyond
+        capacity (newest kept). Deliberately destructive — sensory is transient; anything
+        worth keeping was already promoted to a durable STM fact. Returns rows deleted.
+        (SQL sweep, mirroring the facts TTL `sweep`; 0/None disables that limb.)"""
+        deleted = 0
+        if ttl_seconds and ttl_seconds > 0:
+            cur = self.db.execute(
+                "DELETE FROM sensory WHERE project_key = ? AND created_at < ?",
+                (project_key, _now(now) - ttl_seconds),
+            )
+            deleted += cur.rowcount
+        if capacity and capacity > 0:
+            cur = self.db.execute(
+                "DELETE FROM sensory WHERE project_key = ? AND id NOT IN "
+                "(SELECT id FROM sensory WHERE project_key = ? ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                (project_key, project_key, capacity),
+            )
+            deleted += cur.rowcount
+        self.db.commit()
+        return deleted
 
     def active_antipatterns(self, project_key: str) -> list[sqlite3.Row]:
         """Active anti-pattern facts for a key — the recall union (global key) and the
