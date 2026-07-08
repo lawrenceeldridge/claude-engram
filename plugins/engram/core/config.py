@@ -111,6 +111,8 @@ class Config:
     recall_max_chars: int
     viewer_port: int
     viewer_autostart: bool
+    snapshotter: str
+    visual_max_chars: int
     markers: tuple[str, ...]
     identity: str
     project_dir: str | None
@@ -203,6 +205,12 @@ def get_config() -> Config:
         recall_max_chars=int(_num(_opt("recall_max_chars", "1200"), 1200)),
         viewer_port=int(_num(_opt("viewer_port", "7801"), 7801)),
         viewer_autostart=_opt("viewer_autostart", "true").lower() in ("1", "true", "yes", "on"),
+        # Visual snapshot compaction (model-invoked MCP tool). snapshotter selects the
+        # page-source backend: 'stub' (zero-dep default), 'chrome-devtools', or 'playwright'
+        # (fail-open to stub). visual_max_chars caps the a11y-text tool response, mirroring
+        # the *_max_chars family. Text-only in v1; the pixel path is deferred to v2.
+        snapshotter=_opt("snapshotter", "stub"),
+        visual_max_chars=int(_num(_opt("visual_max_chars", "2000"), 2000)),
         markers=markers,
         # Project identity: 'workspace' (default) keys memory on the folder Claude was
         # started in (CLAUDE_PROJECT_DIR, else cwd) — matching the human's chosen workspace,
