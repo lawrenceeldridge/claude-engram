@@ -331,6 +331,7 @@ class McpServerTests(unittest.TestCase):
                 "search_code",
                 "get_symbol",
                 "code_outline",
+                "compact_page_view",
             },
         )
 

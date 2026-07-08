@@ -211,6 +211,35 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "compact_page_view",
+        "description": (
+            "Read a web page as a COMPACT accessibility-tree text snapshot instead of a "
+            "screenshot — the token-cheapest way to see a page's structure, text and controls for "
+            "visual/E2E testing (a screenshot of the same page costs ~1,500+ visual tokens; this "
+            "returns a few hundred characters of ARIA text). Set the `snapshotter` config to "
+            "'playwright' (launches its own chromium) or 'chrome-devtools' (attaches over CDP to a "
+            "Chrome started with --remote-debugging-port); the default 'stub' returns a canned "
+            "sample. Returns the a11y text (capped at visual_max_chars), the resolved URL and a "
+            "`truncated` flag; `empty` is true when no page/browser is reachable (fails soft)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "Optional URL to navigate to before snapshotting. Omit to snapshot the "
+                        "browser's already-open page (chrome-devtools backend)."
+                    ),
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Optional cap on returned characters (default: the visual_max_chars config).",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -402,6 +431,27 @@ class _Engine:
         stats = index_project(self.store, self.embedder, self.cfg, project, root)
         return {"project": project["label"], "root": root, **stats}
 
+    def compact_page_view(self, args: dict) -> dict:
+        self._init()
+        from core.ports.snapshot import get_snapshotter, render_page_view
+
+        snap = get_snapshotter(self.cfg)
+        max_chars = int(args.get("max_chars") or self.cfg.visual_max_chars)
+        try:
+            view = snap.snapshot(args.get("url"))
+        except Exception as exc:  # adapters already fail open; stay defensive so the tool never raises
+            return {
+                "backend": self.cfg.snapshotter,
+                "empty": True,
+                "error": str(exc),
+                "chars": 0,
+                "truncated": False,
+                "text": "",
+            }
+        dto = render_page_view(view, max_chars)
+        dto["backend"] = self.cfg.snapshotter
+        return dto
+
 
 ENGINE = _Engine()
 
@@ -425,6 +475,8 @@ def _tool_call(name: str, args: dict) -> dict:
         payload = ENGINE.code_outline(args)
     elif name == "index_docs":
         payload = ENGINE.index_docs(args)
+    elif name == "compact_page_view":
+        payload = ENGINE.compact_page_view(args)
     else:
         raise ValueError(f"unknown tool {name!r}")
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}

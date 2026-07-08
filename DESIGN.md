@@ -68,6 +68,35 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
 3. **Distil, don't store transcripts.** Atomic facts (~15 tokens) instead of
    transcript chunks (hundreds). Lossy compression tuned for relevance.
 
+## Visual snapshot compaction (third read surface)
+
+Beyond memory (`recall`) and the code/docs index (`search_code`/`search_docs`), a
+third *read surface* addresses the same token-first goal for **visual/E2E testing**:
+letting the model "see" a page cheaply. The lever is the research finding that an
+**accessibility-tree text snapshot** is a near-parity, far-cheaper substitute for a
+screenshot — Claude bills a screenshot `⌈w/28⌉×⌈h/28⌉` visual tokens (~1,500 for a
+typical page), while the a11y text is measured **~30–46× cheaper**
+(`bench/visual_tokens.py`) and carries stable element refs.
+
+Two pieces, both model-facing and off the recall hot path:
+
+- **`compact_page_view`** — a model-invoked MCP tool (a `SnapshotGateway` Gateway +
+  Separated Interface, mirroring the embedding backend; stub / Playwright /
+  Chrome-DevTools-over-CDP adapters). Returns the a11y text through a capped,
+  Null-Object DTO (`visual_max_chars`). Text only: Claude Code does not natively
+  render tool-returned image blocks, so pixels would cost 10–20× (deferred to a v2
+  `visual_diff` with a file-path/base-line design).
+- **`prefer_snapshot`** — a `PreToolUse` nudge (`ENGRAM_PREFER_SNAPSHOT`) that steers
+  the model away from a screenshot tool *before* the call. It can only steer, not
+  reclaim: a hook cannot recover tokens from an image another MCP server already
+  returned, so the saving must be made by *not* screenshotting.
+
+The pure token arithmetic (`⌈w/28⌉×⌈h/28⌉`, standard-tier ≤1568px cap) lives in
+`core/domain/visual_budget.py` (Functional Core); browser/Pillow deps stay behind
+adapters, so the core still imports on the stdlib alone. `engram eval` does **not**
+apply (no embedding/ranking/quantisation/fusion/distillation changes); the standalone
+`bench/visual_tokens.py` is its measure.
+
 ## Cache efficiency
 
 Hook `additionalContext` is wrapped in a system-reminder and inserted into the

@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "displayName": "Long-Term Memory",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -305,6 +305,38 @@
       "title": "NATS server version",
       "description": "Pinned nats-server version for the binary provisioner (checksum-verified download).",
       "default": "2.10.22"
+    },
+    "snapshotter": {
+      "type": "string",
+      "title": "Page snapshotter",
+      "description": "Backend for the compact_page_view tool: stub = canned sample (zero-dep default); playwright = launch a headless chromium; chrome-devtools = attach over CDP to a Chrome started with --remote-debugging-port. playwright/chrome-devtools need the optional `playwright` package + a browser; both fail soft to an empty snapshot.",
+      "default": "stub"
+    },
+    "visual_max_chars": {
+      "type": "number",
+      "title": "Snapshot response budget (chars)",
+      "description": "Hard cap on characters returned by the compact_page_view tool — the token guard for the accessibility-tree text.",
+      "default": 2000,
+      "min": 100
+    },
+    "snapshot_cdp_url": {
+      "type": "string",
+      "title": "Chrome DevTools CDP URL",
+      "description": "For snapshotter=chrome-devtools: the CDP endpoint of a Chrome started with --remote-debugging-port.",
+      "default": "http://localhost:9222"
+    },
+    "snapshot_headless": {
+      "type": "boolean",
+      "title": "Headless snapshot browser",
+      "description": "For snapshotter=playwright: launch chromium headless.",
+      "default": true
+    },
+    "snapshot_timeout_ms": {
+      "type": "number",
+      "title": "Snapshot timeout (ms)",
+      "description": "Per-navigation/attach timeout for the browser snapshotters before failing soft to an empty snapshot.",
+      "default": 5000,
+      "min": 100
     }
   }
 }

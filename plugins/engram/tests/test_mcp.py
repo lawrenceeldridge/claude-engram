@@ -60,6 +60,62 @@ class McpInitializeTests(unittest.TestCase):
         self.assertIn("search_code", names)
 
 
+class McpCompactPageViewTests(unittest.TestCase):
+    """compact_page_view is listed and callable; the default stub backend needs no browser."""
+
+    def setUp(self):
+        self.data = tempfile.TemporaryDirectory()
+        self.addCleanup(self.data.cleanup)
+        self.env = {
+            **os.environ,
+            "ENGRAM_DATA_DIR": self.data.name,
+            "ENGRAM_EMBEDDING": "hash",
+            "ENGRAM_ENFORCE": "off",
+            "ENGRAM_SNAPSHOTTER": "stub",
+        }
+
+    def test_tools_list_includes_compact_page_view(self):
+        resp = _rpc(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            env=self.env,
+        )
+        by_id = {r.get("id"): r for r in resp}
+        names = {t["name"] for t in by_id[2]["result"]["tools"]}
+        self.assertIn("compact_page_view", names)
+
+    def test_stub_backend_returns_a11y_text(self):
+        resp = _rpc(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "compact_page_view", "arguments": {}},
+            },
+            env=self.env,
+        )
+        payload = _call_payload(resp, 3)
+        self.assertEqual(payload["backend"], "stub")
+        self.assertFalse(payload["empty"])
+        self.assertIn("Sign in", payload["text"])
+
+    def test_respects_max_chars_cap(self):
+        resp = _rpc(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "compact_page_view", "arguments": {"max_chars": 20}},
+            },
+            env=self.env,
+        )
+        payload = _call_payload(resp, 4)
+        self.assertTrue(payload["truncated"])
+        self.assertIn("[truncated]", payload["text"])
+
+
 class McpAnchorRoundTripTests(unittest.TestCase):
     """search_code emits an `anchor`; get_symbol must accept it (not only `ref`)."""
 
