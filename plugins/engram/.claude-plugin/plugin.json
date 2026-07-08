@@ -201,8 +201,8 @@
     "stm_capacity": {
       "type": "number",
       "title": "Short-term capacity",
-      "description": "Max active short-term facts before the weakest are displaced (archived). 0 = unbounded (displacement off).",
-      "default": 0,
+      "description": "Max active short-term facts before the weakest are displaced (archived). Ships as a generous, non-destructive backstop against runaway STM growth — displacement is a reversible status flip. 0 = unbounded (displacement off).",
+      "default": 2000,
       "min": 0
     },
     "stm_recall_weight": {
@@ -223,16 +223,16 @@
     "integrate_threshold": {
       "type": "number",
       "title": "Integrate threshold (merge)",
-      "description": "Consolidation collapses near-duplicate short-term facts whose cosine similarity is at least this, keeping one survivor (reversible status='merged'). 0 = disabled. Below supersede_threshold clusters at the gist level; higher only collapses near-identicals. Retrieval-affecting — enable deliberately.",
-      "default": 0,
+      "description": "Consolidation collapses near-duplicate short-term facts whose cosine similarity is at least this, keeping one survivor (reversible status='merged'). Ships on at 0.92 — a low-risk near-identical mop-up sitting above supersede_threshold (0.85), which handles the bulk of dedup on the write path. Below supersede_threshold clusters at the gist level; 0 = disabled.",
+      "default": 0.92,
       "min": 0,
       "max": 1
     },
     "refine_keep_max": {
       "type": "number",
       "title": "Refine keep-max (prune)",
-      "description": "Consolidation keeps only the top-N active facts by retention score and prunes the rest. 0 = disabled. Retrieval-affecting — enable deliberately.",
-      "default": 0,
+      "description": "Consolidation keeps only the top-N active facts by retention score and prunes the rest (reversible status='pruned'). Ships on at 20000 as a generous, idempotent ceiling — only fires on runaway growth, unlike refine_prune_percentile which forgets every pass. 0 = disabled.",
+      "default": 20000,
       "min": 0
     },
     "refine_prune_percentile": {

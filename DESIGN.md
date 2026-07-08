@@ -212,7 +212,9 @@ mechanism and is individually gated and reversible:
   strongest survivor, archive the rest) and an opt-in **LLM tier** (the distiller either
   *abstracts* the cluster into one merged fact or *vetoes* the merge as genuinely distinct;
   fail-open to the floor). Runs before refine so the retention cut scores a deduplicated
-  set. Default-off (`integrate_threshold`) and `engram eval`-gated.
+  set. Ships **on** at `integrate_threshold=0.92` — a low-risk near-identical mop-up sitting
+  above `supersede_threshold` (0.85), which does the bulk of dedup on the write path; still
+  `engram eval`-gated for any change.
 - **Refine** (`refine.py`) — *SHY-style forgetting*: score every active fact with a pure
   **retention score** (`consolidation/scoring.py`) and archive the weakest. Two gated
   knobs make the cut *relative*, so it self-limits as the store grows (the SHY "only the
@@ -221,8 +223,11 @@ mechanism and is individually gated and reversible:
   `refine_prune_percentile` in `(0,1)` drops the weakest that fraction of the live active
   set (`≥1` = an absolute score floor). This keeps the active set small enough that
   brute-force search stays viable (see § the bytes layer / vector-store decision in the
-  STM-LTM design). Default-off and **`engram eval`-gated** (it changes what is injected);
-  archival is a reversible status flip (`status='pruned'`), never a delete.
+  STM-LTM design). Split by blast radius: `refine_keep_max` ships **on** at 20000 (a generous,
+  idempotent ceiling that only fires on runaway growth), while `refine_prune_percentile` ships
+  **off** (it forgets every pass and a good rate is store-dependent). Both are **`engram
+  eval`-gated** (they change what is injected); archival is a reversible status flip
+  (`status='pruned'`), never a delete.
 - **Rescue** (`service.rescue`) — re-distils degraded deltas parked on the durable queue
   when an LLM distiller was down, so a transient outage doesn't leave low-quality facts
   behind. It needs the embedder + distiller and runs at the head of every capture, so it
@@ -307,7 +312,7 @@ consolidate upward. In both modes an explicit `.engram-root` sentinel overrides 
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
 | Durable queue becomes a de-facto dependency | `MemoryBus` is opt-in behind a Separated Interface; default `inproc` is stdlib SQLite; `nats` adapter fails open to `inproc`; core stays importable without a broker |
-| Consolidation prunes a still-useful fact | refine is default-off and `engram eval`-gated; archival is a reversible status flip, not a delete; purge only removes rows past a long cold horizon |
+| Consolidation prunes a still-useful fact | only `refine_keep_max` (a generous idempotent ceiling) ships on; the forgetting lever `refine_prune_percentile` is default-off; all are `engram eval`-gated; archival is a reversible status flip, not a delete; purge is default-off and only removes rows past a long cold horizon |
 | STM leaks low-confidence facts into context | promotion is rehearsal/recall-gated; `stm_recall_weight` can down-rank STM; A/B with `engram eval` |
 
 ## Status of the levers
@@ -321,12 +326,15 @@ Done and measured:
 - **Hard expiry** — TTL sweep with frequency protection.
 - **Multi-store tiers + sleep pass** — explicit STM/LTM `tier` with rehearsal/recall
   promotion, an offline `consolidate()` pass (replay / displace / integrate / refine /
-  purge), and a pure retention score. Forgetting/integration knobs (`integrate_threshold`,
-  `refine_keep_max`, `refine_prune_percentile`, `purge_horizon_days`) ship **default-off**,
-  to be `engram eval`-tuned before enabling.
+  purge), and a pure retention score. The consolidation knobs ship **split by blast radius**:
+  non-destructive, reversible backstops default **on** (`integrate_threshold=0.92`,
+  `refine_keep_max=20000`, `stm_capacity=2000`), while the levers that forget or destroy —
+  `refine_prune_percentile` (compounds every pass) and `purge_horizon_days` (irreversible
+  hard-delete) — stay **off**. All remain `engram eval`-gated.
 - **REM-style integration** — the `integrate` stage: a stdlib heuristic dedup floor plus an
   opt-in LLM tier (`merge_cluster`) that abstracts a near-duplicate cluster into one fact or
-  vetoes the merge. Reversible (`status='merged'`), fail-open, default-off.
+  vetoes the merge. Reversible (`status='merged'`), fail-open; the LLM tier is opt-in, the
+  heuristic floor ships on at `integrate_threshold=0.92`.
 - **Durable capture queue** — `MemoryBus` Command queue: stdlib `inproc` SQLite default
   (retry / backoff / DLQ / lease-recovery), opt-in auto-provisioned NATS, fail-open.
 
