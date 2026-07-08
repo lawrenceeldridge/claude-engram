@@ -153,9 +153,10 @@ def get_config() -> Config:
         w_recency=_num(_opt("w_recency", "0.3"), 0.3),
         w_freq=_num(_opt("w_freq", "0.2"), 0.2),
         supersede_threshold=_num(_opt("supersede_threshold", "0.85"), 0.85),
-        # STM/LTM tier (Atkinson-Shiffrin). Defaults are behaviour-neutral:
-        # no displacement (0 = unbounded STM), gentle promotion, no recall penalty.
-        stm_capacity=int(_num(_opt("stm_capacity", "0"), 0)),
+        # STM/LTM tier (Atkinson-Shiffrin). stm_capacity ships as a generous, non-destructive
+        # backstop against runaway STM growth — displacement is a reversible status flip and
+        # idempotent, so it only acts far out in the tail. Gentle promotion, no recall penalty.
+        stm_capacity=int(_num(_opt("stm_capacity", "2000"), 2000)),
         promote_after_freq=int(_num(_opt("promote_after_freq", "2"), 2)),
         stm_recall_weight=_num(_opt("stm_recall_weight", "1.0"), 1.0),
         # Associative spreading activation (ACT-R). Single gate for Idea #4: 0 = off (no edges
@@ -178,10 +179,14 @@ def get_config() -> Config:
         # docker = run the official image; off = never auto-start (bring your own).
         nats_provision=_opt("nats_provision", "binary"),
         nats_version=_opt("nats_version", "2.10.22"),
-        # Consolidation (sleep pass). All default-off: integration/pruning are
-        # retrieval-affecting and stay disabled until `engram eval`-tuned.
-        integrate_threshold=_num(_opt("integrate_threshold", "0"), 0),
-        refine_keep_max=int(_num(_opt("refine_keep_max", "0"), 0)),
+        # Consolidation (sleep pass), split by blast radius. ON by default as non-destructive,
+        # reversible backstops: integrate is a high-threshold near-identical mop-up sitting
+        # above supersede (0.85), and refine_keep_max is a generous idempotent ceiling that
+        # only fires on runaway growth. OFF by default because they forget/destroy and a good
+        # value is store-dependent: refine_prune_percentile (compounds every pass) and purge
+        # (irreversible hard-delete). All retrieval-affecting knobs stay `engram eval`-gated.
+        integrate_threshold=_num(_opt("integrate_threshold", "0.92"), 0.92),
+        refine_keep_max=int(_num(_opt("refine_keep_max", "20000"), 20000)),
         refine_prune_percentile=_num(_opt("refine_prune_percentile", "0"), 0),
         purge_horizon_days=_num(_opt("purge_horizon_days", "0"), 0),
         distiller=_opt("distiller", "claude"),

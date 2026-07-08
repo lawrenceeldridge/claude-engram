@@ -50,7 +50,9 @@ mapping, in [DESIGN.md](DESIGN.md)):
   recalled short-term facts into long-term, *displaces* short-term overflow, *integrates*
   near-duplicates (a stdlib dedup floor, or an opt-in LLM tier that merges/abstracts a
   cluster into one fact), and *refines* the store by pruning the lowest-retention facts.
-  Integration and forgetting are default-off and eval-gated; archival is reversible.
+  Non-destructive backstops ship on (`integrate_threshold`, `refine_keep_max`, `stm_capacity`);
+  the levers that forget or destroy (`refine_prune_percentile`, `purge_horizon_days`) stay off.
+  All are eval-gated and archival is reversible.
 - **Recovery (rescue)** — when the LLM distiller is unavailable, capture falls back to a
   heuristic, flags the fact `degraded`, and parks the delta on a durable queue. A later
   healthy session re-distils it automatically, so a transient outage doesn't leave
@@ -274,12 +276,12 @@ Set via `userConfig` (or `ENGRAM_*` env):
 | Key | Default | Meaning |
 |---|---|---|
 | `promote_after_freq` | `2` | reinforcement count that promotes an STM fact to LTM |
-| `stm_capacity` | `0` | max active STM facts before the weakest are displaced (0 = unbounded/off) |
+| `stm_capacity` | `2000` | max active STM facts before the weakest are displaced — a generous, reversible backstop against runaway STM growth (0 = unbounded/off) |
 | `stm_recall_weight` | `1.0` | recall weight for STM facts (1.0 = tier-agnostic; `<1` down-ranks STM) |
-| `integrate_threshold` | `0` | consolidation merges near-duplicate short-term facts at/above this cosine similarity, keeping one survivor (reversible; 0 = off) |
-| `refine_keep_max` | `0` | keep only the top-N facts by retention score, prune the rest (0 = off) |
-| `refine_prune_percentile` | `0` | prune the lowest-retention facts each pass — a value in `(0,1)` is a self-limiting percentile of the active set (`0.1` = drop the weakest 10%), a value `≥1` is an absolute score floor (0 = off) |
-| `purge_horizon_days` | `0` | hard-delete facts archived longer than this, then `VACUUM` (0 = off) |
+| `integrate_threshold` | `0.92` | consolidation merges near-duplicate short-term facts at/above this cosine similarity, keeping one survivor (reversible) — ships on as a low-risk near-identical mop-up above `supersede_threshold` (0 = off) |
+| `refine_keep_max` | `20000` | keep only the top-N facts by retention score, prune the rest (reversible) — ships on as a generous idempotent growth ceiling (0 = off) |
+| `refine_prune_percentile` | `0` | prune the lowest-retention facts each pass — a value in `(0,1)` is a self-limiting percentile of the active set (`0.1` = drop the weakest 10%), a value `≥1` is an absolute score floor. Off by default: it forgets every pass and a good rate is store-dependent (0 = off) |
+| `purge_horizon_days` | `0` | hard-delete facts archived longer than this, then `VACUUM`. Off by default: the only irreversible lever (0 = off) |
 
 ### Durable work queue — MemoryBus (inproc / NATS)
 
