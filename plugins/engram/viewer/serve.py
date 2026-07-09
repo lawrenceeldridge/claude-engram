@@ -163,7 +163,7 @@ PAGE = """<!doctype html>
   <input id="q" placeholder="semantic search within project… (blank = list all)">
   <div id="status">
     <span id="ledger" title="token-savings ledger">saved <b>…</b></span>
-    <span class="svc" id="svc-bus">bus <b>…</b><span class="d"></span></span>
+    <span class="svc" id="svc-queue">queue <b>…</b><span class="d"></span></span>
     <span class="svc" id="svc-emb">emb <b>…</b><span class="d"></span></span>
     <span class="svc" id="svc-dist">dist <b>…</b><span class="d"></span></span>
     <span id="live" class="off"><span class="dot"></span><span id="live-label">connecting…</span></span>
@@ -469,7 +469,7 @@ window.addEventListener('scroll', () => {
   if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 400) loadMore();
 });
 
-// Service health: the configured bus / embedding / distiller backends and whether
+// Service health: the configured queue / embedding / distiller backends and whether
 // each is reachable (green = configured backend live, amber = on stdlib fallback).
 function svcChip(el, name, s) {
   if (!el || !s) return;
@@ -480,7 +480,7 @@ function svcChip(el, name, s) {
 async function loadHealth() {
   try {
     const h = await (await fetch('/api/health')).json();
-    svcChip($('#svc-bus'), 'bus', h.bus);
+    svcChip($('#svc-queue'), 'queue', h.queue);
     svcChip($('#svc-emb'), 'emb', h.embedding);
     svcChip($('#svc-dist'), 'dist', h.distiller);
   } catch (e) { /* fail-open: leave the last-known chips */ }
@@ -518,7 +518,7 @@ function connectStream() {
   es.addEventListener('change', async () => {
     await loadProjects();      // refresh counts + keep current project selected
     if (view !== 'index') await reload(true);  // stm/ltm/consolidation refresh live; avoid churn during index build
-    loadHealth();              // a write may mean the distiller/bus just came up
+    loadHealth();              // a write may mean the distiller just came up
     loadLedger();              // a capture / pull may have shifted the token ledger
   });
   es.onerror = () => { badge.classList.add('off'); label.textContent = 'reconnecting…'; };
@@ -529,7 +529,7 @@ function connectStream() {
   else $('#list').textContent = 'No memory captured yet.';
   loadHealth();
   loadLedger();
-  setInterval(loadHealth, 20000);  // reachability can change (nats/distiller up or down)
+  setInterval(loadHealth, 20000);  // reachability can change (distiller/embedding up or down)
   connectStream();
 })();
 </script>
@@ -564,14 +564,14 @@ def _disambiguate_labels(items: list[dict]) -> list[dict]:
 
 
 def _tcp_ok(url: str, timeout: float = 0.6) -> bool:
-    """Best-effort TCP reachability for a host:port URL (nats://, http://, https://).
+    """Best-effort TCP reachability for a host:port URL (http:// or https://).
 
     Fail-open: any parse or socket error means "unreachable", never an exception.
     """
     try:
         u = urlparse(url)
         host = u.hostname
-        port = u.port or {"https": 443, "http": 80, "nats": 4222}.get(u.scheme, 0)
+        port = u.port or {"https": 443, "http": 80}.get(u.scheme, 0)
         if not host or not port:
             return False
         with socket.create_connection((host, port), timeout=timeout):
@@ -587,16 +587,8 @@ def _service_health(cfg) -> dict:
     or ``warn`` (configured backend unavailable — running on the stdlib fallback), never
     a hard error. Read-only and off the recall hot path (viewer only).
     """
-    # MemoryBus — nats probed by reachability; inproc is always available.
-    if cfg.bus == "nats":
-        ok = _tcp_ok(cfg.nats_url)
-        bus = {
-            "backend": "nats",
-            "state": "ok" if ok else "warn",
-            "detail": cfg.nats_url if ok else f"{cfg.nats_url} unreachable — falling open to inproc",
-        }
-    else:
-        bus = {"backend": "inproc", "state": "ok", "detail": "sqlite work_queue"}
+    # WorkQueue — a stdlib SQLite Command queue; always available (no external backend).
+    queue = {"backend": "inproc", "state": "ok", "detail": "sqlite work_queue"}
 
     # Embedding — fastembed needs its provisioned venv; hash is the stdlib default.
     if cfg.embedding == "fastembed":
@@ -628,7 +620,7 @@ def _service_health(cfg) -> dict:
             "detail": host if ok else f"{host} unreachable — falling open to heuristic",
         }
 
-    return {"bus": bus, "embedding": embedding, "distiller": distiller}
+    return {"queue": queue, "embedding": embedding, "distiller": distiller}
 
 
 def _card_from_rows(rows, score=None) -> dict:

@@ -238,22 +238,6 @@ def cmd_consolidate(args) -> int:
     return 0
 
 
-def cmd_nats(args) -> int:
-    from core.nats_provision import ensure_nats, status, stop
-
-    cfg = get_config()
-    if args.action == "start":
-        ok = ensure_nats(cfg, force=True)
-        print("nats reachable at " + cfg.nats_url if ok else "nats not reachable (provisioning failed)")
-        return 0 if ok else 1
-    if args.action == "stop":
-        print("stopped" if stop(cfg) else "nothing to stop")
-        return 0
-    s = status(cfg)
-    print(f"url={s['url']} reachable={s['reachable']} provision={s['provision']} pid={s['pid']} binary={s['binary']}")
-    return 0
-
-
 def cmd_setup(_args) -> int:
     from core.provision import provision
 
@@ -528,10 +512,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_cwd(p)
     p.add_argument("--all", action="store_true", help="consolidate every project, not just the current one")
     p.set_defaults(func=cmd_consolidate)
-
-    p = sub.add_parser("nats", help="manage the opt-in NATS server (bus=nats): status | start | stop")
-    p.add_argument("action", choices=["status", "start", "stop"], nargs="?", default="status")
-    p.set_defaults(func=cmd_nats)
 
     p = sub.add_parser("setup", help="provision the private fastembed venv (one-time)")
     p.set_defaults(func=cmd_setup)

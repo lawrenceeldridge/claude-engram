@@ -195,7 +195,6 @@ engram prune               delete all memory for the current project
 engram uninstall           uninstall the plugin, KEEPING memory (--purge-data to also remove it; --dry-run to preview)
 engram sweep [--all]       archive stale facts (TTL expiry; --days N to override)
 engram consolidate [--all] run the sleep pass: promote recalled STM, integrate near-duplicates + prune (if enabled)
-engram nats status|start|stop  manage the opt-in NATS server (bus=nats)
 engram queue [--all]       inspect the durable work queue (rescue backlog + dead-letter); --purge-dead/--purge-stage/--purge-all to clear
 engram daemon              run the resident daemon (keeps the embedder warm)
 engram viewer              launch the localhost viewer (STM / LTM / RnR / index tabs; delete a project via the 🗑 button)
@@ -310,36 +309,25 @@ separate, capacity- and TTL-bounded table that never touches recall. Set via `us
 | `sensory_capacity` | `64` | max live perceptions per project before the oldest unattended ones decay (0 = unbounded) |
 | `sensory_ttl_seconds` | `900` | how long an unattended perception lives before it decays; decayed tombstones are purged past this age (0 = no TTL decay) |
 
-### Durable work queue — MemoryBus (inproc / NATS)
+### Durable work queue — WorkQueue
 
-Detached capture and recovery run through a durable Command queue. The default
-`inproc` backend is a zero-dependency SQLite queue (retry + backoff + dead-letter +
-crash recovery). Opt into **NATS JetStream** for durable, cross-process processing —
-the server is auto-provisioned (a checksum-verified `nats-server` binary, no Docker
-required) and it **fails open to `inproc`** whenever NATS is unavailable, so enabling
-it is safe. Set via `userConfig` (or `ENGRAM_*` env):
+Detached capture and recovery run through a durable **Command** queue (one handler per
+item, at-least-once with retry + dead-letter) — **not** an event bus. It is a
+zero-dependency SQLite queue (`work_queue`): idempotent publish, retry + backoff,
+dead-letter past `queue_max_deliver`, and crash recovery via lease expiry. It never runs
+on the recall hot path. Inspect it with `engram queue`. Tune via `userConfig` (or
+`ENGRAM_*` env):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `bus` | `inproc` | `inproc` (SQLite queue) or `nats` (JetStream) |
-| `bus_max_deliver` | `5` | delivery attempts before a work item is dead-lettered |
-| `bus_backoff` | `5,30,120,600` | retry backoff schedule, seconds (comma-separated) |
+| `queue_max_deliver` | `5` | delivery attempts before a work item is dead-lettered |
+| `queue_backoff` | `5,30,120,600` | retry backoff schedule, seconds (comma-separated) |
 | `lease_ttl` | `300` | seconds a claimed item is leased before reclaim (crash recovery) |
-| `bus_dead_after` | `604800` | dead-letter a pending item unprocessed this long (7 days); 0 disables. Inspect/clear with `engram queue` |
-| `nats_url` | `nats://localhost:4222` | NATS URL — use a dedicated port so engram doesn't share another server |
-| `nats_stream` | `ENGRAM_WORK` | JetStream stream name |
-| `nats_provision` | `binary` | auto-start NATS: `binary` (download nats-server), `docker`, or `off` (bring your own) |
-| `nats_version` | `2.10.22` | pinned nats-server version for the binary provisioner |
+| `queue_dead_after` | `604800` | dead-letter a pending item unprocessed this long (7 days); 0 disables. Inspect/clear with `engram queue` |
 
-Enable NATS in `settings.json` (a dedicated port keeps it isolated):
-
-```json
-"env": { "ENGRAM_BUS": "nats", "ENGRAM_NATS_URL": "nats://localhost:4225" }
-```
-
-The `nats-py` client is auto-installed into the managed venv on the next capture, so
-activation takes one restart (it stays on `inproc` until ready). Manage the server
-with `engram nats status | start | stop`.
+The queue sits behind a Separated Interface (`core/ports/workqueue.py`), so a future
+out-of-process backend could attach without touching the core; today the sole backend
+is the in-process SQLite queue.
 
 ## Real semantic recall (recommended)
 
@@ -443,7 +431,7 @@ distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for
 zero-token local). The memory lifecycle adds explicit STM/LTM tiers with
 rehearsal- and retrieval-based promotion and a consolidation ("sleep") pass (replay →
 displace → integrate near-duplicates → refine/forget → purge); capture and recovery
-run through a durable work queue — a zero-dependency `inproc` SQLite queue by default,
-or opt-in NATS JetStream (auto-provisioned, fail-open to `inproc`). See
+run through a durable, zero-dependency SQLite **Command** queue (retry + dead-letter +
+crash recovery), off the recall hot path. See
 [DESIGN.md](DESIGN.md) for the full architecture, POEAA pattern choices, caching
 analysis, memory-lifecycle model, benchmark, and risk register.

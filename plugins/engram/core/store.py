@@ -296,7 +296,7 @@ def _v9_stm(db: sqlite3.Connection) -> None:
 
 
 def _v10_work_queue(db: sqlite3.Connection) -> None:
-    # Durable Command queue for the MemoryBus inproc adapter — the at-least-once,
+    # Durable Command queue for the WorkQueue inproc adapter — the at-least-once,
     # retry-able form of detached capture (survives dropped connections / distiller
     # outages). msg_id is a content hash → idempotent publish. ack deletes the row;
     # nak reschedules (next_retry_at); a lease (lease_expires) makes an interrupted
@@ -321,7 +321,7 @@ def _v10_work_queue(db: sqlite3.Connection) -> None:
 
 
 def _v11_rescue_from_redistill(db: sqlite3.Connection) -> None:
-    # Cutover: the ad-hoc pending_redistill recovery queue becomes the durable bus
+    # Cutover: the ad-hoc pending_redistill recovery queue becomes the durable queue's
     # 'rescue' stage. Move any parked deltas into work_queue (idempotent on msg_id)
     # so the switch loses nothing, then drain the old table. Runs after _v10 (the
     # work_queue table exists). The old table is left in place (empty, harmless).
@@ -1419,7 +1419,7 @@ class Store:
             "path": row["project_path"] if row and row["project_path"] else "",
         }
 
-    # ---- Durable work queue (MemoryBus inproc adapter) ----------------------------
+    # ---- Durable work queue (WorkQueue inproc adapter) ----------------------------
 
     def enqueue_work(
         self,
@@ -1502,18 +1502,9 @@ class Store:
         self.db.commit()
         return cur.rowcount
 
-    def pending_work(self, limit: int = 500) -> list[sqlite3.Row]:
-        """Pending/interrupted items across all stages+projects — the set to migrate on a
-        bus-backend switch (dead rows are left; they're the DLQ). Oldest first."""
-        return self.db.execute(
-            "SELECT * FROM work_queue WHERE status IN ('pending', 'in_progress') "
-            "ORDER BY enqueued_at ASC, rowid ASC LIMIT ?",
-            (limit,),
-        ).fetchall()
-
     def dead_stale(self, horizon_seconds: float, now: float | None = None) -> int:
-        """Dead-letter pending items older than the horizon — a backstop so an item no active
-        backend ever pulls (e.g. parked on inproc after a switch to nats) can't live forever.
+        """Dead-letter pending items older than the horizon — a backstop so an item no worker
+        ever pulls (e.g. a rescue item with no LLM distiller to drain it) can't live forever.
         Kept for inspection (``status='dead'``), not deleted. Disabled at ``horizon<=0``."""
         if horizon_seconds <= 0:
             return 0

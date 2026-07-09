@@ -1,8 +1,8 @@
-"""MemoryBus durable-queue tests (Phase 3 of stm-ltm-membus).
+"""WorkQueue durable-queue tests (stm-ltm-membus lineage).
 
 Stdlib unittest, no broker. Covers the inproc adapter + the Store work_queue:
 idempotent publish, claim/ack, nak+backoff retry, dead-letter past max_deliver,
-crash recovery (expired-lease reclaim), stage isolation, and get_bus fail-open.
+crash recovery (expired-lease reclaim), stage isolation, and get_queue selection.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.adapters.inproc_bus import InprocBus  # noqa: E402
+from core.adapters.inproc_queue import InprocQueue  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.ports.membus import MemoryBus, WorkItem, _drain_inproc_into, get_bus  # noqa: E402
+from core.ports.workqueue import WorkItem, WorkQueue, get_queue  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
@@ -97,12 +97,6 @@ class WorkQueueStoreTests(unittest.TestCase):
         rows = self.store.claim_work("distill", 10, now=100.0)
         self.assertEqual([r["msg_id"] for r in rows], ["a"])
 
-    def test_pending_work_excludes_dead(self):
-        self._enqueue("m1")
-        self._enqueue("m2")
-        self.store.dead_work("m2")
-        self.assertEqual([r["msg_id"] for r in self.store.pending_work()], ["m1"])
-
     def test_dead_stale_dead_letters_old_pending_only(self):
         self._enqueue("old", now=100.0)
         self._enqueue("new", now=1000.0)
@@ -135,61 +129,16 @@ class WorkQueueStoreTests(unittest.TestCase):
         self.assertEqual(self.store.purge_work(), 1)  # no filter → empties
 
 
-class DrainTests(unittest.TestCase):
-    """Bus-switch reconciliation — inproc pendings migrate into the active backend."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
-        self.store = Store(get_config().db_path)
-
-    def tearDown(self):
-        self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
-
-    def test_drain_migrates_and_clears_inproc(self):
-        self.store.enqueue_work(msg_id="m1", stage="rescue", project_key="p", payload="x")
-        self.store.enqueue_work(msg_id="m2", stage="rescue", project_key="p")
-        published: list[str] = []
-
-        class _FakeBus(MemoryBus):
-            def publish(self, item):
-                published.append(item.msg_id)
-
-            def pull(self, stage, max_items=16):
-                return []
-
-        self.assertEqual(_drain_inproc_into(_FakeBus(), self.store), 2)
-        self.assertEqual(sorted(published), ["m1", "m2"])
-        self.assertEqual(self.store.count_work(), 0)  # inproc rows removed after migration
-
-    def test_drain_leaves_row_when_publish_fails(self):
-        self.store.enqueue_work(msg_id="m1", stage="rescue", project_key="p")
-
-        class _FailBus(MemoryBus):
-            def publish(self, item):
-                raise RuntimeError("nats down mid-drain")
-
-            def pull(self, stage, max_items=16):
-                return []
-
-        self.assertEqual(_drain_inproc_into(_FailBus(), self.store), 0)
-        self.assertEqual(self.store.count_work(status="pending"), 1)  # left for the next attempt
-
-
-class InprocBusTests(unittest.TestCase):
-    """Adapter-level behaviour through the MemoryBus port."""
+class InprocQueueTests(unittest.TestCase):
+    """Adapter-level behaviour through the WorkQueue port."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
         # Immediate retries so the dead-letter path is testable without sleeping.
-        # Pin bus=inproc so the ambient ENGRAM_BUS env (a user's settings.json) can't
-        # route these through NATS.
-        self.cfg = replace(get_config(), bus="inproc", bus_backoff=(0.0,), bus_max_deliver=2)
+        self.cfg = replace(get_config(), queue_backoff=(0.0,), queue_max_deliver=2)
         self.store = Store(self.cfg.db_path)
-        self.bus = InprocBus(self.cfg, self.store)
+        self.queue = InprocQueue(self.cfg, self.store)
 
     def tearDown(self):
         self.store.close()
@@ -200,8 +149,8 @@ class InprocBusTests(unittest.TestCase):
         return WorkItem(stage=stage, project_key="p", msg_id=msg_id, ref="r")
 
     def test_publish_pull_ack_roundtrip(self):
-        self.bus.publish(self._item("m1"))
-        leases = self.bus.pull("distill")
+        self.queue.publish(self._item("m1"))
+        leases = self.queue.pull("distill")
         self.assertEqual(len(leases), 1)
         self.assertEqual(leases[0].item.msg_id, "m1")
         self.assertEqual(leases[0].item.attempts, 1)
@@ -209,35 +158,28 @@ class InprocBusTests(unittest.TestCase):
         self.assertEqual(self.store.count_work(), 0)
 
     def test_nak_then_redelivered(self):
-        self.bus.publish(self._item("m1"))
-        self.bus.pull("distill")[0].nak()  # attempts 1 < 2 -> retry (delay 0)
-        leases = self.bus.pull("distill")
+        self.queue.publish(self._item("m1"))
+        self.queue.pull("distill")[0].nak()  # attempts 1 < 2 -> retry (delay 0)
+        leases = self.queue.pull("distill")
         self.assertEqual(len(leases), 1)
         self.assertEqual(leases[0].item.attempts, 2)
 
     def test_dead_letter_after_max_deliver(self):
-        self.bus.publish(self._item("m1"))
-        self.bus.pull("distill")[0].nak()  # attempts 1 -> retry
-        self.bus.pull("distill")[0].nak()  # attempts 2 >= max_deliver(2) -> dead
-        self.assertEqual(len(self.bus.pull("distill")), 0)
+        self.queue.publish(self._item("m1"))
+        self.queue.pull("distill")[0].nak()  # attempts 1 -> retry
+        self.queue.pull("distill")[0].nak()  # attempts 2 >= max_deliver(2) -> dead
+        self.assertEqual(len(self.queue.pull("distill")), 0)
         self.assertEqual(self.store.count_work(status="dead"), 1)
 
     def test_term_dead_letters_immediately(self):
-        self.bus.publish(self._item("m1"))
-        self.bus.pull("distill")[0].term()
+        self.queue.publish(self._item("m1"))
+        self.queue.pull("distill")[0].term()
         self.assertEqual(self.store.count_work(status="dead"), 1)
-        self.assertEqual(len(self.bus.pull("distill")), 0)
+        self.assertEqual(len(self.queue.pull("distill")), 0)
 
-    def test_get_bus_defaults_to_inproc(self):
-        self.assertIsInstance(get_bus(self.cfg, self.store), InprocBus)
-        self.assertIsInstance(get_bus(self.cfg, self.store), MemoryBus)
-
-    def test_get_bus_falls_open_to_inproc_when_nats_unavailable(self):
-        # bus=nats but the server is unreachable (dead port) -> fail open to inproc.
-        # Deterministic whether or not nats-py is installed: ImportError OR connect
-        # failure both fall through to inproc.
-        cfg_nats = replace(self.cfg, bus="nats", nats_url="nats://127.0.0.1:1")
-        self.assertIsInstance(get_bus(cfg_nats, self.store), InprocBus)
+    def test_get_queue_returns_inproc(self):
+        self.assertIsInstance(get_queue(self.cfg, self.store), InprocQueue)
+        self.assertIsInstance(get_queue(self.cfg, self.store), WorkQueue)
 
 
 if __name__ == "__main__":

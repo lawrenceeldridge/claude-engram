@@ -1,15 +1,14 @@
-"""In-process MemoryBus — a durable Command queue backed by the SQLite ``work_queue``.
+"""In-process WorkQueue — a durable Command queue backed by the SQLite ``work_queue``.
 
-The zero-dependency default (and the test double for the ``nats`` adapter). Publish
-is an idempotent INSERT OR IGNORE; pull leases a batch (crash-safe via lease expiry);
-ack removes it, nak reschedules with backoff, and a delivery count past
-``bus_max_deliver`` dead-letters. All persistence lives in ``Store`` (Repository) —
-this adapter is a thin shell over its work-queue methods.
+The zero-dependency backend. Publish is an idempotent INSERT OR IGNORE; pull leases a
+batch (crash-safe via lease expiry); ack removes it, nak reschedules with backoff, and
+a delivery count past ``queue_max_deliver`` dead-letters. All persistence lives in
+``Store`` (Repository) — this adapter is a thin shell over its work-queue methods.
 """
 
 from __future__ import annotations
 
-from core.ports.membus import Lease, MemoryBus, WorkItem
+from core.ports.workqueue import Lease, WorkItem, WorkQueue
 from core.store import Store
 
 
@@ -24,11 +23,11 @@ class InprocLease(Lease):
 
     def nak(self, delay: float | None = None) -> None:
         # Exhausted deliveries -> dead-letter (the DLQ), never an infinite retry loop.
-        if self.item.attempts >= self._cfg.bus_max_deliver:
+        if self.item.attempts >= self._cfg.queue_max_deliver:
             self._store.dead_work(self.item.msg_id)
             return
         if delay is None:
-            sched = self._cfg.bus_backoff
+            sched = self._cfg.queue_backoff
             delay = sched[min(self.item.attempts - 1, len(sched) - 1)] if sched else 0.0
         self._store.nak_work(self.item.msg_id, delay)
 
@@ -36,7 +35,7 @@ class InprocLease(Lease):
         self._store.dead_work(self.item.msg_id)
 
 
-class InprocBus(MemoryBus):
+class InprocQueue(WorkQueue):
     def __init__(self, cfg, store: Store) -> None:
         self._cfg = cfg
         self._store = store

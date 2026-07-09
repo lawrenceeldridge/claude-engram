@@ -1,4 +1,4 @@
-"""Viewer service-health tests — the header's bus / embedding / distiller chips.
+"""Viewer service-health tests — the header's queue / embedding / distiller chips.
 
 Stdlib unittest, no network: the all-stdlib config (inproc / hash / heuristic) must
 report every subsystem healthy, and unreachable probes must fail open to 'warn'
@@ -70,21 +70,21 @@ class TcpOkTests(unittest.TestCase):
 class ServiceHealthTests(unittest.TestCase):
     def _cfg(self, **kw):
         # Pin the stdlib backends regardless of ambient ENGRAM_* env, then override.
-        base = replace(get_config(), bus="inproc", embedding="hash", distiller="heuristic")
+        base = replace(get_config(), embedding="hash", distiller="heuristic")
         return replace(base, **kw)
 
     def test_stdlib_defaults_all_ok(self):
         h = _service_health(self._cfg())
-        self.assertEqual(h["bus"]["backend"], "inproc")
+        self.assertEqual(h["queue"]["backend"], "inproc")
         self.assertEqual(h["embedding"]["backend"], "hash")
         self.assertEqual(h["distiller"]["backend"], "heuristic")
         self.assertEqual({s["state"] for s in h.values()}, {"ok"})
 
-    def test_nats_unreachable_warns_and_falls_open(self):
-        h = _service_health(self._cfg(bus="nats", nats_url="nats://127.0.0.1:1"))
-        self.assertEqual(h["bus"]["backend"], "nats")
-        self.assertEqual(h["bus"]["state"], "warn")
-        self.assertIn("inproc", h["bus"]["detail"])  # names the fallback
+    def test_queue_backend_is_always_inproc(self):
+        # The WorkQueue has one always-available backend; the chip is never a warn.
+        h = _service_health(self._cfg())
+        self.assertEqual(h["queue"]["backend"], "inproc")
+        self.assertEqual(h["queue"]["state"], "ok")
 
     def test_llm_distiller_unreachable_warns(self):
         h = _service_health(self._cfg(distiller="ollama", distiller_base_url="http://127.0.0.1:1"))

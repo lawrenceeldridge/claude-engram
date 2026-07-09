@@ -185,8 +185,8 @@ to **Distribution** (tool-call boundary), not Web Presentation.
 ## Distribution — DTO + Gateway + thin daemon client (Remote Facade)
 
 claude-engram crosses three boundaries, and a **DTO** carries data across each; there is
-**no Event system / pub-sub**. A **durable Command queue is permitted** — opt-in, behind
-the `MemoryBus` Separated Interface, default `inproc` — for detached per-memory
+**no Event system / pub-sub**. A **durable Command queue is permitted** — the `WorkQueue`
+Separated Interface, a single stdlib `inproc` SQLite backend — for detached per-memory
 processing (capture, re-distil, consolidation). See § Offline Concurrency and the
 `stm-ltm-membus` design (`docs/generated/designs/`). The distinction is load-bearing:
 these are **Commands** (one handler, failures retry/dead-letter), *not* Events (pub-sub,
@@ -211,7 +211,7 @@ an event bus.
 
 **Avoided.** An **Event** bus / pub-sub dispatcher (no publishers/subscribers, no
 broadcast-to-many, no domain events); returning raw `sqlite3.Row` objects across any
-boundary. A durable *Command* queue behind `MemoryBus` is **not** in this list — it is a
+boundary. A durable *Command* queue behind `WorkQueue` is **not** in this list — it is a
 job-claim substrate (see § Offline Concurrency), not pub-sub.
 
 **Citations.** `DESIGN.md` § Token efficiency, § Latency efficiency (detached capture,
@@ -238,13 +238,14 @@ capture workers piling up, and (b) stale facts accumulating.
 - **TTL sweep (hard expiry).** `Store.sweep(...)` retires facts unseen past `ttl_days`
   (unless reinforced past `ttl_keep_frequency`). Reversible (a `status` flag, not a
   delete). Runs off the interactive path or via `engram sweep`.
-- **Durable Command queue (opt-in, `MemoryBus`).** For per-memory processing that must
-  survive a dropped connection or an `ENGRAM_DISTILLER` outage, single-flight is *extended*
-  (not replaced) by a durable job-claim queue behind the `MemoryBus` Separated Interface:
-  default `inproc` (a SQLite `work_queue` table — lease + retry + dead-letter, all
-  stdlib), opt-in `nats` (JetStream) adapter, **fail-open** to `inproc`. This is the
-  at-least-once, retry-able form of the existing Job-claim; idempotency is still the
-  content-hash `msg_id`. It is a Command queue, **not** an Event bus (see § Distribution).
+- **Durable Command queue (`WorkQueue`).** For per-memory processing that must survive a
+  dropped connection or an `ENGRAM_DISTILLER` outage, single-flight is *extended* (not
+  replaced) by a durable job-claim queue behind the `WorkQueue` Separated Interface: a
+  single stdlib `inproc` backend (a SQLite `work_queue` table — lease + retry +
+  dead-letter, all stdlib). The port is retained so a future out-of-process backend could
+  attach without touching the core. This is the at-least-once, retry-able form of the
+  existing Job-claim; idempotency is still the content-hash `msg_id`. It is a Command
+  queue, **not** an Event bus (see § Distribution).
 
 **Avoided.** Optimistic/Pessimistic Offline Lock, `SELECT … FOR UPDATE`, version columns
 — there is no contended mutable aggregate to guard.

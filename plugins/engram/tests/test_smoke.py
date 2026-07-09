@@ -114,13 +114,6 @@ class ProvisionTests(unittest.TestCase):
         self.assertTrue(reqs)
         self.assertTrue(any("fastembed" in r for r in reqs))
 
-    def test_ensure_nats_py_noop_without_venv(self):
-        # No managed venv → nats-py client install is a no-op (bus=nats degrades to inproc).
-        from core.provision import ensure_nats_py_in_venv
-
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertFalse(ensure_nats_py_in_venv(tmp, log=lambda *a: None))
-
     def test_reexec_is_noop_without_pin(self):
         sys.path.insert(0, str(ROOT / "bin"))
         import _bootstrap

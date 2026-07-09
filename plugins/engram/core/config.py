@@ -109,15 +109,10 @@ class Config:
     promote_after_freq: int
     stm_recall_weight: float
     spread_weight: float
-    bus: str
-    bus_max_deliver: int
-    bus_backoff: tuple[float, ...]
+    queue_max_deliver: int
+    queue_backoff: tuple[float, ...]
     lease_ttl: float
-    bus_dead_after: float
-    nats_url: str
-    nats_stream: str
-    nats_provision: str
-    nats_version: str
+    queue_dead_after: float
     integrate_threshold: float
     refine_keep_max: int
     refine_prune_percentile: float
@@ -190,22 +185,13 @@ def get_config() -> Config:
         # recorded at capture, no spread at recall, hot path + store untouched). >0 both records
         # co-occurrence/shared-entity edges and boosts co-activated candidates at recall.
         spread_weight=_num(_opt("spread_weight", "0"), 0),
-        # Durable work queue (MemoryBus). inproc = stdlib SQLite queue (default);
-        # nats = opt-in JetStream adapter (Phase 5), fail-open to inproc.
-        bus=_opt("bus", "inproc"),
-        bus_max_deliver=int(_num(_opt("bus_max_deliver", "5"), 5)),
-        bus_backoff=tuple(float(x) for x in _opt("bus_backoff", "5,30,120,600").split(",") if x.strip()),
+        # Durable work queue (WorkQueue): a stdlib SQLite Command queue, off the hot path.
+        queue_max_deliver=int(_num(_opt("queue_max_deliver", "5"), 5)),
+        queue_backoff=tuple(float(x) for x in _opt("queue_backoff", "5,30,120,600").split(",") if x.strip()),
         lease_ttl=_num(_opt("lease_ttl", "300"), 300),
-        # A pending work item no active backend ever pulls (e.g. parked on inproc after a
-        # switch to nats) dead-letters past this age, so it can't accumulate silently forever.
-        bus_dead_after=_num(_opt("bus_dead_after", str(7 * 86400)), 7 * 86400),
-        nats_url=_opt("nats_url", "nats://localhost:4222"),
-        nats_stream=_opt("nats_stream", "ENGRAM_WORK"),
-        # How to auto-provision a NATS server when bus=nats and none is reachable:
-        # binary = download + run the nats-server binary (default, no Docker needed);
-        # docker = run the official image; off = never auto-start (bring your own).
-        nats_provision=_opt("nats_provision", "binary"),
-        nats_version=_opt("nats_version", "2.10.22"),
+        # A pending work item no worker ever pulls (e.g. rescue with no LLM distiller to drain it)
+        # dead-letters past this age, so the queue can't accumulate silently forever.
+        queue_dead_after=_num(_opt("queue_dead_after", str(7 * 86400)), 7 * 86400),
         # Consolidation (sleep pass), split by blast radius. ON by default as non-destructive,
         # reversible backstops: integrate is a high-threshold near-identical mop-up sitting
         # above supersede (0.85), and refine_keep_max is a generous idempotent ceiling that

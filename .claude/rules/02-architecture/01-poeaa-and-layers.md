@@ -20,7 +20,7 @@ the core, and keeps capture off the hot path. The canonical map (from
 | Embedding provider | **Gateway + Separated Interface** | `core/embedding.py`, `core/adapters/` |
 | Injected payload | DTO (deliberately one line per fact) | `core/recall.py::render_block` |
 | Empty recall | Special Case / Null Object (inject nothing) | `render_block` returns `""` |
-| Durable per-memory processing (opt-in) | Gateway + Separated Interface — a **Command** queue, **not** Events | `core/membus.py`, `core/adapters/{inproc,nats}_bus.py` |
+| Durable per-memory processing | Separated Interface — a **Command** queue (`WorkQueue`), **not** Events | `core/ports/workqueue.py`, `core/adapters/inproc_queue.py` |
 | Wiring | Composition Root | `bin/*` entry points |
 
 ## Layer seams (do not collapse)
@@ -31,13 +31,13 @@ bin/*  (composition roots, driving adapters: hooks, CLI, MCP server, daemon)
    ▼
 core/  (app + persistence at root: service, store, config, project, provision, transcript, daemon_client)
   ├─ domain/   (pure Functional Core: scoring, quantize, fusion, confidence, lexical)
-  ├─ ports/    (Separated Interfaces: embedding, distill, [membus])
+  ├─ ports/    (Separated Interfaces: embedding, distill, workqueue)
   ├─ recall/   (read side — search/render; `from core.recall import …`)
   ├─ index/    (code/docs index: indexer, chunking, code_symbols, treesitter_symbols, drift, index_recall)
   └─ consolidation/  (the sleep pass — replay/displace/refine/purge; the RNR "rescue" stage lives in core/service.py, co-located with capture; added in Phase 4)
    │ depends on interfaces, not implementations
    ▼
-core/adapters/  (driven adapters: fastembed_gw, [inproc_bus, nats_bus], …)  ← the only place heavy deps import
+core/adapters/  (driven adapters: fastembed_gw, inproc_queue, …)  ← the only place heavy deps import
 ```
 
 The `core/` tree groups by concern (domain/ports/recall/index), keeping the app-service +
@@ -68,11 +68,12 @@ persistence + cross-cutting modules at the root (the fastapi-best-practices conv
 5. **New pattern? Invoke [`/engram-poeaa`](../../skills/engram-poeaa/SKILL.md) first** — it
    carries the catalogue, decision trees, anti-patterns, and this project's defaults.
 6. **Durable per-memory processing is a Command queue, not an Event bus.** claude-engram has
-   **no** Events / pub-sub. A durable job-claim queue (`MemoryBus`) is permitted for
-   detached capture / re-distil / consolidation — opt-in, behind a Separated Interface,
-   default `inproc` (stdlib SQLite `work_queue`), opt-in `nats` (JetStream), **fail-open**
-   to `inproc`. It extends single-flight + idempotent capture; it never touches the recall
-   hot path. See [DESIGN.md](../../../DESIGN.md) and the `stm-ltm-membus` design.
+   **no** Events / pub-sub. A durable job-claim queue (`WorkQueue`) carries detached
+   capture / re-distil / consolidation — behind a Separated Interface, with a single stdlib
+   `inproc` backend (SQLite `work_queue`). The port is retained so a future out-of-process
+   backend could attach without touching the core. It extends single-flight + idempotent
+   capture; it never touches the recall hot path. See [DESIGN.md](../../../DESIGN.md) and
+   the `stm-ltm-membus` design.
 
 ## See also
 
