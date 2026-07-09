@@ -8,6 +8,7 @@ Intake hooks (visual/verbal) and promotion into the durable store land in later 
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,15 @@ sys.path.insert(0, str(ROOT))
 
 from core.domain.sensory import should_promote  # noqa: E402
 from core.store import Store  # noqa: E402
+
+# The `sensory` table schema an earlier, later-reverted build shipped in the same migration slot
+# (no `modality` / `decayed_at`). A database stamped by that build must be reconciled on open.
+_LEGACY_SENSORY_DDL = (
+    "CREATE TABLE sensory ("
+    "  id TEXT PRIMARY KEY, project_key TEXT NOT NULL, session_id TEXT, url TEXT, text TEXT,"
+    "  created_at REAL, glance_count INTEGER DEFAULT 1, attended INTEGER DEFAULT 0, promoted_fact_id TEXT"
+    ");"
+)
 
 
 class SensoryStoreTests(unittest.TestCase):
@@ -135,6 +145,40 @@ class ShouldPromoteTests(unittest.TestCase):
         # dict-only inputs, no Store / no clock — proves it is a pure Functional-Core decision
         self.assertTrue(should_promote({"attended": True, "decayed_at": None}))
         self.assertFalse(should_promote({"attended": False, "decayed_at": None}))
+
+
+class MigrationReconcileTests(unittest.TestCase):
+    """Regression: a DB carrying the earlier (reverted) sensory schema at the same migration slot
+    must be reconciled on open, not left with a stale table that crashes sensory_counts/_stats."""
+
+    def test_legacy_sensory_table_is_reconciled_on_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "memory.db"
+            con = sqlite3.connect(db_path)
+            con.executescript(_LEGACY_SENSORY_DDL)
+            con.execute(
+                "INSERT INTO sensory (id, project_key, session_id, url, text, created_at, attended) "
+                "VALUES ('x', 'proj', 's', 'https://x', 'old perception', 1.0, 1)"
+            )
+            con.execute("PRAGMA user_version = 16")  # stamped by the buggy build
+            con.commit()
+            con.close()
+
+            store = Store(db_path)  # must migrate cleanly, not raise
+            try:
+                cols = {r[1] for r in store.db.execute("PRAGMA table_info(sensory)")}
+                self.assertIn("decayed_at", cols)  # reconciled to the current schema
+                self.assertIn("modality", cols)
+                # the previously-crashing queries now work
+                self.assertEqual(store.sensory_counts(), {})  # stale rows dropped (register is transient)
+                self.assertEqual(
+                    store.sensory_stats("proj"), {"live": 0, "attended": 0, "visual": 0, "verbal": 0}
+                )
+                # and the register is usable again
+                store.add_sensory("proj", "visual", "new", url="https://y", now=100.0)
+                self.assertEqual(len(store.sensory_rows("proj")), 1)
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":

@@ -420,6 +420,14 @@ def _v16_sensory(db: sqlite3.Connection) -> None:
     # attended. Promotion to the durable store (index for visual, facts for verbal) is gated
     # by attention (A-S selective read-out, NOT rehearsal). Content-addressed for idempotency;
     # decayed_at soft-tombstones rows that have left the live register (NULL = live).
+    #
+    # Self-healing: an earlier, later-reverted build shipped a *different* sensory schema in this
+    # same slot. The migration ladder re-runs every step on any version mismatch, so this must
+    # tolerate a pre-existing table of that old shape — drop it (the register is transient, so
+    # stale rows are throwaway) before recreating, or the modality index below fails on it.
+    cols = {r[1] for r in db.execute("PRAGMA table_info(sensory)")}
+    if cols and "decayed_at" not in cols:
+        db.execute("DROP TABLE IF EXISTS sensory")
     db.executescript(
         "CREATE TABLE IF NOT EXISTS sensory ("
         "  id             TEXT PRIMARY KEY,"
@@ -436,6 +444,14 @@ def _v16_sensory(db: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_sensory_modality ON sensory(project_key, modality);"
         "CREATE INDEX IF NOT EXISTS idx_sensory_created ON sensory(created_at);"
     )
+
+
+def _v17_sensory_schema(db: sqlite3.Connection) -> None:
+    # Version-bump migration: its purpose is to advance _SCHEMA_VERSION past 16 so a database the
+    # buggy build stamped at user_version=16 (with the old sensory schema) is NOT fast-pathed on
+    # the next open — it re-runs the ladder, where the now self-healing _v16_sensory reconciles the
+    # table. The body just re-applies _v16_sensory, which is idempotent (a no-op once current).
+    _v16_sensory(db)
 
 
 # Ordered schema migrations. user_version marks how many have run; every step is
@@ -459,6 +475,7 @@ _MIGRATIONS = [
     _v14_outcomes,
     _v15_edges,
     _v16_sensory,
+    _v17_sensory_schema,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -997,30 +1014,6 @@ class Store:
             (project_key,),
         ).fetchone()
         return {"live": row["live"], "attended": row["attended"], "visual": row["visual"], "verbal": row["verbal"]}
-
-    def sensory_counts_by_status(self, project_key: str) -> dict[str, int]:
-        """Per-project sensory promotion-rate counters for the viewer.
-
-        - perceived: alive perceptions (decayed_at IS NULL)
-        - attended: attended alive perceptions
-        - promoted: perceptions linked to facts/index (observation_id IS NOT NULL)
-        - decayed: departed perceptions (decayed_at IS NOT NULL)
-        """
-        rows = self.db.execute(
-            "SELECT "
-            "SUM(CASE WHEN decayed_at IS NULL THEN 1 ELSE 0 END) as perceived, "
-            "SUM(CASE WHEN decayed_at IS NULL AND attended = 1 THEN 1 ELSE 0 END) as attended, "
-            "SUM(CASE WHEN observation_id IS NOT NULL THEN 1 ELSE 0 END) as promoted, "
-            "SUM(CASE WHEN decayed_at IS NOT NULL THEN 1 ELSE 0 END) as decayed "
-            "FROM sensory WHERE project_key = ?",
-            (project_key,),
-        ).fetchone()
-        return {
-            "perceived": rows["perceived"] or 0,
-            "attended": rows["attended"] or 0,
-            "promoted": rows["promoted"] or 0,
-            "decayed": rows["decayed"] or 0,
-        }
 
     def delete_sensory(self, sensory_id: str) -> int:
         """Hard-delete one perception by id (the viewer's Sensory-card trash). Returns rows removed."""
