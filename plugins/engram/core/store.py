@@ -986,6 +986,42 @@ class Store:
             )
         }
 
+    def sensory_stats(self, project_key: str) -> dict[str, int]:
+        """Live-register stats for one project (the viewer Sensory header + `doctor`): the number
+        of live perceptions, how many are attended (awaiting/eligible for promotion — the signal
+        that tells whether attention is firing), and the visual/verbal split."""
+        row = self.db.execute(
+            "SELECT COUNT(*) AS live, COALESCE(SUM(attended), 0) AS attended, "
+            "COALESCE(SUM(modality = 'visual'), 0) AS visual, COALESCE(SUM(modality = 'verbal'), 0) AS verbal "
+            "FROM sensory WHERE project_key = ? AND decayed_at IS NULL",
+            (project_key,),
+        ).fetchone()
+        return {"live": row["live"], "attended": row["attended"], "visual": row["visual"], "verbal": row["verbal"]}
+
+    def sensory_counts_by_status(self, project_key: str) -> dict[str, int]:
+        """Per-project sensory promotion-rate counters for the viewer.
+
+        - perceived: alive perceptions (decayed_at IS NULL)
+        - attended: attended alive perceptions
+        - promoted: perceptions linked to facts/index (observation_id IS NOT NULL)
+        - decayed: departed perceptions (decayed_at IS NOT NULL)
+        """
+        rows = self.db.execute(
+            "SELECT "
+            "SUM(CASE WHEN decayed_at IS NULL THEN 1 ELSE 0 END) as perceived, "
+            "SUM(CASE WHEN decayed_at IS NULL AND attended = 1 THEN 1 ELSE 0 END) as attended, "
+            "SUM(CASE WHEN observation_id IS NOT NULL THEN 1 ELSE 0 END) as promoted, "
+            "SUM(CASE WHEN decayed_at IS NOT NULL THEN 1 ELSE 0 END) as decayed "
+            "FROM sensory WHERE project_key = ?",
+            (project_key,),
+        ).fetchone()
+        return {
+            "perceived": rows["perceived"] or 0,
+            "attended": rows["attended"] or 0,
+            "promoted": rows["promoted"] or 0,
+            "decayed": rows["decayed"] or 0,
+        }
+
     def delete_sensory(self, sensory_id: str) -> int:
         """Hard-delete one perception by id (the viewer's Sensory-card trash). Returns rows removed."""
         if not sensory_id:
