@@ -10,11 +10,32 @@ survives plugin updates; never write inside the plugin root.
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 _DEFAULT_MARKERS = ".git,pyproject.toml,package.json,go.mod,Cargo.toml,pom.xml"
+
+
+def _has_memories(db: Path) -> bool:
+    """True only if ``db`` is a memory.db that actually holds captured facts.
+
+    A standalone CLI/viewer run with no CLAUDE_PLUGIN_DATA creates an *empty*
+    ``engram/memory.db`` as a side effect; on the next run its mere existence used to
+    shadow the live store. Treating an empty default as "no real db" lets the non-empty
+    sibling win instead. Read-only + fail-closed so a locked/corrupt file never throws
+    here (it just isn't adopted)."""
+    if not db.is_file():
+        return False
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            return con.execute("select 1 from facts limit 1").fetchone() is not None
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
 
 
 def _opt(key: str, default: str) -> str:
@@ -49,9 +70,11 @@ def _data_dir() -> Path:
     # Without CLAUDE_PLUGIN_DATA (a standalone CLI/viewer run), the bare default can
     # miss the live store that Claude Code keeps under a marketplace-qualified
     # sibling (data/engram-<marketplace>). Adopt the newest sibling that holds a real
-    # memory.db rather than silently opening an empty default.
-    if not (home_default / "memory.db").exists():
-        siblings = [p for p in base.glob("engram-*") if (p / "memory.db").is_file()]
+    # (non-empty) memory.db rather than silently opening an empty default — and note the
+    # default is "empty" not just "absent", since a prior standalone run leaves an empty
+    # memory.db behind that would otherwise shadow the live store on every later run.
+    if not _has_memories(home_default / "memory.db"):
+        siblings = [p for p in base.glob("engram-*") if _has_memories(p / "memory.db")]
         if siblings:
             return max(siblings, key=lambda p: (p / "memory.db").stat().st_mtime)
     try:

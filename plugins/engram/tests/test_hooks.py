@@ -130,8 +130,13 @@ class PreToolUseGuardTests(unittest.TestCase):
     def setUp(self):
         self.sess = f"test-{os.getpid()}"
         self.markers = []
+        # Isolate the data dir so the guard is tested against an empty store, not whatever
+        # anti-patterns happen to be in the developer's real store (which _data_dir() now
+        # adopts when the bare default is empty). A test may still set ENGRAM_DATA_DIR itself.
+        self._datadir = tempfile.TemporaryDirectory()
 
     def tearDown(self):
+        self._datadir.cleanup()
         for tag in ("prefer", "readguard", "consulted"):
             (Path(tempfile.gettempdir()) / f"engram-{tag}-{self.sess}.seen").unlink(missing_ok=True)
 
@@ -147,7 +152,8 @@ class PreToolUseGuardTests(unittest.TestCase):
         )
 
     def _run(self, payload: dict, enforce: str = "advisory") -> str:
-        env = {**os.environ, "ENGRAM_ENFORCE": enforce}
+        # Default to the isolated data dir, but let a test that sets ENGRAM_DATA_DIR win.
+        env = {"ENGRAM_DATA_DIR": self._datadir.name, **os.environ, "ENGRAM_ENFORCE": enforce}
         payload.setdefault("session_id", self.sess)
         r = subprocess.run(
             [sys.executable, str(ROOT / "bin" / "prefer_memory.py")],
