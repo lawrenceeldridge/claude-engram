@@ -722,35 +722,30 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
             self._send(200, json.dumps(out))
         elif parsed.path == "/api/sensory":
+            # Sensory register: live perceptions (visual + verbal) awaiting decay or promotion.
             params = parse_qs(parsed.query)
             project_key = params.get("project", [""])[0]
-            modality = params.get("modality", [""])[0] or None  # 'visual'/'verbal'/None=both
+            modality = params.get("modality", [""])[0] or None  # 'visual' / 'verbal' / None = both
             limit = _int_param(params, "limit") or 50
             offset = _int_param(params, "offset") or 0
             store = Store(cfg.db_path)
-            rows = store.sensory_rows(project_key, limit=limit + offset, include_decayed=False)
+            live = store.sensory_rows(project_key, include_decayed=False)
             if modality:
-                rows = [r for r in rows if r["modality"] == modality]
-            out = [
+                live = [r for r in live if r["modality"] == modality]
+            rows = [
                 {
                     "id": r["id"],
                     "modality": r["modality"],
                     "url": r["url"],
-                    "text": r["text"],
-                    "attended": r["attended"],
-                    "created_at": r["created_at"],
+                    "attended": bool(r["attended"]),
+                    "created": r["created_at"],
+                    "text": (r["text"] or "")[:500],  # display excerpt — full text stays in the register
                 }
-                for r in rows[offset : offset + limit]
+                for r in live[offset : offset + limit]
             ]
+            stats = store.sensory_stats(project_key)
             store.close()
-            self._send(200, json.dumps(out))
-        elif parsed.path == "/api/sensory_stats":
-            params = parse_qs(parsed.query)
-            project_key = params.get("project", [""])[0]
-            store = Store(cfg.db_path)
-            stats = store.sensory_counts_by_status(project_key) if project_key else {}
-            store.close()
-            self._send(200, json.dumps(stats))
+            self._send(200, json.dumps({"rows": rows, "stats": stats}))
         elif parsed.path == "/api/consolidation":
             # Consolidation view: the durable work queue + archived ("forgotten") facts.
             params = parse_qs(parsed.query)
@@ -770,25 +765,6 @@ class Handler(BaseHTTPRequestHandler):
             ]
             store.close()
             self._send(200, json.dumps({"archived": archived, "queue": queue}))
-        elif parsed.path == "/api/sensory":
-            # Sensory register: live perceptions (visual + verbal) awaiting decay or promotion.
-            params = parse_qs(parsed.query)
-            project_key = params.get("project", [""])[0]
-            store = Store(cfg.db_path)
-            rows = [
-                {
-                    "id": r["id"],
-                    "modality": r["modality"],
-                    "url": r["url"],
-                    "attended": bool(r["attended"]),
-                    "created": r["created_at"],
-                    "text": (r["text"] or "")[:500],  # display excerpt only — full text stays in the register
-                }
-                for r in store.sensory_rows(project_key)
-            ]
-            stats = store.sensory_stats(project_key)
-            store.close()
-            self._send(200, json.dumps({"rows": rows, "stats": stats}))
         elif parsed.path == "/api/index_projects":
             store = Store(cfg.db_path)
             # Prefer the memory (facts) label/path; fall back to the label recorded at
