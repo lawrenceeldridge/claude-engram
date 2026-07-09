@@ -171,9 +171,7 @@ class MigrationReconcileTests(unittest.TestCase):
                 self.assertIn("modality", cols)
                 # the previously-crashing queries now work
                 self.assertEqual(store.sensory_counts(), {})  # stale rows dropped (register is transient)
-                self.assertEqual(
-                    store.sensory_stats("proj"), {"live": 0, "attended": 0, "visual": 0, "verbal": 0}
-                )
+                self.assertEqual(store.sensory_stats("proj"), {"live": 0, "attended": 0, "visual": 0, "verbal": 0})
                 # and the register is usable again
                 store.add_sensory("proj", "visual", "new", url="https://y", now=100.0)
                 self.assertEqual(len(store.sensory_rows("proj")), 1)

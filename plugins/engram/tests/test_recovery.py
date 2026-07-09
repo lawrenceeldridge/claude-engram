@@ -1,6 +1,6 @@
 """Heuristic-fallback recovery: park degraded captures, re-distil them later.
 
-Recovery now runs through the durable MemoryBus 'rescue' stage (design §6.4): a
+Recovery now runs through the durable WorkQueue 'rescue' stage (design §6.4): a
 degraded capture publishes a rescue work item; a later healthy session drains and
 re-distils it. Verified without a live LLM by stubbing the distiller.
 Run: python3 -m unittest discover -s plugins/engram/tests
@@ -51,9 +51,7 @@ class RecoveryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
         os.environ["ENGRAM_DISTILLER"] = "ollama"  # an LLM distiller, so recovery is active
-        # Pin bus=inproc so an ambient ENGRAM_BUS (a user's settings.json) can't route the
-        # recovery queue through NATS instead of the local sqlite work_queue.
-        self.cfg = replace(get_config(), bus="inproc")
+        self.cfg = replace(get_config(), distiller="ollama")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.project = {"key": "p", "path": "/tmp/p", "label": "p"}
@@ -122,11 +120,11 @@ class RecoveryTests(unittest.TestCase):
         with mock.patch.object(service, "get_distiller", return_value=_StubDistiller(_degraded())):
             service.capture_text(self.store, self.embedder, self.cfg, self.project, "s1", "raw")
         os.environ["ENGRAM_DISTILLER"] = "heuristic"
-        cfg = replace(get_config(), bus="inproc")
+        cfg = get_config()
         self.assertEqual(service.rescue(self.store, self.embedder, cfg), 0)
         self.assertEqual(self._rescue_count(), 1)  # left intact — a heuristic install never recovers
 
-    def test_v11_migrates_legacy_redistill_to_bus(self):
+    def test_v11_migrates_legacy_redistill_to_queue(self):
         # A pre-v11 store's pending_redistill rows must move into the 'rescue' queue.
         p = Path(self.tmp.name) / "legacy.db"
         con = sqlite3.connect(p)

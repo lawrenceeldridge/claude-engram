@@ -30,15 +30,16 @@ Stop/SessionEnd/PreCompact ─► spawn detached capture worker   ← fire & for
               ${CLAUDE_PLUGIN_DATA}/memory.db   ◄── read-only ── localhost viewer
               (facts + int8/binary embeddings, tier + status, rows tagged by project)
                               ▲
-       durable MemoryBus (inproc SQLite / opt-in NATS) ─► rescue: re-distil degraded deltas
+       durable WorkQueue (inproc SQLite) ─► rescue: re-distil degraded deltas
 ```
 
 **Durable capture queue (built).** Detached capture publishes work items to a durable
-**Command queue** (`MemoryBus`) so a dropped connection or an `ENGRAM_DISTILLER` outage
-retries rather than degrades — opt-in backend, behind a Separated Interface, default
-`inproc` (stdlib SQLite `work_queue` with retry / backoff / dead-letter / lease-recovery),
-opt-in `nats` (JetStream, auto-provisioned), **fail-open** to `inproc`, never on the recall
-hot path. It is a Command queue (one handler, retry/dead-letter), **not** an Event bus.
+**Command queue** (`WorkQueue`) so a dropped connection or an `ENGRAM_DISTILLER` outage
+retries rather than degrades — behind a Separated Interface, with a single stdlib
+`inproc` backend (SQLite `work_queue` with retry / backoff / dead-letter / lease-recovery),
+never on the recall hot path. It is a Command queue (one handler, retry/dead-letter),
+**not** an Event bus — the name says so. The port is retained so a future out-of-process
+backend could attach without touching the core.
 See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
 
 ### POEAA / Cosmic Python patterns
@@ -51,7 +52,7 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
 | Memory access + STM/LTM tiers | Repository over Data Mapper (never Active Record); tiers = a `tier` column + `Store` methods, **not** a second Repository | `core/store.py` |
 | Query params | Query Object | `core/recall.py::search` |
 | Embedding provider | Gateway + Separated Interface | `core/ports/embedding.py`, `core/adapters/` |
-| Durable per-memory work (rescue/consolidate) | Command queue behind a Separated Interface — **not** Events; default stdlib `inproc`, opt-in NATS Gateway, fail-open | `core/ports/membus.py`, `core/adapters/{inproc,nats}_bus.py` |
+| Durable per-memory work (rescue/consolidate) | Command queue (`WorkQueue`) behind a Separated Interface — **not** Events; single stdlib `inproc` backend; port retained for future backends | `core/ports/workqueue.py`, `core/adapters/inproc_queue.py` |
 | Injected payload | DTO (deliberately one line/fact) | `core/recall.py::render_block` |
 | Empty recall | Special Case / Null Object (inject nothing) | `render_block` returns `""` |
 | Wiring | Composition Root | `bin/*` entry points |
@@ -291,7 +292,7 @@ choices, called out so the mapping isn't over-claimed:
   (ASCH). Earlier revisions of this doc used "consolidation" for the inline boost —
   corrected above.
 
-Full design + the durable `MemoryBus` that carries rescue/consolidate work items:
+Full design + the durable `WorkQueue` that carries rescue/consolidate work items:
 [`docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md`](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
 
 ## Cross-project
@@ -333,7 +334,7 @@ consolidate upward. In both modes an explicit `.engram-root` sentinel overrides 
 | Over-eager supersession retires a distinct fact | conservative default threshold (0.85); superseded rows are archived (reversible), not deleted |
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
-| Durable queue becomes a de-facto dependency | `MemoryBus` is opt-in behind a Separated Interface; default `inproc` is stdlib SQLite; `nats` adapter fails open to `inproc`; core stays importable without a broker |
+| Durable queue becomes a de-facto dependency | `WorkQueue` is a stdlib-only SQLite queue behind a Separated Interface; no external backend or broker; core stays importable with the standard library alone |
 | Consolidation prunes a still-useful fact | only `refine_keep_max` (a generous idempotent ceiling) ships on; the forgetting lever `refine_prune_percentile` is default-off; all are `engram eval`-gated; archival is a reversible status flip, not a delete; purge is default-off and only removes rows past a long cold horizon |
 | STM leaks low-confidence facts into context | promotion is rehearsal/recall-gated; `stm_recall_weight` can down-rank STM; A/B with `engram eval` |
 
@@ -357,8 +358,9 @@ Done and measured:
   opt-in LLM tier (`merge_cluster`) that abstracts a near-duplicate cluster into one fact or
   vetoes the merge. Reversible (`status='merged'`), fail-open; the LLM tier is opt-in, the
   heuristic floor ships on at `integrate_threshold=0.92`.
-- **Durable capture queue** — `MemoryBus` Command queue: stdlib `inproc` SQLite default
-  (retry / backoff / DLQ / lease-recovery), opt-in auto-provisioned NATS, fail-open.
+- **Durable capture queue** — `WorkQueue` Command queue: a stdlib `inproc` SQLite queue
+  (retry / backoff / DLQ / lease-recovery), off the recall hot path. Port retained for a
+  future out-of-process backend.
 
 Remaining:
 - **No separate REM sleep *phase*** — all consolidation stages run in one checkpoint pass,

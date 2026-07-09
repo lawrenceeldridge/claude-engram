@@ -27,7 +27,7 @@ from core.ports.distill import (
     is_distiller_prompt,
 )
 from core.ports.embedding import EmbeddingGateway
-from core.ports.membus import WorkItem, get_bus
+from core.ports.workqueue import WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
 from core.recall import render_block, render_scaffold, search, search_fused
 from core.store import Store
@@ -178,9 +178,9 @@ def capture_text(
         payload = json.dumps(
             {"text": text, "fact_ids": fact_ids, "session_id": session_id, "project_key": project["key"]}
         )
-        bus = get_bus(cfg, store)
+        queue = get_queue(cfg, store)
         try:
-            bus.publish(
+            queue.publish(
                 WorkItem(
                     stage="rescue",
                     project_key=project["key"],
@@ -190,14 +190,14 @@ def capture_text(
                 )
             )
         finally:
-            bus.close()
+            queue.close()
     return inserted
 
 
 def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int = 3) -> int:
     """Re-distil parked degraded deltas from the durable 'rescue' queue (design §6.4).
 
-    The durable successor to the old ``pending_redistill`` path: drains the bus, so
+    The durable successor to the old ``pending_redistill`` path: drains the queue, so
     retry/backoff and dead-lettering are handled by the queue rather than an ad-hoc
     attempts column. Runs at the head of every incremental capture; cheap when empty
     (no LLM call). No-op without an LLM distiller (a heuristic-only install can't
@@ -206,11 +206,11 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
     """
     if cfg.distiller not in LLM_DISTILLERS:
         return 0
-    bus = get_bus(cfg, store)
+    queue = get_queue(cfg, store)
     try:
         distiller = get_distiller(cfg)
         recovered = 0
-        for lease in bus.pull("rescue", limit):
+        for lease in queue.pull("rescue", limit):
             try:
                 data = json.loads(lease.item.payload)
             except (ValueError, TypeError):
@@ -225,10 +225,10 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
                 lease.ack()
                 recovered += 1
             else:
-                lease.nak()  # still degraded — retry later; dead-letters past bus_max_deliver
+                lease.nak()  # still degraded — retry later; dead-letters past queue_max_deliver
         return recovered
     finally:
-        bus.close()
+        queue.close()
 
 
 def capture_transcript(

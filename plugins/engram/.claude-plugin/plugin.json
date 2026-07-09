@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "displayName": "Long-Term Memory",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -276,20 +276,14 @@
       "default": 0,
       "min": 0
     },
-    "bus": {
-      "type": "string",
-      "title": "Work-queue backend",
-      "description": "Durable queue for detached capture/recovery. inproc = zero-dependency SQLite queue (default); nats = NATS JetStream (opt-in). Fails open to inproc if NATS is unavailable.",
-      "default": "inproc"
-    },
-    "bus_max_deliver": {
+    "queue_max_deliver": {
       "type": "number",
       "title": "Queue max deliveries",
       "description": "Delivery attempts before a work item is dead-lettered.",
       "default": 5,
       "min": 1
     },
-    "bus_backoff": {
+    "queue_backoff": {
       "type": "string",
       "title": "Queue retry backoff",
       "description": "Retry backoff schedule in seconds, comma-separated (e.g. 5,30,120,600).",
@@ -302,36 +296,12 @@
       "default": 300,
       "min": 1
     },
-    "bus_dead_after": {
+    "queue_dead_after": {
       "type": "number",
       "title": "Queue dead-letter age (seconds)",
-      "description": "A pending work item unprocessed for longer than this is dead-lettered (kept for inspection), so an item no active backend ever pulls can't accumulate forever. Default 7 days; 0 disables.",
+      "description": "A pending work item unprocessed for longer than this is dead-lettered (kept for inspection), so an item no worker ever pulls (e.g. a rescue item with no LLM distiller to drain it) can't accumulate forever. Default 7 days; 0 disables.",
       "default": 604800,
       "min": 0
-    },
-    "nats_url": {
-      "type": "string",
-      "title": "NATS URL",
-      "description": "NATS server URL when bus=nats. Use a dedicated port so engram doesn't share another project's server.",
-      "default": "nats://localhost:4222"
-    },
-    "nats_stream": {
-      "type": "string",
-      "title": "NATS stream name",
-      "description": "JetStream stream name for the work queue.",
-      "default": "ENGRAM_WORK"
-    },
-    "nats_provision": {
-      "type": "string",
-      "title": "NATS auto-provision",
-      "description": "How to start NATS when bus=nats and none is reachable: binary = download + run nats-server (no Docker needed); docker = run the official image; off = bring your own.",
-      "default": "binary"
-    },
-    "nats_version": {
-      "type": "string",
-      "title": "NATS server version",
-      "description": "Pinned nats-server version for the binary provisioner (checksum-verified download).",
-      "default": "2.10.22"
     }
   }
 }
