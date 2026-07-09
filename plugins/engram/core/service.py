@@ -18,7 +18,6 @@ from core.domain.confidence import compute_confidence
 from core.domain.entities import extract_entities
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
-from core.domain.sensory import should_promote, summarize_snapshot
 from core.ports.distill import (
     LLM_DISTILLERS,
     DistilledFact,
@@ -672,41 +671,6 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]
         packed_ids.append(row["id"])
         used += len(text)
     return packed, len(hits) - len(packed), packed_ids
-
-
-def record_sensory(store: Store, cfg: Config, project: Project, session_id: str, url: str, text: str) -> str | None:
-    """Record a page a11y snapshot in the sensory register (Command, write side).
-
-    A no-op unless the sensory tier is enabled (``cfg.sensory``) or when the text is
-    empty — so it costs nothing by default. Pure write: **no embedding** (that happens
-    only at promotion, in the detached worker). Returns the sensory id, or None.
-    """
-    if not cfg.sensory or not (text or "").strip():
-        return None
-    return store.add_sensory(project["key"], session_id, url or "", text)
-
-
-def promote_sensory(store: Store, embedder: EmbeddingGateway, cfg: Config, project: Project) -> int:
-    """Attention → STM: promote 'attended' sensory snapshots (re-glanced >= promote_after)
-    into short-term memory. Each is distilled into one fact (embedding computed here, in the
-    detached worker — never on a hot path) and the row is marked attended, so promotion is
-    idempotent (attended rows are skipped next sweep). Returns the number promoted; no-op
-    when sensory is off. A snapshot with nothing nameable is marked attended too, so it is
-    not reconsidered every capture."""
-    if not cfg.sensory:
-        return 0
-    promoted = 0
-    for row in store.sensory_rows(project["key"]):
-        if not should_promote(row, cfg.sensory_promote_after):
-            continue
-        fact_text = summarize_snapshot(row["url"], row["text"])
-        if fact_text.strip():
-            add_facts(store, embedder, cfg, project, row["session_id"] or "sensory", [fact_text])
-            store.mark_attended(row["id"], store.fact_id(project["key"], fact_text))
-            promoted += 1
-        else:
-            store.mark_attended(row["id"], None)
-    return promoted
 
 
 def recall_structured(

@@ -111,15 +111,6 @@ class Config:
     recall_max_chars: int
     viewer_port: int
     viewer_autostart: bool
-    snapshotter: str
-    visual_max_chars: int
-    snapshot_cdp_url: str
-    snapshot_headless: bool
-    snapshot_timeout_ms: int
-    sensory: bool
-    sensory_capacity: int
-    sensory_ttl_seconds: float
-    sensory_promote_after: int
     markers: tuple[str, ...]
     identity: str
     project_dir: str | None
@@ -212,26 +203,6 @@ def get_config() -> Config:
         recall_max_chars=int(_num(_opt("recall_max_chars", "1200"), 1200)),
         viewer_port=int(_num(_opt("viewer_port", "7801"), 7801)),
         viewer_autostart=_opt("viewer_autostart", "true").lower() in ("1", "true", "yes", "on"),
-        # Visual snapshot compaction (model-invoked MCP tool). snapshotter selects the
-        # page-source backend: 'stub' (zero-dep default), 'chrome-devtools', or 'playwright'
-        # (fail-open to stub). visual_max_chars caps the a11y-text tool response, mirroring
-        # the *_max_chars family. Text-only in v1; the pixel path is deferred to v2.
-        snapshotter=_opt("snapshotter", "stub"),
-        visual_max_chars=int(_num(_opt("visual_max_chars", "2000"), 2000)),
-        # Browser-backed snapshotters (opt-in via snapshotter=chrome-devtools|playwright).
-        # chrome-devtools attaches over CDP to an existing Chrome at snapshot_cdp_url;
-        # playwright launches its own chromium (headless by default). Both fail open to an
-        # empty snapshot when no browser is reachable.
-        snapshot_cdp_url=_opt("snapshot_cdp_url", "http://localhost:9222"),
-        snapshot_headless=_opt("snapshot_headless", "true").lower() in ("1", "true", "yes", "on"),
-        snapshot_timeout_ms=int(_num(_opt("snapshot_timeout_ms", "5000"), 5000)),
-        # Sensory register — the Atkinson-Shiffrin tier before STM. Off by default → inert
-        # (records nothing). Holds page a11y snapshots; decays by capacity + TTL; a re-glanced
-        # snapshot (glance_count >= promote_after) is promoted to an STM fact in the worker.
-        sensory=_opt("sensory", "false").lower() in ("1", "true", "yes", "on"),
-        sensory_capacity=int(_num(_opt("sensory_capacity", "200"), 200)),
-        sensory_ttl_seconds=_num(_opt("sensory_ttl_seconds", "900"), 900),
-        sensory_promote_after=int(_num(_opt("sensory_promote_after", "2"), 2)),
         markers=markers,
         # Project identity: 'workspace' (default) keys memory on the folder Claude was
         # started in (CLAUDE_PROJECT_DIR, else cwd) — matching the human's chosen workspace,

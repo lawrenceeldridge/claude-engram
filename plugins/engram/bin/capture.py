@@ -73,12 +73,7 @@ def _run_worker(payload_path: str) -> None:
     from core.config import get_config
     from core.ports.embedding import get_embedder
     from core.project import resolve_project
-    from core.service import (
-        capture_transcript_incremental,
-        maybe_capture_antipatterns,
-        maybe_capture_summary,
-        promote_sensory,
-    )
+    from core.service import capture_transcript_incremental, maybe_capture_antipatterns, maybe_capture_summary
     from core.store import Store
 
     cfg = get_config()
@@ -119,15 +114,6 @@ def _run_worker(payload_path: str) -> None:
             import time
 
             store.sweep(time.time(), cfg.ttl_days * 86400, cfg.ttl_keep_frequency, project["key"])
-        # Sensory register (opt-in): promote 'attended' page snapshots into STM (distil +
-        # embed here, off the hot path), then decay the rest by capacity + TTL. Fail-open —
-        # sensory maintenance must never break capture. No-op when sensory is off.
-        if cfg.sensory:
-            try:
-                promote_sensory(store, embedder, cfg, project)
-                store.sweep_sensory(project["key"], cfg.sensory_capacity, cfg.sensory_ttl_seconds)
-            except Exception:
-                pass
         # Work-queue maintenance (cheap, every capture): re-queue interrupted leases, and
         # dead-letter pending items older than bus_dead_after so a backend-orphaned item
         # (parked on inproc after a switch to nats) can't accumulate silently forever.

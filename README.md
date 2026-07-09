@@ -32,11 +32,6 @@ memory lifecycle on top, drawn from the **Atkinson–Shiffrin multi-store model*
 the **Active Systems Consolidation Hypothesis** (details, and the honest limits of the
 mapping, in [DESIGN.md](DESIGN.md)):
 
-- **Sensory register (iconic, opt-in)** — an ephemeral tier *before* short-term memory,
-  **off by default**. Page accessibility snapshots from `compact_page_view` land here at
-  large capacity and decay fast; one re-glanced enough (`sensory_promote_after`) is
-  *attended* and promoted into STM, the rest are forgotten — completing the
-  Atkinson–Shiffrin staging (sensory → STM → LTM). Browse it in the viewer's **Sensory** tab.
 - **Recency decay** — a fact's rank score decays exponentially with age
   (`half_life_days`) unless reinforced.
 - **Rehearsal & retrieval** — two complementary ways a fact promotes from the
@@ -103,23 +98,6 @@ so relevant symbols/sections appear even when the model never calls `search_code
 The gate is deliberately cheap to satisfy: a single `recall` call clears it for the
 rest of the session. It's fail-open — any error in the hook lets the tool through.
 
-### Prefer a11y snapshots over screenshots (`ENGRAM_PREFER_SNAPSHOT`)
-
-A second, independent `PreToolUse` nudge fires when the model is about to **screenshot**
-a page (Chrome DevTools MCP `take_screenshot`, Playwright MCP `browser_take_screenshot`,
-BrowserMCP `browser_screenshot`). A screenshot costs ~1,500+ vision tokens; the
-accessibility-tree **text** snapshot (`take_snapshot` / `browser_snapshot`, or engram's
-own `compact_page_view` tool) is ~10–50× cheaper (measured **~32× median** —
-`python3 bench/visual_tokens.py`) and yields stable element refs, enough for most
-visual/E2E structure and assertion work. `ENGRAM_PREFER_SNAPSHOT` = `off` / `advisory`
-*(default — a once-per-session reminder, never blocks)* / `strict` (denies the screenshot).
-It only steers *before* the call — a hook can't reclaim tokens from an image another MCP
-server has already returned. Fail-open, like every hook.
-
-The `compact_page_view` tool's `playwright` / `chrome-devtools` backends need the optional
-`playwright` package installed in the interpreter engram runs under (its managed venv, or a
-pinned `ENGRAM_PYTHON`); without it, the tool fails soft to an empty snapshot.
-
 ## Layout
 
 ```
@@ -134,7 +112,6 @@ claude-engram/
     │   ├── recall_session_start.py     #   SessionStart — core memory + orientation + memory-first directive
     │   ├── recall_prompt.py            #   UserPromptSubmit — just-in-time recall
     │   ├── prefer_memory.py            #   PreToolUse — memory-first guard (ENGRAM_ENFORCE)
-    │   ├── prefer_snapshot.py          #   PreToolUse — prefer a11y snapshot over screenshot (ENGRAM_PREFER_SNAPSHOT)
     │   ├── mark_consulted.py           #   PostToolUse — records that memory was consulted
     │   ├── index_edit.py               #   PostToolUse — re-index edited files
     │   ├── credit_read.py              #   PostToolUse — credit bounded reads of indexed files (ledger)
@@ -143,7 +120,7 @@ claude-engram/
     │   ├── mcp_server.py               #   MCP tools (recall, search_code, get_symbol, …)
     │   └── daemon.py                   #   optional resident embedder
     ├── bench/                          # labelled recall benchmark + dataset
-    ├── viewer/                         # localhost browser (stdlib http.server) — STM / LTM / Sensory / Consolidation / index tabs
+    ├── viewer/                         # localhost browser (stdlib http.server) — STM / LTM / RnR / index tabs
     └── tests/                          # stdlib unittest / pytest suite
 ```
 
@@ -163,7 +140,6 @@ index on demand (these are what the memory-first guard steers toward):
 | `doc_outline` | Document/heading outline. |
 | `index_docs` | (Re)index the current project's code + docs. |
 | `list_projects` | Every project in the global store with its active-fact count. |
-| `compact_page_view` | A page's accessibility-tree **text** snapshot — a token-cheap alternative to a screenshot for visual/E2E testing (measured ~32× cheaper). Needs `snapshotter=playwright`/`chrome-devtools` + the optional `playwright` dep; default `stub` returns a sample. |
 
 ## Try it without installing
 
@@ -209,7 +185,7 @@ engram consolidate [--all] run the sleep pass: promote recalled STM, integrate n
 engram nats status|start|stop  manage the opt-in NATS server (bus=nats)
 engram queue [--all]       inspect the durable work queue (rescue backlog + dead-letter); --purge-dead/--purge-stage/--purge-all to clear
 engram daemon              run the resident daemon (keeps the embedder warm)
-engram viewer              launch the localhost viewer (STM / LTM / Sensory / Consolidation / index tabs; delete a project via the 🗑 button)
+engram viewer              launch the localhost viewer (STM / LTM / RnR / index tabs; delete a project via the 🗑 button)
 engram stats [--all]       token-savings ledger: injected (cost) vs saved (targeted + bounded reads + recall shortcuts), net
 engram eval --backends … [--stm]  benchmark embedding backends (paired stats when ≥2); --stm adds the STM-tier lever scenario
 engram replay [--transcript-dir …]  counterfactual token savings from past session transcripts (trace-driven, conservative)
@@ -278,18 +254,12 @@ or `ENGRAM_*` env vars for standalone use:
 | `recall_max_chars` | `1200` | character budget for facts returned by the `recall` tool |
 | `viewer_autostart` | `true` | start the localhost viewer detached at session start |
 | `viewer_port` | `7801` | port for the always-on memory/index viewer |
-| `snapshotter` | `stub` | backend for `compact_page_view`: `stub` (canned sample, zero-dep), `playwright` (own headless chromium), or `chrome-devtools` (attach over CDP). playwright/chrome-devtools need the optional `playwright` package + a browser; both fail soft to empty |
-| `visual_max_chars` | `2000` | hard cap on characters returned by `compact_page_view` (token guard) |
-| `snapshot_cdp_url` | `http://localhost:9222` | CDP endpoint for `snapshotter=chrome-devtools` (a Chrome started with `--remote-debugging-port`) |
-| `snapshot_headless` | `true` | `snapshotter=playwright`: launch chromium headless |
-| `snapshot_timeout_ms` | `5000` | per-navigation/attach timeout before failing soft to an empty snapshot |
 
 Env-only knobs (no `userConfig` entry):
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `ENGRAM_ENFORCE` | `advisory` | memory-first guard strength — `off` / `advisory` / `strict` (see above) |
-| `ENGRAM_PREFER_SNAPSHOT` | `advisory` | prefer-a11y-snapshot nudge before a screenshot tool — `off` / `advisory` (once-per-session reminder) / `strict` (deny the screenshot) |
 | `ENGRAM_DAEMON` | *(unset)* | `1` makes the recall hook use the resident daemon instead of loading the model in-process |
 | `ENGRAM_PYTHON` / `python` userConfig | *(blank)* | pin an interpreter that already has fastembed; blank = auto-provisioned managed venv |
 
@@ -301,8 +271,7 @@ env vars; defaults `1.0 / 0.3 / 0.2`.
 Fresh facts enter a short-term tier and promote to long-term on rehearsal; a
 consolidation ("sleep") pass runs at session checkpoints (or `engram consolidate`).
 Recall is tier-agnostic and **pruning is off by default** — turn it on deliberately.
-An optional **sensory register** sits *before* STM (also off by default — see the
-cognitive-model section). Set via `userConfig` (or `ENGRAM_*` env):
+Set via `userConfig` (or `ENGRAM_*` env):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -313,10 +282,6 @@ cognitive-model section). Set via `userConfig` (or `ENGRAM_*` env):
 | `refine_keep_max` | `20000` | keep only the top-N facts by retention score, prune the rest (reversible) — ships on as a generous idempotent growth ceiling (0 = off) |
 | `refine_prune_percentile` | `0` | prune the lowest-retention facts each pass — a value in `(0,1)` is a self-limiting percentile of the active set (`0.1` = drop the weakest 10%), a value `≥1` is an absolute score floor. Off by default: it forgets every pass and a good rate is store-dependent (0 = off) |
 | `purge_horizon_days` | `0` | hard-delete facts archived longer than this, then `VACUUM`. Off by default: the only irreversible lever (0 = off) |
-| `sensory` | `false` | enable the **sensory register** — an ephemeral pre-STM tier holding `compact_page_view` page snapshots. Off by default (records nothing) |
-| `sensory_capacity` | `200` | max sensory snapshots per project before the oldest are hard-deleted (decay). 0 = unbounded |
-| `sensory_ttl_seconds` | `900` | snapshots older than this are hard-deleted on the next sweep — rapid decay (0 = no TTL) |
-| `sensory_promote_after` | `2` | glances (re-views of the same page) that mark a snapshot *attended* → promoted into STM (rehearsal) |
 
 ### Durable work queue — MemoryBus (inproc / NATS)
 
@@ -399,18 +364,6 @@ python3 bin/engram eval --backends hash --stm    # add the STM-tier lever scenar
 The `--stm` scenario reports how `stm_recall_weight` trades off recall of fresh
 short-term facts against their older long-term competitors — the measurable check
 before changing any STM-ranking default (short-term is a *state*, not a faster clock).
-
-A separate, standalone measure — **not** `engram eval` — quantifies the visual-snapshot
-saving (this feature touches no embedding/ranking/quantisation, so the recall benchmark
-doesn't apply):
-
-```bash
-python3 bench/visual_tokens.py                     # offline: a11y snapshot vs screenshot tokens
-python3 bench/visual_tokens.py --url https://…     # add a live page (needs a browser backend)
-```
-
-It reports the per-page token ratio (a screenshot's `ceil(w/28)*ceil(h/28)` visual tokens
-vs the a11y text's ~chars/4), which runs ~30–46× on the built-in fixtures.
 
 Measured on the bundled set (297 facts, 244 paraphrased queries — mined from real
 sessions, with 50 hard negatives; the earlier 64/77 set is frozen as

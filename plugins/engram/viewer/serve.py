@@ -87,9 +87,6 @@ PAGE = """<!doctype html>
   .card[data-type=session_summary]{ border-inline-start:3px solid #bb8009; background:#15130c; }
   .card[data-type=antipattern]{ border-inline-start:3px solid #cf222e; background:#1a1210; }
   .card[data-type=prompt]{ border-inline-start:3px solid #8250df; background:#131022; }
-  .card pre.stext { white-space:pre-wrap; font-size:12px; line-height:1.4; color:var(--muted);
-    margin:6px 0 0; max-height:220px; overflow:auto; background:#0d1117; border:1px solid var(--border);
-    border-radius:6px; padding:8px; }
   .prompt { color:#c9d1d9; white-space:pre-wrap; }
   .summary-sec { margin-top:10px; }
   .summary-sec h4 { margin:0 0 2px; font:600 12px ui-monospace,Menlo,monospace;
@@ -143,8 +140,7 @@ PAGE = """<!doctype html>
   <div id="views">
     <button class="vtoggle active" data-view="stm" title="Short-term memory (fresh — promotes to long-term on rehearsal or recall)">stm</button>
     <button class="vtoggle" data-view="ltm" title="Long-term memory (consolidated — promoted by rehearsal or recall)">ltm</button>
-    <button class="vtoggle" data-view="consolidation" title="Consolidation &amp; rescue (the sleep pass): work queue + archived facts (superseded / displaced / merged / pruned / expired)">consolidation</button>
-    <button class="vtoggle" data-view="sensory" title="Sensory register — ephemeral page snapshots (iconic memory); decay unless re-glanced, then promote to short-term memory">sensory</button>
+    <button class="vtoggle" data-view="rnr" title="Consolidation &amp; rescue: work queue + archived facts (superseded / displaced / merged / pruned / expired)">rnr</button>
     <button class="vtoggle" data-view="index" title="Code &amp; docs index">index</button>
   </div>
   <select id="project"></select>
@@ -173,7 +169,7 @@ const fmtWhen = ts => { const d = new Date(ts*1000);
   return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 const PAGE = 50;
 let offset = 0, loading = false, exhausted = false, mode = 'list';
-let view = 'stm';   // stm|ltm = active facts by tier · consolidation = queue + archived · index = code/docs
+let view = 'stm';   // stm|ltm = active facts by tier · rnr = queue + archived · index = code/docs
 let seen = new Set();  // card keys currently rendered — used to flash only new arrivals
 
 async function loadProjects() {
@@ -183,14 +179,14 @@ async function loadProjects() {
   const paren = prevLabel.lastIndexOf(' (');
   if (paren > -1) prevLabel = prevLabel.slice(0, paren);
   const rows = await (await fetch(view === 'index' ? '/api/index_projects' : '/api/projects')).json();
-  // Per-panel total: stm/ltm/consolidation each carry their own count; index and any fallback
+  // Per-panel total: stm/ltm/rnr each carry their own count; index and any fallback
   // use the plain total. So the dropdown number tracks the panel you're on.
-  const countFor = r => ((view === 'stm' || view === 'ltm' || view === 'consolidation' || view === 'sensory') ? (r[view] ?? 0) : r.count);
+  const countFor = r => ((view === 'stm' || view === 'ltm' || view === 'rnr') ? (r[view] ?? 0) : r.count);
   // Pin the selected project across tab switches even when this view has no data for
   // it yet (e.g. a project with memory but no index) — otherwise the dropdown would
   // silently jump to the first project. The empty view then shows an empty state.
   if (prev && !rows.some(r => r.project_key === prev))
-    rows.push({ project_key: prev, label: prevLabel, count: 0, stm: 0, ltm: 0, consolidation: 0 });
+    rows.push({ project_key: prev, label: prevLabel, count: 0, stm: 0, ltm: 0, rnr: 0 });
   sel.innerHTML = rows.map(r =>
     `<option value="${r.project_key}">${r.label} (${countFor(r)})</option>`).join('');
   if (rows.some(r => r.project_key === prev)) sel.value = prev;  // keep selection across live refresh / tab switch
@@ -226,7 +222,7 @@ function cardHTML(c, flash) {
   const meta = `<div class="meta">${score}${esc(c.type||c.kind||'')} · ${when}</div>`;
   const cls = `card${flash?' flash':''}`;
   // data-key + a per-card trash icon (top-right, hover-revealed) so a single memory can be
-  // deleted from stm/ltm/consolidation. The key is the observation group id (or a lone fact's id).
+  // deleted from stm/ltm/rnr. The key is the observation group id (or a lone fact's id).
   const dk = c.key==null ? '' : ` data-key="${esc(c.key)}"`;
   const del = c.key==null ? '' : `<button class="del" title="Delete this memory">🗑</button>`;
   if (c.kind === 'prompt') {
@@ -289,10 +285,10 @@ function qItemHTML(q) {
 }
 // Consolidation & Rescue: the durable queue (rescue backlog + dead-letter) and the facts
 // consolidation has archived (superseded / displaced / merged / pruned / expired).
-async function reloadConsolidation() {
+async function reloadRnr() {
   mode = 'search'; exhausted = true;   // no infinite scroll
   const pk = $('#project').value;
-  const r = await (await fetch(`/api/consolidation?project=${encodeURIComponent(pk)}`)).json();
+  const r = await (await fetch(`/api/rnr?project=${encodeURIComponent(pk)}`)).json();
   seen = new Set();
   const queue = r.queue || [], archived = r.archived || [];
   const dead = queue.filter(q => q.status === 'dead').length;
@@ -305,38 +301,12 @@ async function reloadConsolidation() {
     `<h3 class="sec">Rescue queue · ${queue.length}${deadLabel}</h3>${qHTML}`
     + `<h3 class="sec">Archived / forgotten · ${archived.length}</h3>${aHTML}`;
 }
-// Sensory register: ephemeral page a11y snapshots (iconic memory). Browse-only; each card
-// shows the page URL, the a11y text, and whether it's been promoted to STM (attended) or is
-// still decaying (glance count). Deleting a card removes that snapshot from the register.
-function sensoryCardHTML(c) {
-  const when = fmtWhen(c.created);
-  const state = c.attended
-    ? `<span class="spill">attended → stm</span>`
-    : `<span class="spill">glances ${c.glance_count ?? 1}</span>`;
-  const title = `<div class="title">${esc(c.url || '(page)')}</div>`;
-  const body = `<pre class="stext">${esc(c.text || '')}</pre>`;
-  const meta = `<div class="meta">iconic · ${when}</div>`;
-  const del = `<button class="del" title="Delete this snapshot">🗑</button>`;
-  return `<div class="card" data-type="discovery" data-key="${esc(c.id)}">${del}`
-    + `<div class="chead"><span class="badge" data-type="discovery">sensory</span>${state}</div>`
-    + `<div class="cinner">${title}${body}${meta}</div></div>`;
-}
-async function reloadSensory() {
-  mode = 'search'; exhausted = true;   // no infinite scroll
-  const pk = $('#project').value;
-  const rows = await (await fetch(`/api/sensory?project=${encodeURIComponent(pk)}`)).json();
-  seen = new Set();
-  $('#list').innerHTML = rows.length
-    ? rows.map(sensoryCardHTML).join('')
-    : '<div class="empty">No sensory snapshots — enable <code>sensory</code> and read a page with compact_page_view, or they have decayed.</div>';
-}
 // Full re-render from the top: a query shows all ranked search hits; a blank query
 // shows the first (newest) page of the browse list, which grows via loadMore().
 async function reload(flashNew) {
   loadLedger();  // token-savings ledger for the selected project (all views)
   if (view === 'index') return reloadIndex();
-  if (view === 'consolidation') return reloadConsolidation();
-  if (view === 'sensory') return reloadSensory();
+  if (view === 'rnr') return reloadRnr();
   const q = $('#q').value.trim();
   mode = q ? 'search' : 'list';
   offset = 0; exhausted = false;
@@ -368,12 +338,10 @@ $('#list').addEventListener('click', async e => {
     if (!key) return;
     const lead = card.querySelector('.title, .subtitle, .prompt')?.textContent?.trim() || '';
     const preview = lead ? `\\n\\n"${lead.slice(0, 140)}${lead.length > 140 ? '…' : ''}"` : '';
-    const noun = view === 'sensory' ? 'snapshot' : 'memory';
-    if (!confirm(`Delete this ${noun}?${preview}\\n\\nThis permanently removes it. This cannot be undone.`)) return;
-    const endpoint = view === 'sensory' ? '/api/delete_sensory' : '/api/delete_memory';
-    await fetch(endpoint, {
+    if (!confirm(`Delete this memory?${preview}\\n\\nThis permanently removes it (and any facts grouped with it). This cannot be undone.`)) return;
+    await fetch('/api/delete_memory', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(view === 'sensory' ? { id: key } : { key }),
+      body: JSON.stringify({ key }),
     });
     card.remove();
     seen.delete(key);
@@ -400,7 +368,7 @@ $('#views').addEventListener('click', async e => {
   view = b.dataset.view;
   document.querySelectorAll('.vtoggle').forEach(x => x.classList.toggle('active', x === b));
   $('#kind').style.display = view === 'index' ? '' : 'none';
-  $('#q').style.display = (view === 'consolidation' || view === 'sensory') ? 'none' : '';  // consolidation + sensory are browse-only
+  $('#q').style.display = view === 'rnr' ? 'none' : '';  // RnR is browse-only
   $('#q').value = '';
   $('#q').placeholder = view === 'index'
     ? 'search indexed code / docs… (blank = list)' : 'semantic search within project… (blank = list all)';
@@ -483,7 +451,7 @@ function connectStream() {
   es.onopen = () => { badge.classList.remove('off'); label.textContent = 'live'; };
   es.addEventListener('change', async () => {
     await loadProjects();      // refresh counts + keep current project selected
-    if (view !== 'index') await reload(true);  // stm/ltm/consolidation refresh live; avoid churn during index build
+    if (view !== 'index') await reload(true);  // stm/ltm/rnr refresh live; avoid churn during index build
     loadHealth();              // a write may mean the distiller/bus just came up
     loadLedger();              // a capture / pull may have shifted the token ledger
   });
@@ -686,8 +654,7 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
         elif parsed.path == "/api/projects":
             store = Store(cfg.db_path)
-            consolidation = store.consolidation_counts()
-            sensory = store.sensory_counts()
+            rnr = store.rnr_counts()
             out = _disambiguate_labels(
                 [
                     {
@@ -697,8 +664,7 @@ class Handler(BaseHTTPRequestHandler):
                         "count": r["c"],  # total active (backward-compatible)
                         "stm": r["stm"] or 0,
                         "ltm": r["ltm"] or 0,
-                        "consolidation": consolidation.get(r["project_key"], 0),
-                        "sensory": sensory.get(r["project_key"], 0),
+                        "rnr": rnr.get(r["project_key"], 0),
                     }
                     for r in store.projects()
                 ]
@@ -728,8 +694,8 @@ class Handler(BaseHTTPRequestHandler):
                 out = [_card_from_rows(rows) for rows in groups]
             store.close()
             self._send(200, json.dumps(out))
-        elif parsed.path == "/api/consolidation":
-            # Consolidation view: the durable work queue + archived ("forgotten") facts.
+        elif parsed.path == "/api/rnr":
+            # Refine & Rescue view: the durable work queue + archived ("forgotten") facts.
             params = parse_qs(parsed.query)
             project_key = params.get("project", [""])[0]
             store = Store(cfg.db_path)
@@ -789,23 +755,6 @@ class Handler(BaseHTTPRequestHandler):
             out = get_chunk(store, self._index_project(store, project_key), ref)
             store.close()
             self._send(200, json.dumps(out))
-        elif parsed.path == "/api/sensory":
-            project_key = parse_qs(parsed.query).get("project", [""])[0]
-            store = Store(cfg.db_path)
-            out = [
-                {
-                    "id": r["id"],
-                    "url": r["url"],
-                    "text": r["text"],
-                    "created": r["created_at"],
-                    "glance_count": r["glance_count"],
-                    "attended": bool(r["attended"]),
-                    "promoted": r["promoted_fact_id"],
-                }
-                for r in store.sensory_rows(project_key)
-            ]
-            store.close()
-            self._send(200, json.dumps(out))
         else:
             self._send(404, "{}")
 
@@ -817,7 +766,7 @@ class Handler(BaseHTTPRequestHandler):
         path or a malformed body is a 404 / 400 — never a silent write.
         """
         parsed = urlparse(self.path)
-        if parsed.path not in ("/api/delete_project", "/api/delete_memory", "/api/delete_sensory"):
+        if parsed.path not in ("/api/delete_project", "/api/delete_memory"):
             self._send(404, "{}")
             return
         try:
@@ -835,12 +784,6 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, json.dumps({"error": "project required"}))
                     return
                 self._send(200, json.dumps({"deleted": store.delete_project(project_key)}))
-            elif parsed.path == "/api/delete_sensory":  # one sensory snapshot by id
-                sid = (payload.get("id") or "").strip()
-                if not sid:
-                    self._send(400, json.dumps({"error": "id required"}))
-                    return
-                self._send(200, json.dumps({"deleted": store.delete_sensory(sid)}))
             else:  # /api/delete_memory — one card (observation group or single fact) by key
                 key = (payload.get("key") or "").strip()
                 if not key:
