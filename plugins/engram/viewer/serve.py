@@ -140,7 +140,7 @@ PAGE = """<!doctype html>
   <div id="views">
     <button class="vtoggle active" data-view="stm" title="Short-term memory (fresh — promotes to long-term on rehearsal or recall)">stm</button>
     <button class="vtoggle" data-view="ltm" title="Long-term memory (consolidated — promoted by rehearsal or recall)">ltm</button>
-    <button class="vtoggle" data-view="rnr" title="Consolidation &amp; rescue: work queue + archived facts (superseded / displaced / merged / pruned / expired)">rnr</button>
+    <button class="vtoggle" data-view="consolidation" title="Consolidation &amp; rescue (the sleep pass): work queue + archived facts (superseded / displaced / merged / pruned / expired)">consolidation</button>
     <button class="vtoggle" data-view="index" title="Code &amp; docs index">index</button>
   </div>
   <select id="project"></select>
@@ -169,7 +169,7 @@ const fmtWhen = ts => { const d = new Date(ts*1000);
   return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 const PAGE = 50;
 let offset = 0, loading = false, exhausted = false, mode = 'list';
-let view = 'stm';   // stm|ltm = active facts by tier · rnr = queue + archived · index = code/docs
+let view = 'stm';   // stm|ltm = active facts by tier · consolidation = queue + archived · index = code/docs
 let seen = new Set();  // card keys currently rendered — used to flash only new arrivals
 
 async function loadProjects() {
@@ -179,14 +179,14 @@ async function loadProjects() {
   const paren = prevLabel.lastIndexOf(' (');
   if (paren > -1) prevLabel = prevLabel.slice(0, paren);
   const rows = await (await fetch(view === 'index' ? '/api/index_projects' : '/api/projects')).json();
-  // Per-panel total: stm/ltm/rnr each carry their own count; index and any fallback
+  // Per-panel total: stm/ltm/consolidation each carry their own count; index and any fallback
   // use the plain total. So the dropdown number tracks the panel you're on.
-  const countFor = r => ((view === 'stm' || view === 'ltm' || view === 'rnr') ? (r[view] ?? 0) : r.count);
+  const countFor = r => ((view === 'stm' || view === 'ltm' || view === 'consolidation') ? (r[view] ?? 0) : r.count);
   // Pin the selected project across tab switches even when this view has no data for
   // it yet (e.g. a project with memory but no index) — otherwise the dropdown would
   // silently jump to the first project. The empty view then shows an empty state.
   if (prev && !rows.some(r => r.project_key === prev))
-    rows.push({ project_key: prev, label: prevLabel, count: 0, stm: 0, ltm: 0, rnr: 0 });
+    rows.push({ project_key: prev, label: prevLabel, count: 0, stm: 0, ltm: 0, consolidation: 0 });
   sel.innerHTML = rows.map(r =>
     `<option value="${r.project_key}">${r.label} (${countFor(r)})</option>`).join('');
   if (rows.some(r => r.project_key === prev)) sel.value = prev;  // keep selection across live refresh / tab switch
@@ -222,7 +222,7 @@ function cardHTML(c, flash) {
   const meta = `<div class="meta">${score}${esc(c.type||c.kind||'')} · ${when}</div>`;
   const cls = `card${flash?' flash':''}`;
   // data-key + a per-card trash icon (top-right, hover-revealed) so a single memory can be
-  // deleted from stm/ltm/rnr. The key is the observation group id (or a lone fact's id).
+  // deleted from stm/ltm/consolidation. The key is the observation group id (or a lone fact's id).
   const dk = c.key==null ? '' : ` data-key="${esc(c.key)}"`;
   const del = c.key==null ? '' : `<button class="del" title="Delete this memory">🗑</button>`;
   if (c.kind === 'prompt') {
@@ -285,10 +285,10 @@ function qItemHTML(q) {
 }
 // Consolidation & Rescue: the durable queue (rescue backlog + dead-letter) and the facts
 // consolidation has archived (superseded / displaced / merged / pruned / expired).
-async function reloadRnr() {
+async function reloadConsolidation() {
   mode = 'search'; exhausted = true;   // no infinite scroll
   const pk = $('#project').value;
-  const r = await (await fetch(`/api/rnr?project=${encodeURIComponent(pk)}`)).json();
+  const r = await (await fetch(`/api/consolidation?project=${encodeURIComponent(pk)}`)).json();
   seen = new Set();
   const queue = r.queue || [], archived = r.archived || [];
   const dead = queue.filter(q => q.status === 'dead').length;
@@ -306,7 +306,7 @@ async function reloadRnr() {
 async function reload(flashNew) {
   loadLedger();  // token-savings ledger for the selected project (all views)
   if (view === 'index') return reloadIndex();
-  if (view === 'rnr') return reloadRnr();
+  if (view === 'consolidation') return reloadConsolidation();
   const q = $('#q').value.trim();
   mode = q ? 'search' : 'list';
   offset = 0; exhausted = false;
@@ -368,7 +368,7 @@ $('#views').addEventListener('click', async e => {
   view = b.dataset.view;
   document.querySelectorAll('.vtoggle').forEach(x => x.classList.toggle('active', x === b));
   $('#kind').style.display = view === 'index' ? '' : 'none';
-  $('#q').style.display = view === 'rnr' ? 'none' : '';  // RnR is browse-only
+  $('#q').style.display = view === 'consolidation' ? 'none' : '';  // consolidation is browse-only
   $('#q').value = '';
   $('#q').placeholder = view === 'index'
     ? 'search indexed code / docs… (blank = list)' : 'semantic search within project… (blank = list all)';
@@ -451,7 +451,7 @@ function connectStream() {
   es.onopen = () => { badge.classList.remove('off'); label.textContent = 'live'; };
   es.addEventListener('change', async () => {
     await loadProjects();      // refresh counts + keep current project selected
-    if (view !== 'index') await reload(true);  // stm/ltm/rnr refresh live; avoid churn during index build
+    if (view !== 'index') await reload(true);  // stm/ltm/consolidation refresh live; avoid churn during index build
     loadHealth();              // a write may mean the distiller/bus just came up
     loadLedger();              // a capture / pull may have shifted the token ledger
   });
@@ -654,7 +654,7 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
         elif parsed.path == "/api/projects":
             store = Store(cfg.db_path)
-            rnr = store.rnr_counts()
+            consolidation = store.consolidation_counts()
             out = _disambiguate_labels(
                 [
                     {
@@ -664,7 +664,7 @@ class Handler(BaseHTTPRequestHandler):
                         "count": r["c"],  # total active (backward-compatible)
                         "stm": r["stm"] or 0,
                         "ltm": r["ltm"] or 0,
-                        "rnr": rnr.get(r["project_key"], 0),
+                        "consolidation": consolidation.get(r["project_key"], 0),
                     }
                     for r in store.projects()
                 ]
@@ -694,8 +694,8 @@ class Handler(BaseHTTPRequestHandler):
                 out = [_card_from_rows(rows) for rows in groups]
             store.close()
             self._send(200, json.dumps(out))
-        elif parsed.path == "/api/rnr":
-            # Refine & Rescue view: the durable work queue + archived ("forgotten") facts.
+        elif parsed.path == "/api/consolidation":
+            # Consolidation view: the durable work queue + archived ("forgotten") facts.
             params = parse_qs(parsed.query)
             project_key = params.get("project", [""])[0]
             store = Store(cfg.db_path)

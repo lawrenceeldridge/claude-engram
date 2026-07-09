@@ -139,7 +139,7 @@ class StmTierTests(unittest.TestCase):
         self.assertEqual(texts, {"alpha fact"})
 
     def test_viewer_queries_by_tier_status_and_work(self):
-        # Backs the viewer's STM / LTM / RnR tabs.
+        # Backs the viewer's STM / LTM / Consolidation tabs.
         pk = self.project["key"]
         self._add("alpha")  # stm
         self._add("beta")
@@ -156,20 +156,20 @@ class StmTierTests(unittest.TestCase):
         self.assertEqual(texts(self.store.list_observations(pk, active=False)), {"gamma"})
         self.assertEqual([r["stage"] for r in self.store.work_items(pk)], ["rescue"])
 
-    def test_projects_reports_per_tier_and_rnr_counts(self):
-        # Backs the viewer's per-panel dropdown total (stm/ltm/rnr each show their own).
+    def test_projects_reports_per_tier_and_consolidation_counts(self):
+        # Backs the viewer's per-panel dropdown total (stm/ltm/consolidation each show their own).
         pk = self.project["key"]
         self._add("alpha")  # stm
         self._add("beta")
         self.store.promote(self._fid("beta"))  # -> engram
         self._add("gamma")
-        self.store.set_status([self._fid("gamma")], "pruned")  # archived -> rnr
-        self.store.enqueue_work(msg_id="m1", stage="rescue", project_key=pk)  # queued -> rnr
+        self.store.set_status([self._fid("gamma")], "pruned")  # archived -> consolidation
+        self.store.enqueue_work(msg_id="m1", stage="rescue", project_key=pk)  # queued -> consolidation
         row = next(r for r in self.store.projects() if r["project_key"] == pk)
         self.assertEqual(row["stm"], 1)  # alpha
         self.assertEqual(row["ltm"], 1)  # beta
         self.assertEqual(row["c"], 2)  # active total excludes archived gamma
-        self.assertEqual(self.store.rnr_counts()[pk], 2)  # gamma archived + 1 queued
+        self.assertEqual(self.store.consolidation_counts()[pk], 2)  # gamma archived + 1 queued
 
     # --- displacement (opt-in, reversible) ---
 

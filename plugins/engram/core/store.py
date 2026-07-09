@@ -760,7 +760,7 @@ class Store:
         A group is the facts sharing an observation_id (falling back to the fact's own
         id for ungrouped rows), returned as an ordered list of its fact rows. Optional
         filters: ``tier`` ('stm'/'ltm') and ``active`` (True = status='active' only,
-        False = archived only) — used by the viewer's STM / LTM / RnR tabs.
+        False = archived only) — used by the viewer's STM / LTM / Consolidation tabs.
         """
         grp = "COALESCE(observation_id, id)"
         cond = "project_key = ?"
@@ -787,7 +787,7 @@ class Store:
         ]
 
     def work_items(self, project_key: str, limit: int = 200) -> list[sqlite3.Row]:
-        """Work-queue rows for a project (all stages/statuses), newest first — the RnR view."""
+        """Work-queue rows for a project (all stages/statuses), newest first — the Consolidation view."""
         return self.db.execute(
             "SELECT * FROM work_queue WHERE project_key = ? ORDER BY enqueued_at DESC, rowid DESC LIMIT ?",
             (project_key, limit),
@@ -860,9 +860,9 @@ class Store:
             "FROM facts WHERE status = 'active' GROUP BY project_key ORDER BY last DESC"
         ).fetchall()
 
-    def rnr_counts(self) -> dict[str, int]:
-        """Per-project count for the viewer's RnR panel: archived ('forgotten') facts
-        plus pending work-queue items — the two populations that panel shows."""
+    def consolidation_counts(self) -> dict[str, int]:
+        """Per-project count for the viewer's Consolidation panel: archived ('forgotten')
+        facts plus pending work-queue items — the two populations that panel shows."""
         counts: dict[str, int] = {}
         for r in self.db.execute(
             "SELECT project_key, COUNT(*) AS c FROM facts WHERE status != 'active' GROUP BY project_key"
