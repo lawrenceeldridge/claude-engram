@@ -46,6 +46,13 @@ def _content_id(project_key: str, text: str) -> str:
     return hashlib.sha256(f"{project_key}\x00{norm}".encode()).hexdigest()[:24]
 
 
+def _sensory_id(project_key: str, modality: str, url: str, text: str) -> str:
+    """Content-addressed id for a sensory perception (project/modality/url/text,
+    whitespace/case-normalised) — re-perceiving the identical thing is idempotent."""
+    norm = " ".join(text.lower().split())
+    return hashlib.sha256(f"{project_key}\x00{modality}\x00{url}\x00{norm}".encode()).hexdigest()[:24]
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
   id            TEXT PRIMARY KEY,
@@ -406,6 +413,31 @@ def _v12_index_meta(db: sqlite3.Connection) -> None:
     )
 
 
+def _v16_sensory(db: sqlite3.Connection) -> None:
+    # Atkinson-Shiffrin sensory register: the single intake stage all perception enters
+    # (visual page snapshots, verbal conversation snippets), holding the raw perceived text
+    # briefly. One row per perception, tagged by modality (visual|verbal); it decays unless
+    # attended. Promotion to the durable store (index for visual, facts for verbal) is gated
+    # by attention (A-S selective read-out, NOT rehearsal). Content-addressed for idempotency;
+    # decayed_at soft-tombstones rows that have left the live register (NULL = live).
+    db.executescript(
+        "CREATE TABLE IF NOT EXISTS sensory ("
+        "  id             TEXT PRIMARY KEY,"
+        "  project_key    TEXT NOT NULL,"
+        "  modality       TEXT NOT NULL,"
+        "  observation_id TEXT,"
+        "  url            TEXT,"
+        "  text           TEXT NOT NULL,"
+        "  attended       INTEGER NOT NULL DEFAULT 0,"
+        "  created_at     REAL NOT NULL,"
+        "  decayed_at     REAL"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_sensory_project ON sensory(project_key);"
+        "CREATE INDEX IF NOT EXISTS idx_sensory_modality ON sensory(project_key, modality);"
+        "CREATE INDEX IF NOT EXISTS idx_sensory_created ON sensory(created_at);"
+    )
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -426,6 +458,7 @@ _MIGRATIONS = [
     _v13_usage,
     _v14_outcomes,
     _v15_edges,
+    _v16_sensory,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -859,6 +892,107 @@ class Store:
             "MAX(created_at) AS last "
             "FROM facts WHERE status = 'active' GROUP BY project_key ORDER BY last DESC"
         ).fetchall()
+
+    # --- Sensory register (A-S: one modality-tagged intake for all perception) ---
+    # A separate table, never read by recall or index search. Promotion (later phases) copies
+    # attended perceptions into the durable store; decay soft-tombstones the rest via decayed_at.
+
+    def add_sensory(
+        self,
+        project_key: str,
+        modality: str,
+        text: str,
+        *,
+        url: str | None = None,
+        observation_id: str | None = None,
+        now: float | None = None,
+    ) -> str:
+        """Record a perception in the sensory register (the A-S intake stage), holding its raw
+        text. Content-addressed per (project, modality, url, text): re-perceiving the identical
+        thing is idempotent — it refreshes recency and revives a decayed tombstone rather than
+        duplicating. Attention (which gates promotion) is set separately via ``mark_attended``.
+        Returns the sensory id."""
+        sid = _sensory_id(project_key, modality, url or "", text)
+        self.db.execute(
+            "INSERT INTO sensory (id, project_key, modality, observation_id, url, text, attended, created_at, decayed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL) "
+            "ON CONFLICT(id) DO UPDATE SET created_at = excluded.created_at, text = excluded.text, decayed_at = NULL",
+            (sid, project_key, modality, observation_id, url, text, _now(now)),
+        )
+        self.db.commit()
+        return sid
+
+    def sensory_rows(
+        self, project_key: str, limit: int | None = None, *, include_decayed: bool = False
+    ) -> list[sqlite3.Row]:
+        """Perceptions for a project, newest first (the viewer's Sensory panel). By default only
+        the live register (``decayed_at IS NULL``); ``include_decayed`` also returns rows that
+        have left the register."""
+        sql = "SELECT * FROM sensory WHERE project_key = ?"
+        if not include_decayed:
+            sql += " AND decayed_at IS NULL"
+        sql += " ORDER BY created_at DESC, rowid DESC"
+        params: list = [project_key]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self.db.execute(sql, tuple(params)).fetchall()
+
+    def mark_attended(self, sensory_id: str) -> None:
+        """Flag a perception as attended — the A-S selective read-out that gates promotion into
+        the durable store. Set by the intake shell (visual: re-perception of the same page;
+        verbal: distillation-worthiness), never by a rehearsal/frequency count."""
+        self.db.execute("UPDATE sensory SET attended = 1 WHERE id = ?", (sensory_id,))
+        self.db.commit()
+
+    def sweep_sensory(self, project_key: str, capacity: int, ttl_seconds: float, now: float | None = None) -> int:
+        """Decay the register (A-S 'lost from SR'). Soft-tombstones (sets ``decayed_at``)
+        UNATTENDED perceptions older than ``ttl_seconds`` and unattended live perceptions beyond
+        ``capacity`` (newest kept), then hard-purges tombstones older than ``ttl_seconds`` so the
+        table stays bounded. Attended perceptions are left for the promotion pass. Returns the
+        number newly tombstoned. A 0/None limit disables that limb."""
+        t = _now(now)
+        decayed = 0
+        if ttl_seconds and ttl_seconds > 0:
+            cur = self.db.execute(
+                "UPDATE sensory SET decayed_at = ? WHERE project_key = ? AND decayed_at IS NULL "
+                "AND attended = 0 AND created_at < ?",
+                (t, project_key, t - ttl_seconds),
+            )
+            decayed += cur.rowcount
+        if capacity and capacity > 0:
+            cur = self.db.execute(
+                "UPDATE sensory SET decayed_at = ? WHERE project_key = ? AND decayed_at IS NULL "
+                "AND attended = 0 AND id NOT IN ("
+                "SELECT id FROM sensory WHERE project_key = ? AND decayed_at IS NULL "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                (t, project_key, project_key, capacity),
+            )
+            decayed += cur.rowcount
+        if ttl_seconds and ttl_seconds > 0:
+            self.db.execute(
+                "DELETE FROM sensory WHERE project_key = ? AND decayed_at IS NOT NULL AND decayed_at < ?",
+                (project_key, t - ttl_seconds),
+            )
+        self.db.commit()
+        return decayed
+
+    def sensory_counts(self) -> dict[str, int]:
+        """Per-project LIVE sensory-perception count for the viewer's Sensory panel."""
+        return {
+            r["project_key"]: r["c"]
+            for r in self.db.execute(
+                "SELECT project_key, COUNT(*) AS c FROM sensory WHERE decayed_at IS NULL GROUP BY project_key"
+            )
+        }
+
+    def delete_sensory(self, sensory_id: str) -> int:
+        """Hard-delete one perception by id (the viewer's Sensory-card trash). Returns rows removed."""
+        if not sensory_id:
+            return 0
+        cur = self.db.execute("DELETE FROM sensory WHERE id = ?", (sensory_id,))
+        self.db.commit()
+        return cur.rowcount
 
     def consolidation_counts(self) -> dict[str, int]:
         """Per-project count for the viewer's Consolidation panel: archived ('forgotten')

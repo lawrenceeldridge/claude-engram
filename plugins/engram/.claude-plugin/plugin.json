@@ -220,6 +220,33 @@
       "default": 0,
       "min": 0
     },
+    "sensory_enabled": {
+      "type": "boolean",
+      "title": "Sensory register",
+      "description": "Atkinson-Shiffrin sensory register: a single modality-tagged intake stage all perception enters (page a11y snapshots + conversation), holding raw text briefly and decaying unless attended. Foundation only — intake hooks and promotion land in later phases; the table and sweep are inert until then.",
+      "default": true
+    },
+    "attention_window_seconds": {
+      "type": "number",
+      "title": "Attention window (seconds)",
+      "description": "Window within which a re-perception of the same page counts as attention (the A-S selective read-out that promotes a perception to the durable store). Attention, not rehearsal.",
+      "default": 300,
+      "min": 0
+    },
+    "sensory_capacity": {
+      "type": "number",
+      "title": "Sensory capacity",
+      "description": "Max live (undecayed) perceptions per project before the oldest unattended ones decay from the register (displacement). Attended perceptions are protected until promoted. 0 = unbounded.",
+      "default": 64,
+      "min": 0
+    },
+    "sensory_ttl_seconds": {
+      "type": "number",
+      "title": "Sensory TTL (seconds)",
+      "description": "How long an unattended perception lives in the register before it decays ('lost from SR'); decayed tombstones are hard-purged past this age so the table stays bounded. 0 = no TTL decay.",
+      "default": 900,
+      "min": 0
+    },
     "integrate_threshold": {
       "type": "number",
       "title": "Integrate threshold (merge)",

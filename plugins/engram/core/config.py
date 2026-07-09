@@ -118,6 +118,10 @@ class Config:
     db_path: Path
     sock_path: Path
     viewer_pid_path: Path
+    attention_window_seconds: float
+    sensory_enabled: bool
+    sensory_capacity: int
+    sensory_ttl_seconds: float
 
 
 def get_config() -> Config:
@@ -217,4 +221,8 @@ def get_config() -> Config:
         db_path=data_dir / "memory.db",
         sock_path=data_dir / "engram.sock",
         viewer_pid_path=data_dir / "viewer.pid",
+        attention_window_seconds=_num(_opt("attention_window_seconds", "300"), 300),
+        sensory_enabled=_opt("sensory_enabled", "true").lower() in ("1", "true", "yes", "on"),
+        sensory_capacity=int(_num(_opt("sensory_capacity", "64"), 64)),
+        sensory_ttl_seconds=_num(_opt("sensory_ttl_seconds", "900"), 900),
     )
