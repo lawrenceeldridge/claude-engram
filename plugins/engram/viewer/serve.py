@@ -138,6 +138,7 @@ PAGE = """<!doctype html>
 <header>
   <h1>claude-engram</h1>
   <div id="views">
+    <button class="vtoggle" data-view="sensory" title="Sensory register (A-S intake): fleeting perceptions — page snapshots (visual) + conversation (verbal) — that decay unless attended">sensory</button>
     <button class="vtoggle active" data-view="stm" title="Short-term memory (fresh — promotes to long-term on rehearsal or recall)">stm</button>
     <button class="vtoggle" data-view="ltm" title="Long-term memory (consolidated — promoted by rehearsal or recall)">ltm</button>
     <button class="vtoggle" data-view="consolidation" title="Consolidation &amp; rescue (the sleep pass): work queue + archived facts (superseded / displaced / merged / pruned / expired)">consolidation</button>
@@ -149,6 +150,7 @@ PAGE = """<!doctype html>
     <option value="">all</option>
     <option value="doc_section">docs</option>
     <option value="code_symbol">code</option>
+    <option value="snapshot">snapshots</option>
   </select>
   <input id="q" placeholder="semantic search within project… (blank = list all)">
   <div id="status">
@@ -181,12 +183,12 @@ async function loadProjects() {
   const rows = await (await fetch(view === 'index' ? '/api/index_projects' : '/api/projects')).json();
   // Per-panel total: stm/ltm/consolidation each carry their own count; index and any fallback
   // use the plain total. So the dropdown number tracks the panel you're on.
-  const countFor = r => ((view === 'stm' || view === 'ltm' || view === 'consolidation') ? (r[view] ?? 0) : r.count);
+  const countFor = r => ((view === 'stm' || view === 'ltm' || view === 'consolidation' || view === 'sensory') ? (r[view] ?? 0) : r.count);
   // Pin the selected project across tab switches even when this view has no data for
   // it yet (e.g. a project with memory but no index) — otherwise the dropdown would
   // silently jump to the first project. The empty view then shows an empty state.
   if (prev && !rows.some(r => r.project_key === prev))
-    rows.push({ project_key: prev, label: prevLabel, count: 0, stm: 0, ltm: 0, consolidation: 0 });
+    rows.push({ project_key: prev, label: prevLabel, count: 0, stm: 0, ltm: 0, consolidation: 0, sensory: 0 });
   sel.innerHTML = rows.map(r =>
     `<option value="${r.project_key}">${r.label} (${countFor(r)})</option>`).join('');
   if (rows.some(r => r.project_key === prev)) sel.value = prev;  // keep selection across live refresh / tab switch
@@ -301,12 +303,35 @@ async function reloadConsolidation() {
     `<h3 class="sec">Rescue queue · ${queue.length}${deadLabel}</h3>${qHTML}`
     + `<h3 class="sec">Archived / forgotten · ${archived.length}</h3>${aHTML}`;
 }
+// Sensory register (A-S intake): fleeting perceptions — page snapshots (visual) + conversation
+// (verbal) — that decay unless attended. Attention promotes: visual → index, verbal → facts.
+function sensoryCardHTML(r) {
+  const badge = `<span class="badge" data-type="${esc(r.modality)}">${esc(r.modality)}</span>`;
+  const att = r.attended ? '<span class="spill">attended</span>' : '';
+  const where = r.url ? `<div class="subtitle">${esc(r.url)}</div>` : '';
+  const body = r.text ? `<div class="narr">${esc(r.text)}</div>` : '';
+  return `<div class="card" data-type="${esc(r.modality)}"><div class="chead">${badge}${att}</div>`
+    + `<div class="cinner">${where}${body}<div class="meta">${fmtWhen(r.created)}</div></div></div>`;
+}
+async function reloadSensory() {
+  mode = 'search'; exhausted = true;   // browse-only, no infinite scroll
+  const pk = $('#project').value;
+  const r = await (await fetch(`/api/sensory?project=${encodeURIComponent(pk)}`)).json();
+  seen = new Set();
+  const s = r.stats || {}, rows = r.rows || [];
+  const head = `<h3 class="sec">Sensory register · ${s.live ?? 0} live · ${s.attended ?? 0} attended `
+    + `· ${s.visual ?? 0} visual · ${s.verbal ?? 0} verbal</h3>`;
+  const body = rows.length ? rows.map(sensoryCardHTML).join('')
+    : `<div class="empty">Register empty — no live perceptions. Snapshots arrive from browser tools; conversation is recorded at capture. Unattended perceptions decay.</div>`;
+  $('#list').innerHTML = head + body;
+}
 // Full re-render from the top: a query shows all ranked search hits; a blank query
 // shows the first (newest) page of the browse list, which grows via loadMore().
 async function reload(flashNew) {
   loadLedger();  // token-savings ledger for the selected project (all views)
   if (view === 'index') return reloadIndex();
   if (view === 'consolidation') return reloadConsolidation();
+  if (view === 'sensory') return reloadSensory();
   const q = $('#q').value.trim();
   mode = q ? 'search' : 'list';
   offset = 0; exhausted = false;
@@ -368,7 +393,7 @@ $('#views').addEventListener('click', async e => {
   view = b.dataset.view;
   document.querySelectorAll('.vtoggle').forEach(x => x.classList.toggle('active', x === b));
   $('#kind').style.display = view === 'index' ? '' : 'none';
-  $('#q').style.display = view === 'consolidation' ? 'none' : '';  // consolidation is browse-only
+  $('#q').style.display = (view === 'consolidation' || view === 'sensory') ? 'none' : '';  // consolidation + sensory are browse-only
   $('#q').value = '';
   $('#q').placeholder = view === 'index'
     ? 'search indexed code / docs… (blank = list)' : 'semantic search within project… (blank = list all)';
@@ -655,6 +680,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/projects":
             store = Store(cfg.db_path)
             consolidation = store.consolidation_counts()
+            sensory = store.sensory_counts()
             out = _disambiguate_labels(
                 [
                     {
@@ -665,6 +691,7 @@ class Handler(BaseHTTPRequestHandler):
                         "stm": r["stm"] or 0,
                         "ltm": r["ltm"] or 0,
                         "consolidation": consolidation.get(r["project_key"], 0),
+                        "sensory": sensory.get(r["project_key"], 0),
                     }
                     for r in store.projects()
                 ]
@@ -694,6 +721,36 @@ class Handler(BaseHTTPRequestHandler):
                 out = [_card_from_rows(rows) for rows in groups]
             store.close()
             self._send(200, json.dumps(out))
+        elif parsed.path == "/api/sensory":
+            params = parse_qs(parsed.query)
+            project_key = params.get("project", [""])[0]
+            modality = params.get("modality", [""])[0] or None  # 'visual'/'verbal'/None=both
+            limit = _int_param(params, "limit") or 50
+            offset = _int_param(params, "offset") or 0
+            store = Store(cfg.db_path)
+            rows = store.sensory_rows(project_key, limit=limit + offset, include_decayed=False)
+            if modality:
+                rows = [r for r in rows if r["modality"] == modality]
+            out = [
+                {
+                    "id": r["id"],
+                    "modality": r["modality"],
+                    "url": r["url"],
+                    "text": r["text"],
+                    "attended": r["attended"],
+                    "created_at": r["created_at"],
+                }
+                for r in rows[offset : offset + limit]
+            ]
+            store.close()
+            self._send(200, json.dumps(out))
+        elif parsed.path == "/api/sensory_stats":
+            params = parse_qs(parsed.query)
+            project_key = params.get("project", [""])[0]
+            store = Store(cfg.db_path)
+            stats = store.sensory_counts_by_status(project_key) if project_key else {}
+            store.close()
+            self._send(200, json.dumps(stats))
         elif parsed.path == "/api/consolidation":
             # Consolidation view: the durable work queue + archived ("forgotten") facts.
             params = parse_qs(parsed.query)
@@ -713,6 +770,25 @@ class Handler(BaseHTTPRequestHandler):
             ]
             store.close()
             self._send(200, json.dumps({"archived": archived, "queue": queue}))
+        elif parsed.path == "/api/sensory":
+            # Sensory register: live perceptions (visual + verbal) awaiting decay or promotion.
+            params = parse_qs(parsed.query)
+            project_key = params.get("project", [""])[0]
+            store = Store(cfg.db_path)
+            rows = [
+                {
+                    "id": r["id"],
+                    "modality": r["modality"],
+                    "url": r["url"],
+                    "attended": bool(r["attended"]),
+                    "created": r["created_at"],
+                    "text": (r["text"] or "")[:500],  # display excerpt only — full text stays in the register
+                }
+                for r in store.sensory_rows(project_key)
+            ]
+            stats = store.sensory_stats(project_key)
+            store.close()
+            self._send(200, json.dumps({"rows": rows, "stats": stats}))
         elif parsed.path == "/api/index_projects":
             store = Store(cfg.db_path)
             # Prefer the memory (facts) label/path; fall back to the label recorded at

@@ -72,6 +72,13 @@ def cmd_doctor(args) -> int:
         f"refine_prune_pct={cfg.refine_prune_percentile or 'off'}  "
         f"purge_days={cfg.purge_horizon_days or 'off'}  half_life_days={cfg.half_life_days}"
     )
+    s = store.sensory_stats(project["key"])
+    print(
+        f"sensory     : {'on' if cfg.sensory_enabled else 'off'}  "
+        f"{s['live']} live ({s['visual']} visual / {s['verbal']} verbal), {s['attended']} attended  "
+        f"capacity={cfg.sensory_capacity or 'off'}  ttl={cfg.sensory_ttl_seconds or 'off'}s  "
+        f"attention_window={cfg.attention_window_seconds}s"
+    )
     store.close()
     return 0
 
