@@ -11,7 +11,7 @@
       "name": "engram",
       "source": "./plugins/engram",
       "description": "Token-first, cross-project long-term memory: captures sessions, distils facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first.",
-      "version": "0.22.1"
+      "version": "0.23.0"
     }
   ]
 }

@@ -93,6 +93,14 @@ PAGE = """<!doctype html>
                     text-transform:uppercase; letter-spacing:.04em; color:#e3b341; }
   .summary-sec p { margin:0; color:#adbac7; white-space:pre-wrap; }
   .empty { color:var(--muted); padding:24px 0; }
+  .slegend { margin:-4px 0 14px; padding:10px 12px; border:1px solid var(--border);
+             border-radius:8px; background:var(--card); color:var(--muted);
+             font:12px/1.5 ui-monospace,Menlo,monospace; max-width:760px; }
+  .slegend dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:2px 10px; }
+  .slegend dt { color:#adbac7; font-weight:600; }
+  .slegend dd { margin:0; }
+  .slegend .lead { color:#adbac7; margin:0 0 8px; }
+  .slegend .foot { margin-top:8px; color:var(--muted); }
   #status { margin-inline-start:auto; display:flex; align-items:center; gap:14px; }
   #live { font:12px ui-monospace,Menlo,monospace; color:var(--muted); display:flex; align-items:center; gap:6px; }
   #live .dot { width:8px; height:8px; border-radius:50%; background:#3fb950; box-shadow:0 0 6px #3fb950; }
@@ -321,9 +329,40 @@ async function reloadSensory() {
   const s = r.stats || {}, rows = r.rows || [];
   const head = `<h3 class="sec">Sensory register · ${s.live ?? 0} live · ${s.attended ?? 0} attended `
     + `· ${s.visual ?? 0} visual · ${s.verbal ?? 0} verbal</h3>`;
+  const legend = `<div class="slegend">`
+    + `<p class="lead">Attention is the gate. Whatever is attended is remembered; everything else quietly fades.</p><dl>`
+    + `<dt>live</dt><dd>what's being perceived right now — fleeting, and fading fast unless something makes it stick.</dd>`
+    + `<dt>attended</dt><dd>the moments that caught attention. These are the keepers: they survive and move into long-term memory.</dd>`
+    + `<dt>visual</dt><dd>what was seen — pages the browser looked at.</dd>`
+    + `<dt>verbal</dt><dd>what was said — the conversation itself.</dd>`
+    + `</dl></div>`;
   const body = rows.length ? rows.map(sensoryCardHTML).join('')
     : `<div class="empty">Register empty — no live perceptions. Snapshots arrive from browser tools; conversation is recorded at capture. Unattended perceptions decay.</div>`;
-  $('#list').innerHTML = head + body;
+  $('#list').innerHTML = head + legend + body;
+}
+// Count + legend shown above the memory list (stm/ltm browse only). The count comes from the
+// selected project's per-view total (already in the dropdown label); the type legend is shared —
+// stm and ltm hold the same kinds of memory, they differ only in how settled they are.
+function memoryIntroHTML(view) {
+  const m = ($('#project').selectedOptions[0]?.textContent || '').match(/\((\d+)\)\s*$/);
+  const n = m ? +m[1] : 0;
+  const title = view === 'stm' ? 'Short-term memory' : 'Long-term memory';
+  const lead = view === 'stm'
+    ? 'Recent memories — still fresh. Revisit or recall one and it settles into long-term.'
+    : 'Settled memories — the ones that stuck, kept for the long run.';
+  const head = `<h3 class="sec">${title} · ${n} ${n === 1 ? 'memory' : 'memories'}</h3>`;
+  const legend = `<div class="slegend"><p class="lead">${lead}</p><dl>`
+    + `<dt>feature</dt><dd>a new capability</dd>`
+    + `<dt>change</dt><dd>something updated</dd>`
+    + `<dt>bugfix</dt><dd>a fix</dd>`
+    + `<dt>refactor</dt><dd>code reshaped, behaviour kept</dd>`
+    + `<dt>decision</dt><dd>a choice, and why it was made</dd>`
+    + `<dt>discovery</dt><dd>something learned along the way</dd>`
+    + `<dt>antipattern</dt><dd>a mistake worth not repeating</dd>`
+    + `<dt>prompt</dt><dd>a request you made</dd>`
+    + `<dt>session summary</dt><dd>a recap of a work session</dd>`
+    + `</dl></div>`;
+  return head + legend;
 }
 // Full re-render from the top: a query shows all ranked search hits; a blank query
 // shows the first (newest) page of the browse list, which grows via loadMore().
@@ -339,9 +378,11 @@ async function reload(flashNew) {
   if (mode === 'list') { offset = rows.length; exhausted = rows.length < PAGE; }
   const prev = seen;                        // only cards absent before flash
   seen = new Set(rows.map(r => r.key));
-  $('#list').innerHTML = rows.length
+  // Browse mode gets the count + type legend on top; search shows ranked hits only.
+  const intro = (mode === 'list' && (view === 'stm' || view === 'ltm')) ? memoryIntroHTML(view) : '';
+  $('#list').innerHTML = intro + (rows.length
     ? rows.map(r => cardHTML(r, flashNew && !prev.has(r.key))).join('')
-    : '<div class="empty">No facts.</div>';
+    : '<div class="empty">No facts.</div>');
 }
 // Infinite scroll: append the next page of the browse list. Inert during search.
 async function loadMore() {
