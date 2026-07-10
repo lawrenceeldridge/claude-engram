@@ -668,6 +668,14 @@ class ClaudeCliDistiller(Distiller):
         args = [self.cmd, "-p"]
         if self.model:
             args += ["--model", self.model]
+        # Distillation is text-in → JSON-out: the subprocess needs NO tools. `--tools ""`
+        # disables the entire built-in tool set so the model *cannot* touch the working tree.
+        # Without it the nested session inherits the project's (often permissive) allow-list —
+        # e.g. `Bash(cat > *)` — and a weak model can misread the transcript embedded in the
+        # prompt as instructions and write files (observed: it clobbered a source file mid-edit).
+        # This is the tool-side guard; ENGRAM_DISABLE below is the hook-side guard. Kept last so
+        # the variadic `--tools` can't swallow a following flag.
+        args += ["--tools", ""]
         # The nested `claude -p` is itself a Claude session that would fire engram's hooks and
         # capture this very prompt (a self-referential loop). ENGRAM_DISABLE makes those hooks
         # no-op, breaking the recursion at its root.

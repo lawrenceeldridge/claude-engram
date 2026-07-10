@@ -105,6 +105,34 @@ class DistillerEnvTests(unittest.TestCase):
         self.assertIsNotNone(captured["env"], "distiller must pass an explicit env")
         self.assertEqual(captured["env"].get("ENGRAM_DISABLE"), "1")
 
+    def test_claude_distiller_runs_with_no_tools(self):
+        # Regression: the headless distiller must be spawned tool-less (`--tools ""`) so a
+        # confused model can't write to the working tree via the project's allow-list
+        # (e.g. `Bash(cat > *)`). This is the tool-side guard; ENGRAM_DISABLE is the hook-side one.
+        captured = {}
+
+        class _Result:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            return _Result()
+
+        orig = distill.subprocess.run
+        distill.subprocess.run = fake_run
+        try:
+            ClaudeCliDistiller(cmd="claude", model="haiku")._complete("some prompt")
+        finally:
+            distill.subprocess.run = orig
+        args = captured["args"]
+        self.assertIn("--tools", args)
+        self.assertEqual(args[args.index("--tools") + 1], "", "--tools value must be '' (all tools disabled)")
+        joined = " ".join(args)
+        for banned in ("Edit", "Write", "Bash", "NotebookEdit"):
+            self.assertNotIn(banned, joined, f"distiller must not be granted the {banned} tool")
+
 
 class DistillerPromptBackstopTests(unittest.TestCase):
     def setUp(self):
