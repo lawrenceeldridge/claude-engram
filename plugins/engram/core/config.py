@@ -128,6 +128,7 @@ class Config:
     distiller_model: str
     distiller_base_url: str
     distiller_api_key: str
+    ingest_min_prompt_len: int
     antipatterns: bool
     review_enabled: bool
     ttl_days: float
@@ -240,6 +241,10 @@ def get_config() -> Config:
         distiller_model=_opt("distiller_model", ""),
         distiller_base_url=_opt("distiller_base_url", "http://localhost:11434/v1"),
         distiller_api_key=_opt("distiller_api_key", ""),
+        # Ingestion quality gate: drop a trivial verbatim user prompt below this many chars
+        # (bare confirmations, "Option C", pasted slash-commands) so LTM stays real facts.
+        # 0 disables the prompt gate (capture every prompt, as before). See core/domain/ingest.py.
+        ingest_min_prompt_len=int(_num(_opt("ingest_min_prompt_len", "12"), 12)),
         # Anti-pattern catalogue: mine admitted mistakes into durable 'antipattern' memories.
         # On by default, but a no-op unless an LLM distiller is configured (heuristic returns []).
         antipatterns=_opt("antipatterns", "true").lower() in ("1", "true", "yes", "on"),
