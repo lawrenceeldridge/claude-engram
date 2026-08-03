@@ -19,6 +19,7 @@ from core.domain.confidence import compute_confidence
 from core.domain.entities import extract_entities
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
+from core.domain.scoring import salience_of
 from core.domain.sensory import normalize_url, should_promote
 from core.ports.distill import (
     LLM_DISTILLERS,
@@ -157,7 +158,7 @@ def add_records(
             scale=scale,
             dim=len(vec),
             vec_bits=pack_bits(vec),
-            importance=min(1.0, len(record.text) / 240.0),
+            importance=salience_of(record.type),
             created_at=now,
             title=record.title,
             subtitle=record.subtitle,
@@ -267,7 +268,7 @@ def bulk_add_records(
                 scale=scale,
                 dim=len(vec),
                 vec_bits=pack_bits(vec),
-                importance=min(1.0, len(rec.text) / 240.0),
+                importance=salience_of(rec.type),
                 created_at=ts if ts is not None else now,
                 title=rec.title,
                 subtitle=rec.subtitle,
@@ -623,7 +624,7 @@ def capture_prompts(
             scale=scale,
             dim=len(vec),
             vec_bits=pack_bits(vec),
-            importance=0.5,
+            importance=salience_of("prompt"),
             created_at=now,
         )
         inserted += 1

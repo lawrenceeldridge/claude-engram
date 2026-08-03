@@ -19,6 +19,7 @@ clustering is a pure function over ``(id, vector)`` pairs; all I/O lives in the 
 from __future__ import annotations
 
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
+from core.domain.scoring import salience_of
 from core.ports.distill import LLM_DISTILLERS, get_distiller
 
 # Cluster at most this many recent STM facts per pass, so the O(n²) comparison stays cheap
@@ -111,7 +112,7 @@ def _llm_merge(store, project, embedder, distiller, groups, text_by_id, now) -> 
             scale=scale,
             dim=len(vec),
             vec_bits=pack_bits(vec),
-            importance=min(1.0, len(merged_text) / 240.0),
+            importance=salience_of(""),  # a merged fact carries no single type → neutral salience
             created_at=now,
         )
         merged_count += store.set_status(members, "merged")

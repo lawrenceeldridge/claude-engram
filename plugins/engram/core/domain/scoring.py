@@ -39,3 +39,28 @@ def priority(
     w_freq: float,
 ) -> float:
     return similarity * w_sim + decay * w_recency + freq_boost * w_freq
+
+
+# Salience (importance) by observation type — the "how strongly encoded" signal (emotional /
+# dopamine tagging in memory research: strong events are stored faster and last longer).
+# Deliberate choices and hard-won fixes are the most worth keeping; a passing discovery the
+# least. Feeds the *retention* score (the sleep-pass forgetting curve) so important facts fade
+# slower — it deliberately does NOT touch the recall Priority Score above, so recall ordering is
+# unchanged. Unknown / empty types fall to the neutral default.
+_SALIENCE_BY_TYPE = {
+    "decision": 1.0,
+    "bugfix": 1.0,
+    "antipattern": 1.0,
+    "change": 0.7,
+    "feature": 0.7,
+    "refactor": 0.6,
+    "session_summary": 0.5,
+    "prompt": 0.4,
+    "discovery": 0.4,
+}
+_DEFAULT_SALIENCE = 0.4
+
+
+def salience_of(type_: str) -> float:
+    """Salience (importance) of a fact from its observation ``type``, in [0, 1]. Pure."""
+    return _SALIENCE_BY_TYPE.get((type_ or "").strip().lower(), _DEFAULT_SALIENCE)
