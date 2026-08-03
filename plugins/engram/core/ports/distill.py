@@ -287,6 +287,17 @@ class Distiller(ABC):
         """
         return []
 
+    def review(self, facts: list[tuple[str, str]], context: str = "") -> list[dict]:
+        """Judge stored facts for staleness/contradiction — the curation aid.
+
+        ``facts`` = (id, text) of active memories to audit; ``context`` is optional current
+        project/infrastructure state to judge them against. Returns one proposal per flagged
+        fact — ``{"id", "verdict": "delete"|"update", "reason", "replacement"}`` — omitting
+        facts judged still-valid ("keep"). LLM-only (Special Case: the heuristic distiller
+        cannot judge staleness, so it returns [] — a heuristic install curates manually only).
+        """
+        return []
+
 
 class HeuristicDistiller(Distiller):
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
@@ -613,6 +624,67 @@ def _build_antipattern_prompt(text: str, existing: list[tuple[str, str]]) -> str
     return _ANTIPATTERN_PROMPT.format(existing=existing_block, transcript=_clip(text))
 
 
+_REVIEW_VERDICTS = {"keep", "update", "delete"}
+
+_REVIEW_PROMPT = """You audit a coding assistant's long-term memory for entries that are now
+INVALID and should be retired — so stale facts stop being recalled and misleading future sessions.
+
+Flag a fact only when it is clearly one of:
+- OUTDATED: a change (e.g. new infrastructure, a migration, a reversed decision) has made it
+  false — even if the wording shares little vocabulary with the new reality.
+- CONTRADICTED: it conflicts with the current state described in the context below.
+- REDUNDANT: it duplicates another listed fact with no extra detail.
+Otherwise leave it alone. When unsure, KEEP — false retirement loses real memory.
+
+Output ONLY a JSON object of the form {{"reviews": [ ... ]}}. Include an entry ONLY for a fact
+you are retiring or rewriting (omit keeps entirely). Each entry:
+  {{"id": "<the exact id of the listed fact>",
+    "verdict": "<delete | update>",
+    "reason": "<one concise sentence: why it is invalid>",
+    "replacement": "<for 'update' only: the corrected fact, present tense, self-contained; else \\"\\">"}}
+
+Use "delete" when the fact is simply no longer true; use "update" when a corrected version
+should replace it. If nothing is invalid, return {{"reviews": []}}.
+
+Current project / infrastructure context (may be empty):
+{context}
+
+Stored facts (id: text):
+{facts}
+"""
+
+
+def _build_review_prompt(facts: list[tuple[str, str]], context: str) -> str:
+    facts_block = "\n".join(f"{fid}: {ftext}" for fid, ftext in facts) or "(none)"
+    return _REVIEW_PROMPT.format(context=_clip(context.strip()) or "(none)", facts=facts_block)
+
+
+def parse_review(output: str, valid_ids: set[str]) -> list[dict]:
+    """Pure parser: LLM review JSON → proposal dicts, keeping only well-formed, actionable
+    entries that name a real listed id. Unknown ids, unknown verdicts, and 'keep' are dropped;
+    an 'update' with no replacement is downgraded to nothing (can't apply an empty rewrite)."""
+    proposals: list[dict] = []
+    for item in _coerce_items(output):
+        if not isinstance(item, dict):
+            continue
+        fid = str(item.get("id", "")).strip()
+        verdict = str(item.get("verdict", "")).strip().lower()
+        if fid not in valid_ids or verdict not in _REVIEW_VERDICTS or verdict == "keep":
+            continue
+        replacement = str(item.get("replacement", "")).strip()
+        if verdict == "update" and not replacement:
+            continue  # nothing to replace it with — skip rather than guess
+        proposals.append(
+            {
+                "id": fid,
+                "verdict": verdict,
+                "reason": str(item.get("reason", "")).strip(),
+                "replacement": replacement,
+            }
+        )
+    return proposals
+
+
 def parse_antipatterns(output: str) -> list[DistilledFact]:
     """Pure parser: LLM anti-pattern JSON -> DistilledFacts (``type="antipattern"``).
 
@@ -709,6 +781,14 @@ class ClaudeCliDistiller(Distiller):
         except Exception:
             return []
 
+    def review(self, facts: list[tuple[str, str]], context: str = "") -> list[dict]:
+        if not facts:
+            return []
+        try:
+            return parse_review(self._complete(_build_review_prompt(facts, context)), {fid for fid, _ in facts})
+        except Exception:
+            return []
+
 
 class HTTPDistiller(Distiller):
     """Any OpenAI-compatible chat endpoint (Ollama / LM Studio / llama.cpp / vLLM).
@@ -766,6 +846,14 @@ class HTTPDistiller(Distiller):
     def extract_antipatterns(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
         try:
             return parse_antipatterns(self._complete(_build_antipattern_prompt(text, existing)))
+        except Exception:
+            return []
+
+    def review(self, facts: list[tuple[str, str]], context: str = "") -> list[dict]:
+        if not facts:
+            return []
+        try:
+            return parse_review(self._complete(_build_review_prompt(facts, context)), {fid for fid, _ in facts})
         except Exception:
             return []
 

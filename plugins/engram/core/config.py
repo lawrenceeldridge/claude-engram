@@ -127,6 +127,7 @@ class Config:
     distiller_base_url: str
     distiller_api_key: str
     antipatterns: bool
+    review_enabled: bool
     ttl_days: float
     ttl_keep_frequency: int
     recall_min_confidence: float
@@ -230,6 +231,11 @@ def get_config() -> Config:
         # Anti-pattern catalogue: mine admitted mistakes into durable 'antipattern' memories.
         # On by default, but a no-op unless an LLM distiller is configured (heuristic returns []).
         antipatterns=_opt("antipatterns", "true").lower() in ("1", "true", "yes", "on"),
+        # Distiller-assisted memory review (`engram review` / the review_memory MCP tool): the
+        # LLM proposes stale/contradicted entries to retire. On by default, but a no-op unless an
+        # LLM distiller is configured (the heuristic returns no proposals). Direct invalidation
+        # (invalidate_memory / `engram forget`) is always available regardless of this gate.
+        review_enabled=_opt("review_enabled", "true").lower() in ("1", "true", "yes", "on"),
         ttl_days=_num(_opt("ttl_days", "0"), 0),
         ttl_keep_frequency=int(_num(_opt("ttl_keep_frequency", "3"), 3)),
         recall_min_confidence=_num(_opt("recall_min_confidence", "0.35"), 0.35),

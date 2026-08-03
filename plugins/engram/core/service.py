@@ -102,8 +102,12 @@ def _supersede_candidates(
     return out
 
 
-def _resolve_supersedes(store: Store, project_key: str, refs: list[str]) -> set[str]:
-    """Turn distiller supersedes references (fact ids) into valid same-project ids."""
+def _resolve_project_ids(store: Store, project_key: str, refs: list[str]) -> set[str]:
+    """Filter fact-id references to those that exist and belong to ``project_key``.
+
+    A safety scope shared by supersession (distiller ``supersedes`` links) and invalidation
+    (the review/forget path): a caller can never archive another project's memory by naming
+    ids that aren't its own."""
     resolved = set()
     for ref in refs:
         row = store.get(ref)
@@ -140,7 +144,7 @@ def add_records(
                 store.promote(fact_id, now)
             continue
         vec = embedder.embed_one(record.text)
-        victims = _resolve_supersedes(store, project["key"], record.supersedes)
+        victims = _resolve_project_ids(store, project["key"], record.supersedes)
         victims.update(_find_superseded(store, project["key"], vec, cfg.supersede_threshold, scorer))
         victims.discard(fact_id)
         blob, scale = quantize_int8(vec)
@@ -377,6 +381,66 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
         return recovered
     finally:
         queue.close()
+
+
+def invalidate_facts(store: Store, project_key: str, fact_ids: list[str]) -> int:
+    """Retire facts from active recall — a reversible archive (``status='expired'``), never a
+    delete. Project-scoped for safety (ids not owned by ``project_key`` are ignored). The
+    direct-invalidation primitive behind ``engram forget`` / the ``invalidate_memory`` MCP tool
+    and the ``delete`` verdict of a review. Returns the number retired."""
+    owned = _resolve_project_ids(store, project_key, list(dict.fromkeys(fact_ids)))
+    return store.set_status(list(owned), "expired")
+
+
+def review_memories(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    query: str | None = None,
+    limit: int = 50,
+    context: str = "",
+) -> dict:
+    """Distiller-assisted audit — propose stale/contradicted facts to retire. Read-only: it
+    returns proposals for a human (``engram review``) or the model (``review_memory`` MCP tool)
+    to act on, never mutating the store itself.
+
+    Candidate set: the facts most similar to ``query`` (any age, reusing the write-path scan)
+    when a query is given, else the most recent ``limit``. No-op (empty proposals) when
+    ``review_enabled`` is off or an LLM distiller is not configured (the heuristic returns [])."""
+    if not cfg.review_enabled:
+        return {"proposals": [], "reviewed": 0, "guidance": "review disabled (review_enabled=false)"}
+    if query:
+        scored = _scored_active(store, project["key"], embedder.embed_one(query), get_scorer(cfg))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        rows = [row for row, _sim in scored[:limit]]
+    else:
+        rows = store.recent(project["key"], limit)
+    facts = [(row["id"], row["text"]) for row in rows]
+    proposals = get_distiller(cfg).review(facts, context)
+    texts = dict(facts)
+    for proposal in proposals:
+        proposal["text"] = texts.get(proposal["id"], "")
+    return {"proposals": proposals, "reviewed": len(facts)}
+
+
+def apply_review(
+    store: Store, embedder: EmbeddingGateway, cfg: Config, project: Project, decisions: list[dict]
+) -> dict:
+    """Enact review decisions. ``delete`` retires the fact (reversible); ``update`` adds the
+    corrected fact, which supersedes the old one via the existing capture path (so the old row
+    is archived, not left dangling). ``keep`` / anything else is skipped. Returns counts."""
+    to_delete = [d["id"] for d in decisions if d.get("verdict") == "delete" and d.get("id")]
+    updates = [d for d in decisions if d.get("verdict") == "update" and d.get("id") and d.get("replacement")]
+    deleted = invalidate_facts(store, project["key"], to_delete)
+    updated = 0
+    for decision in updates:
+        if not _resolve_project_ids(store, project["key"], [decision["id"]]):
+            continue  # not this project's fact — never rewrite across projects
+        record = DistilledFact(text=decision["replacement"], supersedes=[decision["id"]])
+        add_records(store, embedder, cfg, project, "review", [record])
+        updated += 1
+    return {"deleted": deleted, "updated": updated}
 
 
 def capture_transcript(
@@ -810,8 +874,11 @@ def _embedding_mismatch(store: Store, embedder: EmbeddingGateway, project_key: s
 def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]:
     """Greedy budget pack: highest-ranked facts first, until the char budget is spent.
 
-    Also returns the ids of the packed facts so the caller can record retrieval
-    attribution (recall_count / last_recalled) — the id is not exposed in the DTO.
+    The ``id`` is exposed in the DTO so an on-demand caller (the model, via the ``recall`` MCP
+    tool) can target a specific fact for curation — e.g. retire a stale entry through
+    ``invalidate_memory``. This is the on-demand pull only; the passive per-turn injection
+    (``render_block``) is unaffected, so the hot-path token budget does not change. The same
+    ids are returned separately for retrieval attribution (recall_count / last_recalled).
     """
     packed: list[dict] = []
     packed_ids: list[str] = []
@@ -822,6 +889,7 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]
             continue
         packed.append(
             {
+                "id": row["id"],
                 "text": text,
                 "similarity": round(float(sim), 4),
                 "kind": row["kind"],
