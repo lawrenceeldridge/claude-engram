@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable
 from core.config import Config
 from core.domain.confidence import compute_confidence
 from core.domain.entities import extract_entities
+from core.domain.ingest import is_trivial_prompt
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.domain.scoring import salience_of
@@ -603,11 +604,20 @@ def capture_prompts(
     """Store user prompts verbatim (kind='prompt') — a 1:1 copy, not distilled.
 
     Embedded so they stay recallable and FTS-indexed, but never superseded: a prompt
-    records what was asked, not a claim that can go stale.
+    records what was asked, not a claim that can go stale. Trivial prompts (bare
+    confirmations, "Option C", pasted slash-commands) are gated out by the ingestion
+    policy so LTM keeps real cues, not steering noise — disabled at ``ingest_min_prompt_len=0``.
     """
     inserted = 0
     now = time.time()
+    min_prompt_len = cfg.ingest_min_prompt_len
     for prompt in prompts:
+        try:
+            trivial = min_prompt_len > 0 and is_trivial_prompt(prompt, min_prompt_len)
+        except Exception:
+            trivial = False  # fail-open: a policy bug must never make capture drop a prompt
+        if trivial:
+            continue
         fid = store.fact_id(project["key"], prompt)
         if store.exists(fid):
             store.reinforce(fid, now)

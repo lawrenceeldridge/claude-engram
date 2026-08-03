@@ -77,6 +77,13 @@
       "default": 3,
       "min": 1
     },
+    "ingest_min_prompt_len": {
+      "type": "number",
+      "title": "Trivial-prompt gate (chars)",
+      "description": "Drop a verbatim user prompt shorter/more trivial than this many characters — bare confirmations (\"yes\", \"Option C\"), pasted slash-commands — so long-term memory keeps real cues, not steering noise. 0 disables the gate (capture every prompt).",
+      "default": 12,
+      "min": 0
+    },
     "top_k": {
       "type": "number",
       "title": "Recall results per prompt",

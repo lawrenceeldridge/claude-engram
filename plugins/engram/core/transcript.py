@@ -15,31 +15,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 
-_SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+from core.domain.ingest import is_harness_noise, strip_harness_blocks
 
-# User turns that are pure harness scaffolding, not something the user said.
-_NOISE_PREFIXES = (
-    "<local-command",
-    "<command-name>",
-    "<command-message>",
-    "<command-args>",
-    "<ide_opened_file>",
-    "<user-",
-    "caveat:",
-    "[request interrupted",
-    "base directory for this skill",
-)
-
-
-def _clean(text: str) -> str:
-    return _SYSTEM_REMINDER.sub("", text).strip()
-
-
-def _is_noise(text: str) -> bool:
-    head = text.lstrip().lower()[:40]
-    return any(head.startswith(prefix) for prefix in _NOISE_PREFIXES)
+# Harness stripping/gating lives in the ingestion policy (core/domain/ingest.py) — the single
+# source of truth shared with the distiller and the prompt gate. `strip_harness_blocks` removes
+# paired <system-reminder>/<task-notification>/… blocks; `is_harness_noise` drops a user turn
+# that is pure scaffolding (slash-command wrapper, IDE notice, task-notification).
 
 
 def _short(value, limit: int = 80) -> str:
@@ -79,21 +61,21 @@ def _content_lines(content, role: str) -> list[str]:
     if content is None:
         return []
     if isinstance(content, str):
-        text = _clean(content)
-        return [text] if text and not (role == "user" and _is_noise(text)) else []
+        text = strip_harness_blocks(content)
+        return [text] if text and not (role == "user" and is_harness_noise(text)) else []
 
     lines: list[str] = []
     if isinstance(content, list):
         for block in content:
             if isinstance(block, str):
-                text = _clean(block)
-                if text and not (role == "user" and _is_noise(text)):
+                text = strip_harness_blocks(block)
+                if text and not (role == "user" and is_harness_noise(text)):
                     lines.append(text)
             elif isinstance(block, dict):
                 btype = block.get("type")
                 if btype == "text":
-                    text = _clean(block.get("text", ""))
-                    if text and not (role == "user" and _is_noise(text)):
+                    text = strip_harness_blocks(block.get("text", ""))
+                    if text and not (role == "user" and is_harness_noise(text)):
                         lines.append(text)
                 elif btype == "tool_use" and role == "assistant":
                     action = _render_tool_use(block.get("name", ""), block.get("input", {}))

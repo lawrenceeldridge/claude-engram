@@ -19,6 +19,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -171,6 +172,54 @@ class DistillerPromptBackstopTests(unittest.TestCase):
             self.store, self.embedder, self.cfg, self.project, "s1", "The deploy target is fly.io."
         )
         self.assertGreaterEqual(n, 1)
+
+    def test_capture_text_drops_ephemeral_status_lines(self):
+        # CI/build status lines are transient, not durable facts — the heuristic now skips them.
+        n = service.capture_text(
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
+            "TypeScript compilation passed\nproduction build succeeded\nworking tree clean",
+        )
+        self.assertEqual(n, 0)
+        self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 0)
+
+    def _prompt_texts(self):
+        return [r["text"] for r in self.store.active_rows_for_project(self.project["key"]) if r["kind"] == "prompt"]
+
+    def test_capture_prompts_drops_trivial_keeps_substantive(self):
+        service.capture_prompts(
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
+            [
+                "yes lets commit",
+                "Apply all",
+                "Option C",
+                "/engram-git commit",
+                "Paginate the consolidation panel please.",
+            ],
+        )
+        kept = self._prompt_texts()
+        self.assertEqual(kept, ["Paginate the consolidation panel please."])  # only the substantive one
+
+    def test_capture_prompts_gate_disabled_at_zero(self):
+        cfg = replace(self.cfg, ingest_min_prompt_len=0)
+        service.capture_prompts(self.store, self.embedder, cfg, self.project, "s1", ["Option C"])
+        self.assertEqual(self._prompt_texts(), ["Option C"])  # gate off → captured verbatim
+
+    def test_capture_prompts_fails_open_on_policy_error(self):
+        # A policy bug must never make capture drop a prompt (fail-open contract).
+        def boom(*_a, **_k):
+            raise RuntimeError("policy exploded")
+
+        with mock.patch.object(service, "is_trivial_prompt", boom):
+            service.capture_prompts(self.store, self.embedder, self.cfg, self.project, "s1", ["Option C"])
+        self.assertEqual(self._prompt_texts(), ["Option C"])  # kept despite the raising predicate
 
 
 if __name__ == "__main__":

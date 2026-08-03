@@ -316,6 +316,7 @@ or `ENGRAM_*` env vars for standalone use:
 | `supersede_candidate_min_sim` | `0.3` | minimum cosine for a fact to be offered as a supersede candidate (a loose gate — the LLM makes the final call) |
 | `ttl_days` | `0` | archive facts unseen this long on capture (0 disables hard expiry) |
 | `ttl_keep_frequency` | `3` | facts reinforced this often are never expired |
+| `ingest_min_prompt_len` | `12` | drop trivial verbatim prompts below this length (bare confirmations, "Option C", pasted slash-commands) so LTM keeps real cues; 0 disables |
 | `recall_min_confidence` | `0.35` | confidence the `recall` tool needs to report verdict `ok` |
 | `recall_max_chars` | `1200` | character budget for facts returned by the `recall` tool |
 | `viewer_autostart` | `true` | start the localhost viewer detached at session start |
