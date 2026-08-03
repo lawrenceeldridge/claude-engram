@@ -66,7 +66,8 @@ def cmd_doctor(args) -> int:
     print(
         f"consolidation: supersede={cfg.supersede_threshold}  "
         f"integrate={cfg.integrate_threshold or 'off'}  "
-        f"stm_capacity={cfg.stm_capacity or 'off'} (promote>={cfg.promote_after_freq})"
+        f"stm_capacity={cfg.stm_capacity or 'off'} "
+        f"(promote>={cfg.promote_after_freq}, mature={f'{cfg.stm_max_age_days}d' if cfg.stm_max_age_days > 0 else 'off'})"
     )
     print(
         f"forgetting  : refine_keep_max={cfg.refine_keep_max or 'off'}  "

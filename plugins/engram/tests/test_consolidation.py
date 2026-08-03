@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.consolidation import consolidate  # noqa: E402
+from core.consolidation.mature import mature  # noqa: E402
 from core.consolidation.refine import refine  # noqa: E402
 from core.consolidation.replay import replay  # noqa: E402
 from core.consolidation.scoring import RetentionFeatures, depth_of, retention  # noqa: E402
@@ -75,6 +76,7 @@ class StageTests(unittest.TestCase):
             get_config(),
             distiller="heuristic",
             stm_capacity=0,
+            stm_max_age_days=0,  # maturation off here; MaturationTests exercises it explicitly
             integrate_threshold=0,
             refine_keep_max=0,
             refine_prune_percentile=0,
@@ -206,6 +208,88 @@ class StageTests(unittest.TestCase):
         self.assertEqual(counts["displaced"], 0)  # 1 STM left after promotion == capacity
         self.assertEqual(self.store.get(first)["tier"], "ltm")
         self.assertEqual(self.store.get(first)["status"], "active")
+
+
+class MaturationTests(unittest.TestCase):
+    """Age-based STM→LTM maturation (Phase 2, memory-lifecycle-overhaul).
+
+    The time-based promotion path: a short-term fact older than ``stm_max_age_days`` moves to
+    LTM regardless of rehearsal/recall, so STM does not accumulate one-off facts forever.
+    Recall-neutrality (STM vs matured-LTM score identically at the default weight) is already
+    covered by ``test_stm.StmTierTests.test_recall_is_tier_agnostic_by_default`` — not
+    duplicated here.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        # Maturation on at 1 day; every other consolidation lever off so we test it in isolation.
+        self.cfg = replace(
+            get_config(),
+            distiller="heuristic",
+            stm_max_age_days=1.0,
+            stm_capacity=0,
+            integrate_threshold=0,
+            refine_keep_max=0,
+            refine_prune_percentile=0,
+            purge_horizon_days=0,
+        )
+        self.store = Store(self.cfg.db_path)
+        self.embedder = HashEmbedding(dim=self.cfg.dim)
+        self.project = {"key": "test", "path": "/tmp/test", "label": "test"}
+
+    def tearDown(self):
+        self.store.close()
+        os.environ.pop("ENGRAM_DATA_DIR", None)
+        self.tmp.cleanup()
+
+    def _add_aged(self, text: str, age_days: float) -> str:
+        """Add an STM fact and back-date its capture time (and last_seen) by ``age_days``."""
+        service.add_facts(self.store, self.embedder, self.cfg, self.project, "s1", [text])
+        fid = self.store.fact_id(self.project["key"], text)
+        stamp = NOW - age_days * 86400
+        self.store.db.execute("UPDATE facts SET created_at = ?, last_seen = ? WHERE id = ?", (stamp, stamp, fid))
+        self.store.db.commit()
+        return fid
+
+    def test_mature_transfers_aged_stm(self):
+        old = self._add_aged("two-day-old fact", age_days=2)
+        fresh = self._add_aged("half-day-old fact", age_days=0.5)
+        matured = mature(self.store, self.cfg, self.project, now=NOW)
+        self.assertEqual(matured, 1)
+        self.assertEqual(self.store.get(old)["tier"], "ltm")
+        self.assertEqual(self.store.get(fresh)["tier"], "stm")  # younger than the horizon
+
+    def test_mature_preserves_last_seen(self):
+        # Maturation is NOT a rehearsal — it must not refresh recency, or the forgetting curve
+        # would treat a dormant fact as freshly seen.
+        old = self._add_aged("aged fact", age_days=3)
+        before = self.store.get(old)["last_seen"]
+        mature(self.store, self.cfg, self.project, now=NOW)
+        self.assertEqual(self.store.get(old)["last_seen"], before)
+
+    def test_mature_disabled_is_noop(self):
+        self._add_aged("aged fact", age_days=5)
+        cfg = replace(self.cfg, stm_max_age_days=0)
+        self.assertEqual(mature(self.store, cfg, self.project, now=NOW), 0)
+
+    def test_mature_is_idempotent(self):
+        self._add_aged("aged fact", age_days=2)
+        self.assertEqual(mature(self.store, self.cfg, self.project, now=NOW), 1)
+        self.assertEqual(mature(self.store, self.cfg, self.project, now=NOW), 0)  # already LTM
+
+    def test_consolidate_matures_before_displacing(self):
+        # An aged fact matures to LTM (via the mature stage) and so is exempt from STM
+        # displacement even at capacity 0-with-overflow; a fresh fact stays STM.
+        old = self._add_aged("aged fact", age_days=2)
+        fresh = self._add_aged("fresh fact", age_days=0.1)
+        cfg = replace(self.cfg, stm_capacity=1)  # only room for 1 STM fact
+        counts = consolidate(self.store, cfg, self.project, now=NOW)
+        self.assertEqual(counts["matured"], 1)
+        self.assertEqual(counts["displaced"], 0)  # aged one left STM by maturation, fresh one fits
+        self.assertEqual(self.store.get(old)["tier"], "ltm")
+        self.assertEqual(self.store.get(old)["status"], "active")
+        self.assertEqual(self.store.get(fresh)["tier"], "stm")
 
 
 if __name__ == "__main__":

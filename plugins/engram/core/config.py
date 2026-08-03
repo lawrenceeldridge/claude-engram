@@ -109,6 +109,7 @@ class Config:
     supersede_candidates: int
     supersede_candidate_min_sim: float
     stm_capacity: int
+    stm_max_age_days: float
     promote_after_freq: int
     stm_recall_weight: float
     spread_weight: float
@@ -192,6 +193,12 @@ def get_config() -> Config:
         # backstop against runaway STM growth — displacement is a reversible status flip and
         # idempotent, so it only acts far out in the tail. Gentle promotion, no recall penalty.
         stm_capacity=int(_num(_opt("stm_capacity", "2000"), 2000)),
+        # Age-based STM→LTM maturation (the time path, alongside rehearsal/replay). A short-term
+        # fact older than this transfers to LTM regardless of activity, so STM stays a genuinely
+        # short-term buffer instead of accumulating one-off facts forever. Default 1.0 day, ON —
+        # recall-neutral at the default stm_recall_weight (STM and LTM score identically), so it
+        # only drains STM; 0 disables. See core/consolidation/mature.py.
+        stm_max_age_days=_num(_opt("stm_max_age_days", "1"), 1),
         promote_after_freq=int(_num(_opt("promote_after_freq", "2"), 2)),
         stm_recall_weight=_num(_opt("stm_recall_weight", "1.0"), 1.0),
         # Associative spreading activation (ACT-R). Single gate for Idea #4: 0 = off (no edges
