@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "displayName": "Long-Term Memory",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -337,6 +337,13 @@
       "title": "Queue dead-letter age (seconds)",
       "description": "A pending work item unprocessed for longer than this is dead-lettered (kept for inspection), so an item no worker ever pulls (e.g. a rescue item with no LLM distiller to drain it) can't accumulate forever. Default 7 days; 0 disables.",
       "default": 604800,
+      "min": 0
+    },
+    "queue_dead_purge_after": {
+      "type": "number",
+      "title": "Dead-letter purge age (seconds)",
+      "description": "A dead-letter is deleted this long after it went dead (measured from enqueue + queue_dead_after), so items that can't be rescued don't linger in the queue forever. Default 3 days; 0 disables (keep dead-letters indefinitely).",
+      "default": 259200,
       "min": 0
     }
   }

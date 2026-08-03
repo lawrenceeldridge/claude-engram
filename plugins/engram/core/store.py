@@ -454,6 +454,15 @@ def _v17_sensory_schema(db: sqlite3.Connection) -> None:
     _v16_sensory(db)
 
 
+def _v18_facts_browse_index(db: sqlite3.Connection) -> None:
+    # Composite index for the viewer's grouped browse (STM / LTM / archived via
+    # list_observations). Without it, paging a large tier means a full scan of every active
+    # fact in the project to GROUP BY observation and sort by MAX(created_at) before LIMIT —
+    # ~9s cold at 135k STM rows. Ordering the index by created_at turns a page into a compact,
+    # created_at-ordered range read (~0.2s). idx_facts_tier stays for status-only lookups.
+    db.execute("CREATE INDEX IF NOT EXISTS idx_facts_browse ON facts(project_key, tier, status, created_at)")
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -476,6 +485,7 @@ _MIGRATIONS = [
     _v15_edges,
     _v16_sensory,
     _v17_sensory_schema,
+    _v18_facts_browse_index,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -1542,6 +1552,21 @@ class Store:
         cur = self.db.execute(
             "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 "
             "WHERE status = 'pending' AND enqueued_at < ?",
+            (cutoff,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def purge_dead(self, horizon_seconds: float, now: float | None = None) -> int:
+        """Delete dead-letters whose ``enqueued_at`` is older than the horizon — the automatic
+        cleanup so items that can't be rescued don't linger in the queue forever. Callers pass
+        ``queue_dead_after + queue_dead_purge_after`` so the window is measured from roughly when
+        an item went dead. Complements ``dead_stale`` (which only marks); disabled at ``horizon<=0``."""
+        if horizon_seconds <= 0:
+            return 0
+        cutoff = _now(now) - horizon_seconds
+        cur = self.db.execute(
+            "DELETE FROM work_queue WHERE status = 'dead' AND enqueued_at < ?",
             (cutoff,),
         )
         self.db.commit()

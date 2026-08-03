@@ -110,6 +110,27 @@ class WorkQueueStoreTests(unittest.TestCase):
         self.assertEqual(self.store.dead_stale(0.0, now=10**9), 0)
         self.assertEqual(self.store.count_work(status="pending"), 1)
 
+    def test_purge_dead_deletes_old_dead_only(self):
+        # Two dead-letters of different ages + one recent live pending item.
+        self._enqueue("old_dead", now=100.0)
+        self._enqueue("new_dead", now=900.0)
+        self._enqueue("pending", now=1000.0)  # newer than the dead_stale cutoff → stays pending
+        self.store.dead_stale(1.0, now=1000.0)  # cutoff 999: 'old_dead' + 'new_dead' → dead
+        self.assertEqual(self.store.count_work(status="dead"), 2)
+        # horizon 500s at now=1000 → cutoff 500: only 'old_dead' (enqueued 100) is purged.
+        self.assertEqual(self.store.purge_dead(500.0, now=1000.0), 1)
+        self.assertEqual(self.store.count_work(status="dead"), 1)
+        self.assertEqual(self.store.count_work(status="pending"), 1)  # never touches non-dead
+
+    def test_purge_dead_disabled_at_zero(self):
+        self._enqueue("m1", now=1.0)
+        self.store.dead_stale(1.0, now=10**9)
+        self.assertEqual(self.store.purge_dead(0.0, now=10**9), 0)
+        self.assertEqual(self.store.count_work(status="dead"), 1)  # kept indefinitely
+
+    def test_default_dead_purge_after_is_three_days(self):
+        self.assertEqual(get_config().queue_dead_purge_after, 3 * 86400)
+
     def test_recent_work_all_projects_newest_first(self):
         self.store.enqueue_work(msg_id="a", stage="rescue", project_key="p1", now=100.0)
         self.store.enqueue_work(msg_id="b", stage="rescue", project_key="p2", now=200.0)

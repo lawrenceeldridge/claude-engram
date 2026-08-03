@@ -108,12 +108,15 @@ def _run_worker(payload_path: str) -> None:
             import time
 
             store.sweep(time.time(), cfg.ttl_days * 86400, cfg.ttl_keep_frequency, project["key"])
-        # Work-queue maintenance (cheap, every capture): re-queue interrupted leases, and
-        # dead-letter pending items older than queue_dead_after so an item no worker ever
-        # pulls (e.g. rescue with no LLM distiller to drain it) can't accumulate forever.
+        # Work-queue maintenance (cheap, every capture): re-queue interrupted leases,
+        # dead-letter pending items older than queue_dead_after (an item no worker ever pulls,
+        # e.g. rescue with no LLM distiller to drain it), then delete dead-letters that have sat
+        # unrescued past queue_dead_purge_after so the queue can't accumulate forever.
         try:
             store.reclaim_expired()
             store.dead_stale(cfg.queue_dead_after)
+            if cfg.queue_dead_purge_after > 0:
+                store.purge_dead(cfg.queue_dead_after + cfg.queue_dead_purge_after)
         except Exception:
             pass
         # Sensory register (visual): promote attended perceptions into the index (the visual
