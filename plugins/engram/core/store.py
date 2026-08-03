@@ -541,6 +541,25 @@ class Store:
         )
         self.db.commit()
 
+    def mature_aged_stm(self, project_key: str, cutoff: float) -> int:
+        """Age-based STM→LTM maturation — transfer active short-term facts captured before
+        ``cutoff`` into the long-term store, regardless of rehearsal or recall.
+
+        The time-based sibling of ``promote`` (rehearsal) and ``replay`` (recalled): it keeps
+        STM a genuinely short-term buffer instead of letting one-off facts accumulate forever.
+        Unlike ``promote`` it does **not** refresh ``last_seen`` — the fact was not re-seen, so
+        its recency/decay must be preserved for the forgetting curve. Age is measured from
+        ``created_at`` (capture time), not ``last_seen``. Idempotent (a matured row is no longer
+        ``tier='stm'``) and reversible in spirit (a tier flip, never a delete). Returns the count.
+        """
+        cur = self.db.execute(
+            "UPDATE facts SET tier = 'ltm' WHERE project_key = ? AND status = 'active' "
+            "AND tier = 'stm' AND created_at < ?",
+            (project_key, cutoff),
+        )
+        self.db.commit()
+        return cur.rowcount
+
     def stm_rows(self, project_key: str, limit: int | None = None) -> list[sqlite3.Row]:
         """Active short-term facts for a project, weakest first (frequency, then oldest seen)."""
         sql = (

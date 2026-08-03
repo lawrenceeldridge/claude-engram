@@ -106,7 +106,10 @@ class Config:
     w_recency: float
     w_freq: float
     supersede_threshold: float
+    supersede_candidates: int
+    supersede_candidate_min_sim: float
     stm_capacity: int
+    stm_max_age_days: float
     promote_after_freq: int
     stm_recall_weight: float
     spread_weight: float
@@ -117,6 +120,7 @@ class Config:
     integrate_threshold: float
     refine_keep_max: int
     refine_prune_percentile: float
+    refine_min_retention: float
     purge_horizon_days: float
     distiller: str
     distiller_cmd: str
@@ -124,6 +128,7 @@ class Config:
     distiller_base_url: str
     distiller_api_key: str
     antipatterns: bool
+    review_enabled: bool
     ttl_days: float
     ttl_keep_frequency: int
     recall_min_confidence: float
@@ -177,10 +182,25 @@ def get_config() -> Config:
         w_recency=_num(_opt("w_recency", "0.3"), 0.3),
         w_freq=_num(_opt("w_freq", "0.2"), 0.2),
         supersede_threshold=_num(_opt("supersede_threshold", "0.85"), 0.85),
+        # Supersession candidate window for the LLM distiller. The distiller can only emit a
+        # `supersedes` link against a fact it is *shown*; recency alone (the old recent-N window)
+        # never surfaces an OLD fact a change contradicts, so a stale fact could never be retired
+        # by a vocabulary-disjoint update. `supersede_candidates` is the total budget offered
+        # (similarity-ranked first — "a highly correlated memory" — then topped up by recency);
+        # `supersede_candidate_min_sim` is a low candidacy gate (the LLM still makes the final
+        # conflict call). Capture-path only (detached); no hot-path or token-budget impact.
+        supersede_candidates=int(_num(_opt("supersede_candidates", "60"), 60)),
+        supersede_candidate_min_sim=_num(_opt("supersede_candidate_min_sim", "0.3"), 0.3),
         # STM/LTM tier (Atkinson-Shiffrin). stm_capacity ships as a generous, non-destructive
         # backstop against runaway STM growth — displacement is a reversible status flip and
         # idempotent, so it only acts far out in the tail. Gentle promotion, no recall penalty.
         stm_capacity=int(_num(_opt("stm_capacity", "2000"), 2000)),
+        # Age-based STM→LTM maturation (the time path, alongside rehearsal/replay). A short-term
+        # fact older than this transfers to LTM regardless of activity, so STM stays a genuinely
+        # short-term buffer instead of accumulating one-off facts forever. Default 1.0 day, ON —
+        # recall-neutral at the default stm_recall_weight (STM and LTM score identically), so it
+        # only drains STM; 0 disables. See core/consolidation/mature.py.
+        stm_max_age_days=_num(_opt("stm_max_age_days", "1"), 1),
         promote_after_freq=int(_num(_opt("promote_after_freq", "2"), 2)),
         stm_recall_weight=_num(_opt("stm_recall_weight", "1.0"), 1.0),
         # Associative spreading activation (ACT-R). Single gate for Idea #4: 0 = off (no edges
@@ -203,6 +223,13 @@ def get_config() -> Config:
         integrate_threshold=_num(_opt("integrate_threshold", "0.92"), 0.92),
         refine_keep_max=int(_num(_opt("refine_keep_max", "20000"), 20000)),
         refine_prune_percentile=_num(_opt("refine_prune_percentile", "0"), 0),
+        # The forgetting curve's absolute retention floor: prune LTM facts whose retention score
+        # (recency + recall + frequency + salience/importance) has decayed below this, so a fact
+        # "fades over time unless recalled, reinforced, or important". Idempotent + reversible
+        # (status='pruned'). Retrieval-affecting AND destructive, so default 0 (off): a safe floor
+        # is store-size-dependent and `engram eval` cannot measure consolidation (recall-only
+        # benchmark). See core/consolidation/refine.py + DESIGN § Memory lifecycle.
+        refine_min_retention=_num(_opt("refine_min_retention", "0"), 0),
         purge_horizon_days=_num(_opt("purge_horizon_days", "0"), 0),
         distiller=_opt("distiller", "claude"),
         distiller_cmd=_opt("distiller_cmd", "claude"),
@@ -212,6 +239,11 @@ def get_config() -> Config:
         # Anti-pattern catalogue: mine admitted mistakes into durable 'antipattern' memories.
         # On by default, but a no-op unless an LLM distiller is configured (heuristic returns []).
         antipatterns=_opt("antipatterns", "true").lower() in ("1", "true", "yes", "on"),
+        # Distiller-assisted memory review (`engram review` / the review_memory MCP tool): the
+        # LLM proposes stale/contradicted entries to retire. On by default, but a no-op unless an
+        # LLM distiller is configured (the heuristic returns no proposals). Direct invalidation
+        # (invalidate_memory / `engram forget`) is always available regardless of this gate.
+        review_enabled=_opt("review_enabled", "true").lower() in ("1", "true", "yes", "on"),
         ttl_days=_num(_opt("ttl_days", "0"), 0),
         ttl_keep_frequency=int(_num(_opt("ttl_keep_frequency", "3"), 3)),
         recall_min_confidence=_num(_opt("recall_min_confidence", "0.35"), 0.35),

@@ -19,6 +19,7 @@ from core.domain.confidence import compute_confidence
 from core.domain.entities import extract_entities
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
+from core.domain.scoring import salience_of
 from core.domain.sensory import normalize_url, should_promote
 from core.ports.distill import (
     LLM_DISTILLERS,
@@ -28,6 +29,7 @@ from core.ports.distill import (
     is_distiller_prompt,
 )
 from core.ports.embedding import EmbeddingGateway
+from core.ports.scorer import VectorScorer, get_scorer
 from core.ports.workqueue import WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
 from core.recall import render_block, render_scaffold, search, search_fused
@@ -35,20 +37,78 @@ from core.store import Store
 from core.transcript import extract_incremental_parts, extract_text
 
 
-def _find_superseded(store: Store, project_key: str, vec: list[float], threshold: float) -> list[str]:
+def _scored_active(
+    store: Store, project_key: str, vec: list[float], scorer: VectorScorer
+) -> list[tuple[sqlite3.Row, float]]:
+    """One cosine scan of a project's active facts against ``vec``, via the ``VectorScorer``
+    seam (numpy-vectorised at scale, pure-Python otherwise — same maths, see
+    ``core/ports/scorer.py``). Returns ``(row, similarity)`` pairs parallel to the rows;
+    callers threshold or rank. Dim-mismatched rows score ``DIM_MISMATCH`` (sorts below any
+    real similarity). Shared by the two write-path readers of active similarity —
+    supersession and the distiller's supersede-candidate selection — so there is one scan
+    path, not two."""
+    rows = store.active_rows_for_project(project_key)
+    return list(zip(rows, scorer.cosine_all(rows, vec)))
+
+
+def _find_superseded(
+    store: Store, project_key: str, vec: list[float], threshold: float, scorer: VectorScorer
+) -> list[str]:
     if threshold >= 1.0:
         return []
-    victims = []
-    for row in store.active_rows_for_project(project_key):
-        if row["dim"] and row["dim"] != len(vec):
-            continue
-        if cosine(vec, dequantize_int8(row["vec_int8"], row["scale"])) >= threshold:
-            victims.append(row["id"])
-    return victims
+    return [row["id"] for row, sim in _scored_active(store, project_key, vec, scorer) if sim >= threshold]
 
 
-def _resolve_supersedes(store: Store, project_key: str, refs: list[str]) -> set[str]:
-    """Turn distiller supersedes references (fact ids) into valid same-project ids."""
+def _supersede_candidates(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project_key: str,
+    text: str,
+    scorer: VectorScorer,
+) -> list[tuple[str, str]]:
+    """Facts offered to the LLM distiller as supersession candidates: the most *similar* to
+    this session (any age) first, then topped up with the most *recent*.
+
+    The distiller can only emit a ``supersedes`` link against a fact it is shown. The old
+    recency-only window never surfaced an OLD fact that a change contradicts, so a stale fact
+    (e.g. a now-false "blocked" note after an infra change) could never be retired by a
+    vocabulary-disjoint update. Ranking candidates by embedding similarity — "a highly
+    correlated memory" — closes that gap; the LLM still makes the final conflict call, so
+    ``supersede_candidate_min_sim`` is only a loose candidacy gate. Recency fills any
+    remaining budget, preserving the prior behaviour for very-fresh facts whose wording has
+    drifted below the gate.
+
+    Fail-open: any error in the similarity scan degrades to recency-only, so capture never
+    breaks. Bounded by ``supersede_candidates`` to keep the distiller prompt small."""
+    budget = max(1, cfg.supersede_candidates)
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    try:
+        scored = _scored_active(store, project_key, embedder.embed_one(text), scorer)
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        for row, sim in scored:
+            if len(out) >= budget or sim < cfg.supersede_candidate_min_sim:
+                break  # sorted desc → every remaining row is below the gate
+            seen.add(row["id"])
+            out.append((row["id"], row["text"]))
+    except Exception:
+        pass  # fail-open — recency-only candidates below
+    for row in store.recent(project_key, budget):
+        if len(out) >= budget:
+            break
+        if row["id"] not in seen:
+            seen.add(row["id"])
+            out.append((row["id"], row["text"]))
+    return out
+
+
+def _resolve_project_ids(store: Store, project_key: str, refs: list[str]) -> set[str]:
+    """Filter fact-id references to those that exist and belong to ``project_key``.
+
+    A safety scope shared by supersession (distiller ``supersedes`` links) and invalidation
+    (the review/forget path): a caller can never archive another project's memory by naming
+    ids that aren't its own."""
     resolved = set()
     for ref in refs:
         row = store.get(ref)
@@ -66,9 +126,13 @@ def add_records(
     records: list[DistilledFact],
     kind: str = "fact",
     tier: str = "stm",
+    scorer: VectorScorer | None = None,
 ) -> int:
     inserted = 0
     now = time.time()
+    # One scorer for the whole batch's supersede scans (numpy-vectorised at scale). Callers
+    # that already built one (capture_text / rescue) pass it in to avoid re-selecting.
+    scorer = scorer or get_scorer(cfg)
     batch: list[tuple[str, str]] = []
     for record in records:
         fact_id = store.fact_id(project["key"], record.text)
@@ -81,8 +145,8 @@ def add_records(
                 store.promote(fact_id, now)
             continue
         vec = embedder.embed_one(record.text)
-        victims = _resolve_supersedes(store, project["key"], record.supersedes)
-        victims.update(_find_superseded(store, project["key"], vec, cfg.supersede_threshold))
+        victims = _resolve_project_ids(store, project["key"], record.supersedes)
+        victims.update(_find_superseded(store, project["key"], vec, cfg.supersede_threshold, scorer))
         victims.discard(fact_id)
         blob, scale = quantize_int8(vec)
         store.add(
@@ -94,7 +158,7 @@ def add_records(
             scale=scale,
             dim=len(vec),
             vec_bits=pack_bits(vec),
-            importance=min(1.0, len(record.text) / 240.0),
+            importance=salience_of(record.type),
             created_at=now,
             title=record.title,
             subtitle=record.subtitle,
@@ -204,7 +268,7 @@ def bulk_add_records(
                 scale=scale,
                 dim=len(vec),
                 vec_bits=pack_bits(vec),
-                importance=min(1.0, len(rec.text) / 240.0),
+                importance=salience_of(rec.type),
                 created_at=ts if ts is not None else now,
                 title=rec.title,
                 subtitle=rec.subtitle,
@@ -248,9 +312,15 @@ def capture_text(
     if is_distiller_prompt(text):
         return 0  # a nested `claude -p` distiller session captured itself — never store it
     distiller = get_distiller(cfg)
-    existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
+    scorer = get_scorer(cfg)
+    # Only the LLM distillers read `existing` to emit supersedes links; the heuristic ignores
+    # it, so we skip the similarity scan for it (recency keeps prior behaviour at zero cost).
+    if cfg.distiller in LLM_DISTILLERS:
+        existing = _supersede_candidates(store, embedder, cfg, project["key"], text, scorer)
+    else:
+        existing = [(row["id"], row["text"]) for row in store.recent(project["key"], cfg.supersede_candidates)]
     records = distiller.distill(text, existing)
-    inserted = add_records(store, embedder, cfg, project, session_id, records)
+    inserted = add_records(store, embedder, cfg, project, session_id, records, scorer=scorer)
     # If an LLM distiller degraded to the heuristic (unreachable / timed out), publish
     # the raw delta to the durable 'rescue' queue so a later healthy session re-distils
     # it and replaces these facts. Idempotent on the delta's content hash.
@@ -290,6 +360,7 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
     queue = get_queue(cfg, store)
     try:
         distiller = get_distiller(cfg)
+        scorer = get_scorer(cfg)
         recovered = 0
         for lease in queue.pull("rescue", limit):
             try:
@@ -298,11 +369,12 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
                 lease.term()  # unparseable payload — dead-letter, never retry
                 continue
             project = store.project_meta(data.get("project_key", ""))
-            existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
-            records = distiller.distill(data.get("text", ""), existing)
+            text = data.get("text", "")
+            existing = _supersede_candidates(store, embedder, cfg, project["key"], text, scorer)
+            records = distiller.distill(text, existing)
             if records and not all(r.degraded for r in records):
                 store.delete_facts(data.get("fact_ids") or [])
-                add_records(store, embedder, cfg, project, data.get("session_id", ""), records)
+                add_records(store, embedder, cfg, project, data.get("session_id", ""), records, scorer=scorer)
                 lease.ack()
                 recovered += 1
             else:
@@ -310,6 +382,66 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
         return recovered
     finally:
         queue.close()
+
+
+def invalidate_facts(store: Store, project_key: str, fact_ids: list[str]) -> int:
+    """Retire facts from active recall — a reversible archive (``status='expired'``), never a
+    delete. Project-scoped for safety (ids not owned by ``project_key`` are ignored). The
+    direct-invalidation primitive behind ``engram forget`` / the ``invalidate_memory`` MCP tool
+    and the ``delete`` verdict of a review. Returns the number retired."""
+    owned = _resolve_project_ids(store, project_key, list(dict.fromkeys(fact_ids)))
+    return store.set_status(list(owned), "expired")
+
+
+def review_memories(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    query: str | None = None,
+    limit: int = 50,
+    context: str = "",
+) -> dict:
+    """Distiller-assisted audit — propose stale/contradicted facts to retire. Read-only: it
+    returns proposals for a human (``engram review``) or the model (``review_memory`` MCP tool)
+    to act on, never mutating the store itself.
+
+    Candidate set: the facts most similar to ``query`` (any age, reusing the write-path scan)
+    when a query is given, else the most recent ``limit``. No-op (empty proposals) when
+    ``review_enabled`` is off or an LLM distiller is not configured (the heuristic returns [])."""
+    if not cfg.review_enabled:
+        return {"proposals": [], "reviewed": 0, "guidance": "review disabled (review_enabled=false)"}
+    if query:
+        scored = _scored_active(store, project["key"], embedder.embed_one(query), get_scorer(cfg))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        rows = [row for row, _sim in scored[:limit]]
+    else:
+        rows = store.recent(project["key"], limit)
+    facts = [(row["id"], row["text"]) for row in rows]
+    proposals = get_distiller(cfg).review(facts, context)
+    texts = dict(facts)
+    for proposal in proposals:
+        proposal["text"] = texts.get(proposal["id"], "")
+    return {"proposals": proposals, "reviewed": len(facts)}
+
+
+def apply_review(
+    store: Store, embedder: EmbeddingGateway, cfg: Config, project: Project, decisions: list[dict]
+) -> dict:
+    """Enact review decisions. ``delete`` retires the fact (reversible); ``update`` adds the
+    corrected fact, which supersedes the old one via the existing capture path (so the old row
+    is archived, not left dangling). ``keep`` / anything else is skipped. Returns counts."""
+    to_delete = [d["id"] for d in decisions if d.get("verdict") == "delete" and d.get("id")]
+    updates = [d for d in decisions if d.get("verdict") == "update" and d.get("id") and d.get("replacement")]
+    deleted = invalidate_facts(store, project["key"], to_delete)
+    updated = 0
+    for decision in updates:
+        if not _resolve_project_ids(store, project["key"], [decision["id"]]):
+            continue  # not this project's fact — never rewrite across projects
+        record = DistilledFact(text=decision["replacement"], supersedes=[decision["id"]])
+        add_records(store, embedder, cfg, project, "review", [record])
+        updated += 1
+    return {"deleted": deleted, "updated": updated}
 
 
 def capture_transcript(
@@ -492,7 +624,7 @@ def capture_prompts(
             scale=scale,
             dim=len(vec),
             vec_bits=pack_bits(vec),
-            importance=0.5,
+            importance=salience_of("prompt"),
             created_at=now,
         )
         inserted += 1
@@ -743,8 +875,11 @@ def _embedding_mismatch(store: Store, embedder: EmbeddingGateway, project_key: s
 def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]:
     """Greedy budget pack: highest-ranked facts first, until the char budget is spent.
 
-    Also returns the ids of the packed facts so the caller can record retrieval
-    attribution (recall_count / last_recalled) — the id is not exposed in the DTO.
+    The ``id`` is exposed in the DTO so an on-demand caller (the model, via the ``recall`` MCP
+    tool) can target a specific fact for curation — e.g. retire a stale entry through
+    ``invalidate_memory``. This is the on-demand pull only; the passive per-turn injection
+    (``render_block``) is unaffected, so the hot-path token budget does not change. The same
+    ids are returned separately for retrieval attribution (recall_count / last_recalled).
     """
     packed: list[dict] = []
     packed_ids: list[str] = []
@@ -755,6 +890,7 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]
             continue
         packed.append(
             {
+                "id": row["id"],
                 "text": text,
                 "similarity": round(float(sim), 4),
                 "kind": row["kind"],

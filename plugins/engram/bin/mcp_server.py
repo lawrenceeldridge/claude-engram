@@ -11,9 +11,11 @@ The point is the *pull* path: passive hooks push memory at the model; this lets
 the model deliberately consult memory before an expensive Grep/Glob/Task search,
 and read a calibrated confidence + verdict to decide whether to trust it.
 
-Read-only by design (recall + list_projects). Writes (save_memory) are a later,
-opt-in tier. Fails soft: a handler error returns a JSON-RPC error, never crashes
-the loop.
+Mostly read (recall / search / outline). The one write tier is **curation**:
+``invalidate_memory`` retires a stale fact the model has spotted (e.g. a now-false
+"blocked" note after an infrastructure change), and ``review_memory`` asks the
+distiller to propose invalid entries — both reversible archives, never deletes.
+Fails soft: a handler error returns a JSON-RPC error, never crashes the loop.
 """
 
 from __future__ import annotations
@@ -211,6 +213,59 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "invalidate_memory",
+        "description": (
+            "Retire stored memories that are now stale or wrong so they stop being recalled. Use "
+            "when a fact from `recall` is outdated or contradicted by a change (e.g. a now-false "
+            "'blocked' note after an infrastructure change) and is misleading this session. Pass the "
+            "fact `ids` from `recall`. mode 'delete' retires them; mode 'update' replaces a single "
+            "fact with corrected text (the old one is superseded). Reversible (archived, not deleted)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Fact ids to act on (the `id` field from `recall`).",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["delete", "update"],
+                    "description": "'delete' retires the facts; 'update' replaces them with `replacement`. Default 'delete'.",
+                },
+                "replacement": {
+                    "type": "string",
+                    "description": "For mode 'update': the corrected fact text (applied to each id).",
+                },
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+            },
+            "required": ["ids"],
+        },
+    },
+    {
+        "name": "review_memory",
+        "description": (
+            "Ask the distiller to audit stored memory and propose entries that are stale, "
+            "contradicted, or redundant — the 'help me find invalid entries' aid. Returns proposals "
+            "(id, verdict delete|update, reason, replacement) WITHOUT changing anything; act on them "
+            "with `invalidate_memory`. Pass a `query` to focus the audit on one topic (any age), else "
+            "the most recent facts are reviewed. No-op without an LLM distiller."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Optional topic to focus the audit on."},
+                "context": {
+                    "type": "string",
+                    "description": "Optional current project/infrastructure state to judge facts against.",
+                },
+                "limit": {"type": "integer", "description": "Max facts to review (default 50)."},
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+            },
+        },
+    },
 ]
 
 
@@ -402,6 +457,37 @@ class _Engine:
         stats = index_project(self.store, self.embedder, self.cfg, project, root)
         return {"project": project["label"], "root": root, **stats}
 
+    def invalidate_memory(self, args: dict) -> dict:
+        self._init()
+        from core.service import apply_review
+
+        project = self._project(args.get("project"))
+        ids = [str(i) for i in (args.get("ids") or []) if str(i).strip()]
+        mode = (args.get("mode") or "delete").strip().lower()
+        if mode not in ("delete", "update"):
+            return {"error": f"unknown mode {mode!r} (use 'delete' or 'update')"}
+        replacement = (args.get("replacement") or "").strip()
+        if mode == "update" and not replacement:
+            return {"error": "mode 'update' requires a non-empty 'replacement'"}
+        decisions = [{"id": fid, "verdict": mode, "replacement": replacement} for fid in ids]
+        result = apply_review(self.store, self.embedder, self.cfg, project, decisions)
+        return {"project": project["label"], **result}
+
+    def review_memory(self, args: dict) -> dict:
+        self._init()
+        from core.service import review_memories
+
+        project = self._project(args.get("project"))
+        return review_memories(
+            self.store,
+            self.embedder,
+            self.cfg,
+            project,
+            query=args.get("query"),
+            limit=int(args.get("limit") or 50),
+            context=args.get("context") or "",
+        )
+
 
 ENGINE = _Engine()
 
@@ -425,6 +511,10 @@ def _tool_call(name: str, args: dict) -> dict:
         payload = ENGINE.code_outline(args)
     elif name == "index_docs":
         payload = ENGINE.index_docs(args)
+    elif name == "invalidate_memory":
+        payload = ENGINE.invalidate_memory(args)
+    elif name == "review_memory":
+        payload = ENGINE.review_memory(args)
     else:
         raise ValueError(f"unknown tool {name!r}")
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}

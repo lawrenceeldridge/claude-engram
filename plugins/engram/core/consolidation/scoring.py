@@ -11,7 +11,7 @@ authoritative log-saturation / decay curve) rather than re-deriving them.
 Signal → memory-research mechanism:
   use        recall_count            → retrieval-induced consolidation (testing effect)
   recency    age since last recall/seen → forgetting curve
-  salience   corrections / reward     → emotional / dopamine tagging (v2, default 0)
+  salience   observation type         → emotional / dopamine tagging (decisions/fixes last longer)
   depth      distiller richness       → levels of processing
   surprise   # facts this superseded  → novelty / prediction error
   frequency  capture frequency        → consolidation
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.domain.scoring import frequency_boost, recency_decay
+from core.domain.scoring import frequency_boost, recency_decay, salience_of
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ class RetentionFeatures:
     last_recalled: float | None = None
     depth: float = 0.0  # 0..1 encoding richness (distiller structure present)
     surprise: int = 0  # number of facts this one superseded
-    salience: float = 0.0  # corrections / reward proxy (v2)
+    salience: float = 0.0  # 0..1 importance from observation type (salience_of); 0 = neutral default
     inhibition: float = 0.0  # 0..1 unused-exposure penalty (use-feedback inhibition)
 
 
@@ -85,7 +85,7 @@ def features_from_row(row, *, surprise: int = 0) -> RetentionFeatures:
         last_recalled=row["last_recalled"],
         depth=depth_of(row),
         surprise=surprise,
-        salience=0.0,
+        salience=salience_of(row["type"] if "type" in row.keys() else ""),
         inhibition=inhibition_signal(
             row["injected_count"] if "injected_count" in row.keys() else 0,
             row["used_count"] if "used_count" in row.keys() else 0,

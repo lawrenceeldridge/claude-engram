@@ -287,6 +287,17 @@ class Distiller(ABC):
         """
         return []
 
+    def review(self, facts: list[tuple[str, str]], context: str = "") -> list[dict]:
+        """Judge stored facts for staleness/contradiction — the curation aid.
+
+        ``facts`` = (id, text) of active memories to audit; ``context`` is optional current
+        project/infrastructure state to judge them against. Returns one proposal per flagged
+        fact — ``{"id", "verdict": "delete"|"update", "reason", "replacement"}`` — omitting
+        facts judged still-valid ("keep"). LLM-only (Special Case: the heuristic distiller
+        cannot judge staleness, so it returns [] — a heuristic install curates manually only).
+        """
+        return []
+
 
 class HeuristicDistiller(Distiller):
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
@@ -613,6 +624,67 @@ def _build_antipattern_prompt(text: str, existing: list[tuple[str, str]]) -> str
     return _ANTIPATTERN_PROMPT.format(existing=existing_block, transcript=_clip(text))
 
 
+_REVIEW_VERDICTS = {"keep", "update", "delete"}
+
+_REVIEW_PROMPT = """You audit a coding assistant's long-term memory for entries that are now
+INVALID and should be retired — so stale facts stop being recalled and misleading future sessions.
+
+Flag a fact only when it is clearly one of:
+- OUTDATED: a change (e.g. new infrastructure, a migration, a reversed decision) has made it
+  false — even if the wording shares little vocabulary with the new reality.
+- CONTRADICTED: it conflicts with the current state described in the context below.
+- REDUNDANT: it duplicates another listed fact with no extra detail.
+Otherwise leave it alone. When unsure, KEEP — false retirement loses real memory.
+
+Output ONLY a JSON object of the form {{"reviews": [ ... ]}}. Include an entry ONLY for a fact
+you are retiring or rewriting (omit keeps entirely). Each entry:
+  {{"id": "<the exact id of the listed fact>",
+    "verdict": "<delete | update>",
+    "reason": "<one concise sentence: why it is invalid>",
+    "replacement": "<for 'update' only: the corrected fact, present tense, self-contained; else \\"\\">"}}
+
+Use "delete" when the fact is simply no longer true; use "update" when a corrected version
+should replace it. If nothing is invalid, return {{"reviews": []}}.
+
+Current project / infrastructure context (may be empty):
+{context}
+
+Stored facts (id: text):
+{facts}
+"""
+
+
+def _build_review_prompt(facts: list[tuple[str, str]], context: str) -> str:
+    facts_block = "\n".join(f"{fid}: {ftext}" for fid, ftext in facts) or "(none)"
+    return _REVIEW_PROMPT.format(context=_clip(context.strip()) or "(none)", facts=facts_block)
+
+
+def parse_review(output: str, valid_ids: set[str]) -> list[dict]:
+    """Pure parser: LLM review JSON → proposal dicts, keeping only well-formed, actionable
+    entries that name a real listed id. Unknown ids, unknown verdicts, and 'keep' are dropped;
+    an 'update' with no replacement is downgraded to nothing (can't apply an empty rewrite)."""
+    proposals: list[dict] = []
+    for item in _coerce_items(output):
+        if not isinstance(item, dict):
+            continue
+        fid = str(item.get("id", "")).strip()
+        verdict = str(item.get("verdict", "")).strip().lower()
+        if fid not in valid_ids or verdict not in _REVIEW_VERDICTS or verdict == "keep":
+            continue
+        replacement = str(item.get("replacement", "")).strip()
+        if verdict == "update" and not replacement:
+            continue  # nothing to replace it with — skip rather than guess
+        proposals.append(
+            {
+                "id": fid,
+                "verdict": verdict,
+                "reason": str(item.get("reason", "")).strip(),
+                "replacement": replacement,
+            }
+        )
+    return proposals
+
+
 def parse_antipatterns(output: str) -> list[DistilledFact]:
     """Pure parser: LLM anti-pattern JSON -> DistilledFacts (``type="antipattern"``).
 
@@ -656,7 +728,58 @@ def parse_antipatterns(output: str) -> list[DistilledFact]:
     return records
 
 
-class ClaudeCliDistiller(Distiller):
+class _LLMDistiller(Distiller):
+    """Shared orchestration for LLM-backed distillers.
+
+    Every operation is the same shape — build a prompt, run it through ``_complete``, parse the
+    JSON — so the only thing that varies between backends is *how the completion runs*.
+    Subclasses supply just their construction and ``_complete``; the two concrete backends below
+    (a ``claude -p`` subprocess and an OpenAI-compatible HTTP endpoint) differ in nothing else.
+
+    Fail-open is preserved per operation: ``distill`` falls back to the heuristic, ``summarize``
+    / ``extract_antipatterns`` / ``review`` swallow to their Null/Special-Case, and
+    ``merge_cluster`` deliberately lets exceptions propagate so the caller can tell a transient
+    error apart from a genuine DISTINCT veto (see ``Distiller.merge_cluster``).
+    """
+
+    @abstractmethod
+    def _complete(self, prompt: str) -> str:
+        """Run one text-in → text-out completion. The only backend-specific step."""
+
+    def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
+        try:
+            records = observations_to_facts(parse_observations(self._complete(_build_prompt(text, existing))))
+            if records:
+                return records
+        except Exception:
+            pass
+        return HeuristicDistiller().distill(text, existing)
+
+    def summarize(self, text: str) -> DistilledFact | None:
+        try:
+            return parse_summary(self._complete(_build_summary_prompt(text)))
+        except Exception:
+            return None
+
+    def merge_cluster(self, texts: list[str]) -> str | None:
+        return parse_merge(self._complete(_build_merge_prompt(texts)))
+
+    def extract_antipatterns(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
+        try:
+            return parse_antipatterns(self._complete(_build_antipattern_prompt(text, existing)))
+        except Exception:
+            return []
+
+    def review(self, facts: list[tuple[str, str]], context: str = "") -> list[dict]:
+        if not facts:
+            return []
+        try:
+            return parse_review(self._complete(_build_review_prompt(facts, context)), {fid for fid, _ in facts})
+        except Exception:
+            return []
+
+
+class ClaudeCliDistiller(_LLMDistiller):
     """Headless ``claude -p``. Defaults to Haiku — cheap and fast for extraction."""
 
     def __init__(self, cmd: str = "claude", model: str = "", timeout: int = 120) -> None:
@@ -685,32 +808,8 @@ class ClaudeCliDistiller(Distiller):
             raise RuntimeError((result.stderr or "llm error")[:200])
         return result.stdout
 
-    def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
-        try:
-            records = observations_to_facts(parse_observations(self._complete(_build_prompt(text, existing))))
-            if records:
-                return records
-        except Exception:
-            pass
-        return HeuristicDistiller().distill(text, existing)
 
-    def summarize(self, text: str) -> DistilledFact | None:
-        try:
-            return parse_summary(self._complete(_build_summary_prompt(text)))
-        except Exception:
-            return None
-
-    def merge_cluster(self, texts: list[str]) -> str | None:
-        return parse_merge(self._complete(_build_merge_prompt(texts)))
-
-    def extract_antipatterns(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
-        try:
-            return parse_antipatterns(self._complete(_build_antipattern_prompt(text, existing)))
-        except Exception:
-            return []
-
-
-class HTTPDistiller(Distiller):
+class HTTPDistiller(_LLMDistiller):
     """Any OpenAI-compatible chat endpoint (Ollama / LM Studio / llama.cpp / vLLM).
 
     With a local server this is zero-token and fully offline. Stdlib-only.
@@ -744,30 +843,6 @@ class HTTPDistiller(Distiller):
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
             data = json.loads(response.read().decode())
         return data["choices"][0]["message"]["content"]
-
-    def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
-        try:
-            records = observations_to_facts(parse_observations(self._complete(_build_prompt(text, existing))))
-            if records:
-                return records
-        except Exception:
-            pass
-        return HeuristicDistiller().distill(text, existing)
-
-    def summarize(self, text: str) -> DistilledFact | None:
-        try:
-            return parse_summary(self._complete(_build_summary_prompt(text)))
-        except Exception:
-            return None
-
-    def merge_cluster(self, texts: list[str]) -> str | None:
-        return parse_merge(self._complete(_build_merge_prompt(texts)))
-
-    def extract_antipatterns(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
-        try:
-            return parse_antipatterns(self._complete(_build_antipattern_prompt(text, existing)))
-        except Exception:
-            return []
 
 
 # Distiller backends that call out to an LLM — so they can transiently fail (and are the

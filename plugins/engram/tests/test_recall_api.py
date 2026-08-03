@@ -331,6 +331,8 @@ class McpServerTests(unittest.TestCase):
                 "search_code",
                 "get_symbol",
                 "code_outline",
+                "invalidate_memory",
+                "review_memory",
             },
         )
 

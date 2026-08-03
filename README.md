@@ -44,25 +44,35 @@ mapping, in [DESIGN.md](DESIGN.md)):
   engram never *takes* snapshots; it consumes the ones the browser tools already produce.
 - **Recency decay** — a fact's rank score decays exponentially with age
   (`half_life_days`) unless reinforced.
-- **Rehearsal & retrieval** — two complementary ways a fact promotes from the
+- **Rehearsal, retrieval & maturation** — three complementary ways a fact promotes from the
   short-term to the long-term tier: *rehearsal* (re-captured past `promote_after_freq` —
-  repetition) and *retrieval* (recalled at least once — the testing effect, applied in
-  the sleep pass below). Reinforced facts (frequency↑, recency refreshed) rank higher and
-  resist expiry rather than duplicating.
+  repetition), *retrieval* (recalled at least once — the testing effect, applied in the sleep
+  pass below), and *maturation* (older than `stm_max_age_days` — the time path, on by default,
+  so STM drains instead of piling up one-off facts). Reinforced facts (frequency↑, recency
+  refreshed) rank higher and resist expiry rather than duplicating.
 - **Context gate** — a fact is only injected if it clears a similarity threshold
   against the current prompt.
-- **Supersession** — a newer fact retires conflicting older ones. Similarity
-  catches near-duplicates; the LLM distiller adds explicit `supersedes` links for
-  vocabulary-disjoint conflicts ("I moved to London" → retires "I live in Paris").
+- **Supersession** — a newer fact retires conflicting older ones. Similarity catches
+  near-duplicates; the LLM distiller adds explicit `supersedes` links for vocabulary-disjoint
+  conflicts — and because it is shown the facts most *similar* to the session (any age, not
+  just the newest), it can retire an OLD fact a change contradicts ("deploys run on GitHub
+  Actions" → retires "deploy via Jenkins"). Supersession is hard and reversible.
+- **On-demand curation** — when a stale fact is misleading a session, retire it directly
+  (`invalidate_memory` MCP tool / `engram forget`) or run the distiller-assisted audit
+  (`engram review` / `review_memory`) that proposes stale/contradicted/redundant entries for
+  keep/update/delete. Reversible archives, never deletes.
 - **Hard expiry** — an optional TTL sweep archives facts unseen past `ttl_days`,
   protecting ones reinforced past `ttl_keep_frequency`.
 - **Consolidation ("sleep") pass** — at session checkpoints an offline pass *replays*
-  recalled short-term facts into long-term, *displaces* short-term overflow, *integrates*
-  near-duplicates (a stdlib dedup floor, or an opt-in LLM tier that merges/abstracts a
-  cluster into one fact), and *refines* the store by pruning the lowest-retention facts.
-  Non-destructive backstops ship on (`integrate_threshold`, `refine_keep_max`, `stm_capacity`);
-  the levers that forget or destroy (`refine_prune_percentile`, `purge_horizon_days`) stay off.
-  All are eval-gated and archival is reversible.
+  recalled short-term facts into long-term, *matures* aged short-term facts, *displaces*
+  short-term overflow, *integrates* near-duplicates (a stdlib dedup floor, or an opt-in LLM
+  tier that merges/abstracts a cluster into one fact), and *refines* the store — **the
+  forgetting curve**: pruning facts whose retention (recency + recall + reinforcement +
+  importance) has decayed, so a fact fades over time unless recalled, reinforced, or important.
+  Non-destructive backstops ship on (`integrate_threshold`, `refine_keep_max`, `stm_capacity`,
+  `stm_max_age_days`); the levers that forget or destroy (`refine_prune_percentile`,
+  `refine_min_retention`, `purge_horizon_days`) stay off. Archival is reversible; note the
+  consolidation levers are not covered by the recall-only `engram eval`.
 - **Recovery (rescue)** — when the LLM distiller is unavailable, capture falls back to a
   heuristic, flags the fact `degraded`, and parks the delta on a durable queue. A later
   healthy session re-distils it automatically, so a transient outage doesn't leave
@@ -155,6 +165,8 @@ index on demand (these are what the memory-first guard steers toward):
 | `doc_outline` | Document/heading outline. |
 | `index_docs` | (Re)index the current project's code + docs. |
 | `list_projects` | Every project in the global store with its active-fact count. |
+| `invalidate_memory` | Retire stale/wrong facts by `id` (from `recall`) — `delete` (archive) or `update` (replace with corrected text). Reversible. |
+| `review_memory` | Distiller-assisted audit: proposes stale/contradicted/redundant entries (delete/update, with reasons) for you to act on with `invalidate_memory`. |
 
 ## Try it without installing
 
@@ -192,6 +204,8 @@ engram doctor              show resolved config, project identity and fact count
 engram capture             capture memory from stdin / --file / --transcript
 engram recall <query>      run a just-in-time recall query for the current project
 engram core                show the stable session-start memory block
+engram review [--query Q]  distiller-assisted audit — propose stale/invalid memories to retire (--apply to enact)
+engram forget <id>...      retire specific facts by id (reversible archive)
 engram projects            list every project in the global store
 engram prune               delete all memory for the current project
 engram uninstall           uninstall the plugin, KEEPING memory (--purge-data to also remove it; --dry-run to preview)
@@ -283,6 +297,7 @@ or `ENGRAM_*` env vars for standalone use:
 | `distiller_model` | *(blank)* | claude: model alias (blank = `haiku`); ollama: model name (blank = `qwen2.5:3b`) |
 | `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller (ignored under `claude`) |
 | `antipatterns` | `true` | mine admitted mistakes into durable `antipattern` memories (a strict rule + do/don't), surfaced to prevent repeats; gated by an admission-marker scan, runs in the detached worker. No-op without an LLM distiller |
+| `review_enabled` | `true` | enable the distiller-assisted curation aid (`engram review` / `review_memory` MCP tool): the LLM proposes stale/contradicted/redundant memories to retire (keep/update/delete). No-op without an LLM distiller; direct `invalidate_memory` / `engram forget` always works |
 | `top_k` | `3` | facts injected per prompt — the small injected focus (Cowan ~4) |
 | `activated_k` | `0` | breadth the on-demand `recall` MCP tool searches (0 = use `top_k`); the broader "activated LTM" beyond the injected focus, no per-prompt token cost |
 | `core_scaffold` | `false` | render the session core as a titled scaffold (facts grouped by card title) instead of a flat list — an LT-WM retrieval structure; same char budget |
@@ -297,6 +312,8 @@ or `ENGRAM_*` env vars for standalone use:
 | `identity` | `workspace` | how a project is keyed: `workspace` = the folder you opened (`CLAUDE_PROJECT_DIR`, else cwd); `marker` = walk up to the nearest project marker. `.engram-root` overrides both |
 | `half_life_days` | `30` | recency half-life; lower = forgets faster |
 | `supersede_threshold` | `0.85` | new-fact similarity that retires an older one (1.0 disables) |
+| `supersede_candidates` | `60` | how many existing facts the LLM distiller is shown as supersede candidates — most-similar first (any age), then most-recent, so it can retire an old fact a change contradicts even when the wording is disjoint. Capture-path only |
+| `supersede_candidate_min_sim` | `0.3` | minimum cosine for a fact to be offered as a supersede candidate (a loose gate — the LLM makes the final call) |
 | `ttl_days` | `0` | archive facts unseen this long on capture (0 disables hard expiry) |
 | `ttl_keep_frequency` | `3` | facts reinforced this often are never expired |
 | `recall_min_confidence` | `0.35` | confidence the `recall` tool needs to report verdict `ok` |
@@ -317,19 +334,22 @@ env vars; defaults `1.0 / 0.3 / 0.2`.
 
 ### Memory lifecycle — STM/LTM tiers & consolidation
 
-Fresh facts enter a short-term tier and promote to long-term on rehearsal; a
-consolidation ("sleep") pass runs at session checkpoints (or `engram consolidate`).
-Recall is tier-agnostic and **pruning is off by default** — turn it on deliberately.
-Set via `userConfig` (or `ENGRAM_*` env):
+Fresh facts enter a short-term tier and promote to long-term on rehearsal, on recall,
+or on **age** (`stm_max_age_days`, on by default); a consolidation ("sleep") pass runs
+at session checkpoints (or `engram consolidate`). Recall is tier-agnostic and **destructive
+pruning is off by default** — turn the forgetting curve on deliberately. Set via
+`userConfig` (or `ENGRAM_*` env):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `promote_after_freq` | `2` | reinforcement count that promotes an STM fact to LTM |
-| `stm_capacity` | `2000` | max active STM facts before the weakest are displaced — a generous, reversible backstop against runaway STM growth (0 = unbounded/off) |
+| `promote_after_freq` | `2` | reinforcement count that promotes an STM fact to LTM (rehearsal) |
+| `stm_max_age_days` | `1` | age at which a short-term fact matures into LTM regardless of activity — the time-based promotion path, so STM stays short-term instead of piling up one-off facts. On by default; recall-neutral at the default STM recall weight (0 = off) |
+| `stm_capacity` | `2000` | max active STM facts before the weakest are displaced — a generous, reversible backstop against runaway STM growth (0 = unbounded/off). With maturation on, STM is bounded by age; this is only a burst cap |
 | `stm_recall_weight` | `1.0` | recall weight for STM facts (1.0 = tier-agnostic; `<1` down-ranks STM) |
 | `integrate_threshold` | `0.92` | consolidation merges near-duplicate short-term facts at/above this cosine similarity, keeping one survivor (reversible) — ships on as a low-risk near-identical mop-up above `supersede_threshold` (0 = off) |
 | `refine_keep_max` | `20000` | keep only the top-N facts by retention score, prune the rest (reversible) — ships on as a generous idempotent growth ceiling (0 = off) |
-| `refine_prune_percentile` | `0` | prune the lowest-retention facts each pass — a value in `(0,1)` is a self-limiting percentile of the active set (`0.1` = drop the weakest 10%), a value `≥1` is an absolute score floor. Off by default: it forgets every pass and a good rate is store-dependent (0 = off) |
+| `refine_prune_percentile` | `0` | prune the weakest fraction of active facts by retention each pass — a self-limiting cohort percentile in `(0,1)` (`0.1` = drop the weakest 10%). Off by default: it forgets every pass and a good rate is store-dependent (0 = off) |
+| `refine_min_retention` | `0` | **the forgetting curve** — prune (reversibly) any fact whose retention score has decayed below this floor, so a fact fades over time *unless* recalled, reinforced, or important. Idempotent; anti-patterns exempt. Off by default (destructive; a safe floor is store-size-dependent and `engram eval` can't measure it) — start around `0.1`–`0.2` (0 = off) |
 | `purge_horizon_days` | `0` | hard-delete facts archived longer than this, then `VACUUM`. Off by default: the only irreversible lever (0 = off) |
 
 ### Sensory register — intake

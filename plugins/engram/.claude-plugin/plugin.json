@@ -57,6 +57,12 @@
       "description": "Mine sessions for mistakes the assistant admitted and store them as durable 'antipattern' memories (a strict rule + do/don't), surfaced later to prevent repeats. Gated by a cheap admission-marker scan and throttled like the session summary; runs in the detached capture worker. No-op unless an LLM distiller is configured.",
       "default": true
     },
+    "review_enabled": {
+      "type": "boolean",
+      "title": "Distiller-assisted memory review",
+      "description": "Enable the distiller-assisted curation aid (`engram review` / the review_memory MCP tool): the LLM proposes stale, contradicted, or redundant memories to retire, and you choose keep/update/delete. No-op unless an LLM distiller is configured. Direct invalidation (invalidate_memory / `engram forget`) is always available regardless.",
+      "default": true
+    },
     "ttl_days": {
       "type": "number",
       "title": "Memory TTL (days)",
@@ -162,6 +168,21 @@
       "min": 0,
       "max": 1
     },
+    "supersede_candidates": {
+      "type": "number",
+      "title": "Supersession candidate budget",
+      "description": "How many existing facts the LLM distiller is shown as supersede candidates for a new capture — the most semantically similar first (any age), then the most recent. Lets the distiller retire an OLD fact a change contradicts even when the wording is disjoint. Capture-path only (detached); no recall/token cost.",
+      "default": 60,
+      "min": 1
+    },
+    "supersede_candidate_min_sim": {
+      "type": "number",
+      "title": "Supersession candidate gate",
+      "description": "Minimum cosine similarity for a fact to be offered to the distiller as a supersede candidate. A loose gate — the LLM makes the final conflict call; this only decides candidacy.",
+      "default": 0.3,
+      "min": 0,
+      "max": 1
+    },
     "recall_min_confidence": {
       "type": "number",
       "title": "Recall confidence gate",
@@ -201,8 +222,15 @@
     "stm_capacity": {
       "type": "number",
       "title": "Short-term capacity",
-      "description": "Max active short-term facts before the weakest are displaced (archived). Ships as a generous, non-destructive backstop against runaway STM growth — displacement is a reversible status flip. 0 = unbounded (displacement off).",
+      "description": "Max active short-term facts before the weakest are displaced (archived). Ships as a generous, non-destructive backstop against runaway STM growth — displacement is a reversible status flip. 0 = unbounded (displacement off). With maturation on (stm_max_age_days), STM is bounded by age, so this is only a hard cap for bursts.",
       "default": 2000,
+      "min": 0
+    },
+    "stm_max_age_days": {
+      "type": "number",
+      "title": "STM→LTM maturation age (days)",
+      "description": "A short-term fact older than this matures into the long-term store regardless of rehearsal or recall — the time-based promotion path alongside reinforcement/replay, so STM stays a genuinely short-term buffer instead of accumulating one-off facts. Ships on at 1 day; recall-neutral at the default STM recall weight (STM and LTM score identically). 0 = disabled.",
+      "default": 1,
       "min": 0
     },
     "stm_recall_weight": {
@@ -265,7 +293,15 @@
     "refine_prune_percentile": {
       "type": "number",
       "title": "Refine prune percentile",
-      "description": "Consolidation prunes the lowest-retention active facts each pass. A value in (0,1) is a self-limiting percentile of the current active set (0.1 = drop the weakest 10%); a value >=1 is an absolute retention-score floor. 0 = disabled. Retrieval-affecting — enable deliberately.",
+      "description": "Consolidation prunes the weakest fraction of active facts by retention each pass — a self-limiting cohort percentile (0.1 = drop the weakest 10%). Valid range (0,1); 0 = disabled. Retrieval-affecting and compounds every pass — enable deliberately. For an absolute floor use refine_min_retention instead.",
+      "default": 0,
+      "min": 0,
+      "max": 1
+    },
+    "refine_min_retention": {
+      "type": "number",
+      "title": "Forgetting-curve retention floor",
+      "description": "The forgetting curve: consolidation prunes (reversibly, status='pruned') any fact whose retention score has decayed below this floor — so a fact fades over time UNLESS it is recalled, reinforced, or important (retention composes recency, recall, frequency and salience). Idempotent; anti-patterns exempt. 0 = disabled (default). Retrieval-affecting and destructive; a safe floor is store-size-dependent and `engram eval` cannot measure it (recall-only benchmark), so enable deliberately — start around 0.1–0.2.",
       "default": 0,
       "min": 0
     },

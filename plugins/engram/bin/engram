@@ -6,6 +6,8 @@ Subcommands:
   capture     capture memory from stdin / --file / --transcript
   recall      run a just-in-time recall query for the current project
   core        show the stable session-start memory block
+  review      distiller-assisted audit — propose stale/invalid memories to retire
+  forget      retire specific facts by id (reversible archive)
   projects    list every project in the global store
   prune       delete all memory for the current project
   uninstall   uninstall the plugin, keeping memory (add --purge-data to remove it)
@@ -64,13 +66,16 @@ def cmd_doctor(args) -> int:
     # Resolved consolidation config (env / userConfig overrides already applied) — 'off'
     # marks a disabled lever, so shipped defaults are never mistaken for the live state.
     print(
-        f"consolidation: supersede={cfg.supersede_threshold}  "
+        f"consolidation: supersede={cfg.supersede_threshold} (cand={cfg.supersede_candidates}@{cfg.supersede_candidate_min_sim})  "
         f"integrate={cfg.integrate_threshold or 'off'}  "
-        f"stm_capacity={cfg.stm_capacity or 'off'} (promote>={cfg.promote_after_freq})"
+        f"stm_capacity={cfg.stm_capacity or 'off'} "
+        f"(promote>={cfg.promote_after_freq}, mature={f'{cfg.stm_max_age_days}d' if cfg.stm_max_age_days > 0 else 'off'})"
     )
+    print(f"curation    : review={'on' if cfg.review_enabled else 'off'} (needs an LLM distiller)  distiller={cfg.distiller}")
     print(
         f"forgetting  : refine_keep_max={cfg.refine_keep_max or 'off'}  "
         f"refine_prune_pct={cfg.refine_prune_percentile or 'off'}  "
+        f"refine_min_ret={cfg.refine_min_retention or 'off'}  "
         f"purge_days={cfg.purge_horizon_days or 'off'}  half_life_days={cfg.half_life_days}"
     )
     s = store.sensory_stats(project["key"])
@@ -117,6 +122,42 @@ def cmd_core(args) -> int:
     store = Store(cfg.db_path)
     project = _project(cfg, args)
     print(service.recall_core_block(store, cfg, project) or "(no core memory)")
+    store.close()
+    return 0
+
+
+def cmd_review(args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    project = _project(cfg, args)
+    result = service.review_memories(
+        store, get_embedder(cfg), cfg, project, query=args.query, limit=args.limit, context=args.context or ""
+    )
+    proposals = result.get("proposals", [])
+    guidance = result.get("guidance")
+    if guidance:
+        print(guidance)
+    print(f"reviewed {result.get('reviewed', 0)} fact(s) — {len(proposals)} proposal(s)")
+    for p in proposals:
+        print(f"  [{p['verdict']}] {p['id']}  {p.get('reason', '')}")
+        print(f"        {p.get('text', '')[:140]}")
+        if p["verdict"] == "update" and p.get("replacement"):
+            print(f"        → {p['replacement'][:140]}")
+    if proposals and args.apply:
+        applied = service.apply_review(store, get_embedder(cfg), cfg, project, proposals)
+        print(f"applied: {applied['deleted']} retired, {applied['updated']} updated")
+    elif proposals:
+        print("(dry run — re-run with --apply to enact)")
+    store.close()
+    return 0
+
+
+def cmd_forget(args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    project = _project(cfg, args)
+    retired = service.invalidate_facts(store, project["key"], args.ids)
+    print(f"retired {retired} fact(s) (reversible — status 'expired')")
     store.close()
     return 0
 
@@ -586,6 +627,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("core", help="show the session-start core block")
     add_cwd(p)
     p.set_defaults(func=cmd_core)
+
+    p = sub.add_parser("review", help="distiller-assisted audit — propose stale/invalid memories to retire")
+    add_cwd(p)
+    p.add_argument("--query", help="focus the audit on a topic (any age); default: the most recent facts")
+    p.add_argument("--context", help="current project/infrastructure state to judge facts against")
+    p.add_argument("--limit", type=int, default=50, help="max facts to review (default 50)")
+    p.add_argument("--apply", action="store_true", help="enact the proposed delete/update decisions")
+    p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("forget", help="retire specific facts by id (reversible archive)")
+    add_cwd(p)
+    p.add_argument("ids", nargs="+", help="fact ids to retire (from `recall`)")
+    p.set_defaults(func=cmd_forget)
 
     p = sub.add_parser("projects", help="list all projects")
     p.set_defaults(func=cmd_projects)
