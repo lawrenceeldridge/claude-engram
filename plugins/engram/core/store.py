@@ -1082,6 +1082,17 @@ class Store:
             (project_key,),
         ).fetchone()[0]
 
+    def archived_count(self, project_key: str) -> int:
+        """Number of archived ('forgotten') observation *groups* for the viewer's
+        Consolidation header — counts distinct observation groups (as
+        ``list_observations(active=False)`` yields cards), not raw facts, so the header
+        total matches the paginated card list."""
+        return self.db.execute(
+            "SELECT COUNT(DISTINCT COALESCE(observation_id, id)) FROM facts "
+            "WHERE project_key = ? AND status != 'active'",
+            (project_key,),
+        ).fetchone()[0]
+
     def clear_session_kind(self, project_key: str, session_id: str, kind: str) -> int:
         """Delete a session's facts of a given kind (used to replace its session summary)."""
         cur = self.db.execute(

@@ -29,6 +29,17 @@ from core.ports.embedding import get_embedder  # noqa: E402
 from core.recall import search_fused  # noqa: E402
 from core.store import Store  # noqa: E402
 
+# Default browse page size when the client omits ?limit= (kept in sync with the JS `PAGE`
+# constant in the served page). Governs the archived-facts and sensory panels' first page.
+PAGE_SIZE = 50
+
+# Cap for the viewer's own fact search (stm/ltm box). The whole project is still ranked, but
+# only the top hits render — mirroring the index search's k=200. Uncapped, k = active_count
+# both over-sizes the FTS candidate pool (fts_search limit scales with k) and floods the list
+# with near-zero-similarity cards on a large project. Truncation only: the top-k order is a
+# prefix of the uncapped ranking (asserted in test_viewer_pagination.SearchKCapTests).
+SEARCH_K_CAP = 200
+
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -141,8 +152,24 @@ PAGE = """<!doctype html>
   .qmeta { margin-inline-start:auto; font:11px ui-monospace,Menlo,monospace; color:var(--muted); }
   .spill { font:600 10px/1 ui-monospace,Menlo,monospace; text-transform:uppercase; padding:3px 6px;
            border-radius:5px; margin-inline-start:6px; color:#f85149; border:1px solid #da3633; }
+  /* Loading feedback: a top progress bar on every panel/project/page switch, plus a
+     "loading more…" pill during infinite-scroll appends. The list dims while in flight
+     so a slow query never looks like a frozen or empty panel. */
+  #loadbar { position:fixed; inset:0 0 auto 0; height:2px; z-index:20; pointer-events:none;
+             opacity:0; transition:opacity .15s;
+             background:linear-gradient(90deg,transparent,#58a6ff,transparent) no-repeat;
+             background-size:40% 100%; animation:loadslide 1.1s linear infinite; }
+  body.is-loading #loadbar { opacity:1; }
+  body.is-loading #list { opacity:.45; transition:opacity .12s; pointer-events:none; }
+  @keyframes loadslide { from { background-position:-40% 0; } to { background-position:140% 0; } }
+  #loadmore { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:20;
+              display:none; padding:5px 14px; border-radius:16px; background:var(--card);
+              border:1px solid var(--border2); color:var(--muted);
+              font:12px ui-monospace,Menlo,monospace; }
+  body.is-loadingmore #loadmore { display:block; }
 </style></head>
 <body>
+<div id="loadbar" aria-hidden="true"></div>
 <header>
   <h1>claude-engram</h1>
   <div id="views">
@@ -170,6 +197,7 @@ PAGE = """<!doctype html>
   </div>
 </header>
 <main><div id="list" class="empty">Loading…</div></main>
+<div id="loadmore" aria-hidden="true">loading more…</div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => (s==null?'':String(s)).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -181,6 +209,15 @@ const PAGE = 50;
 let offset = 0, loading = false, exhausted = false, mode = 'list';
 let view = 'stm';   // stm|ltm = active facts by tier · consolidation = queue + archived · index = code/docs
 let seen = new Set();  // card keys currently rendered — used to flash only new arrivals
+// The active browse view's "append the next page" function, or null when the view has no
+// infinite scroll (search, index). Every paginated panel (stm/ltm, consolidation, sensory)
+// sets this in its reload path so one loadMore() drives them all — no per-view scroll wiring.
+let loadNextPage = null;
+// Loading feedback: a full-panel switch dims the list + shows the top bar; an infinite-scroll
+// append shows the "loading more…" pill only. Both clear in a finally, so a failed fetch can
+// never strand the indicator on (mirrors the viewer's fail-open catch blocks).
+const setLoading = on => document.body.classList.toggle('is-loading', on);
+const setLoadingMore = on => document.body.classList.toggle('is-loadingmore', on);
 
 async function loadProjects() {
   const sel = $('#project');
@@ -294,22 +331,34 @@ function qItemHTML(q) {
     + `<div class="cinner"><div class="prompt">${esc(body)}</div></div></div>`;
 }
 // Consolidation & Rescue: the durable queue (rescue backlog + dead-letter) and the facts
-// consolidation has archived (superseded / displaced / merged / pruned / expired).
+// consolidation has archived (superseded / displaced / merged / pruned / expired). Archived
+// facts grow without bound, so they page via infinite scroll (loadConsolidationPage); the
+// queue is capped server-side and ships whole on the first page only. The header shows the
+// true archived total (archived_total) regardless of how many pages are loaded.
 async function reloadConsolidation() {
-  mode = 'search'; exhausted = true;   // no infinite scroll
   const pk = $('#project').value;
-  const r = await (await fetch(`/api/consolidation?project=${encodeURIComponent(pk)}`)).json();
+  const r = await (await fetch(`/api/consolidation?project=${encodeURIComponent(pk)}&limit=${PAGE}&offset=0`)).json();
   seen = new Set();
-  const queue = r.queue || [], archived = r.archived || [];
+  const queue = r.queue || [], archived = r.archived || [], total = r.archived_total ?? archived.length;
+  offset = archived.length; exhausted = archived.length >= total; loadNextPage = loadConsolidationPage;
   const dead = queue.filter(q => q.status === 'dead').length;
   const deadLabel = dead ? ` · ${dead} dead-letter` : '';
   const qHTML = queue.length ? queue.map(qItemHTML).join('')
     : `<div class="empty">Queue empty — nothing awaiting re-distill or dead-lettered.</div>`;
-  const aHTML = archived.length ? archived.map(c => cardHTML(c, false)).join('')
+  const aHTML = total ? archived.map(c => cardHTML(c, false)).join('')
     : `<div class="empty">Nothing archived yet — supersession/displacement/merge/refine/expiry haven't retired any facts.</div>`;
   $('#list').innerHTML =
     `<h3 class="sec">Rescue queue · ${queue.length}${deadLabel}</h3>${qHTML}`
-    + `<h3 class="sec">Archived / forgotten · ${archived.length}</h3>${aHTML}`;
+    + `<h3 class="sec">Archived / forgotten · ${total}</h3>${aHTML}`;
+}
+// Append the next page of archived facts. The queue is omitted for offset>0 requests, so
+// only archived cards land at the end of the list (the archived section is rendered last).
+async function loadConsolidationPage() {
+  const pk = $('#project').value;
+  const r = await (await fetch(`/api/consolidation?project=${encodeURIComponent(pk)}&limit=${PAGE}&offset=${offset}`)).json();
+  const archived = r.archived || [], total = r.archived_total ?? (offset + archived.length);
+  offset += archived.length; exhausted = offset >= total || !archived.length;
+  if (archived.length) $('#list').insertAdjacentHTML('beforeend', archived.map(c => cardHTML(c, false)).join(''));
 }
 // Sensory register (A-S intake): fleeting perceptions — page snapshots (visual) + conversation
 // (verbal) — that decay unless attended. Attention promotes: visual → index, verbal → facts.
@@ -322,11 +371,11 @@ function sensoryCardHTML(r) {
     + `<div class="cinner">${where}${body}<div class="meta">${fmtWhen(r.created)}</div></div></div>`;
 }
 async function reloadSensory() {
-  mode = 'search'; exhausted = true;   // browse-only, no infinite scroll
   const pk = $('#project').value;
-  const r = await (await fetch(`/api/sensory?project=${encodeURIComponent(pk)}`)).json();
+  const r = await (await fetch(`/api/sensory?project=${encodeURIComponent(pk)}&limit=${PAGE}&offset=0`)).json();
   seen = new Set();
-  const s = r.stats || {}, rows = r.rows || [];
+  const s = r.stats || {}, rows = r.rows || [], total = s.live ?? rows.length;
+  offset = rows.length; exhausted = rows.length >= total; loadNextPage = loadSensoryPage;
   const head = `<h3 class="sec">Sensory register · ${s.live ?? 0} live · ${s.attended ?? 0} attended `
     + `· ${s.visual ?? 0} visual · ${s.verbal ?? 0} verbal</h3>`;
   const legend = `<div class="slegend">`
@@ -336,9 +385,18 @@ async function reloadSensory() {
     + `<dt>visual</dt><dd>what was seen — pages the browser looked at.</dd>`
     + `<dt>verbal</dt><dd>what was said — the conversation itself.</dd>`
     + `</dl></div>`;
-  const body = rows.length ? rows.map(sensoryCardHTML).join('')
+  const body = total ? rows.map(sensoryCardHTML).join('')
     : `<div class="empty">Register empty — no live perceptions. Snapshots arrive from browser tools; conversation is recorded at capture. Unattended perceptions decay.</div>`;
   $('#list').innerHTML = head + legend + body;
+}
+// Append the next page of sensory perceptions (the live register decays, so this is
+// usually one short page — paging keeps a large register from rendering all at once).
+async function loadSensoryPage() {
+  const pk = $('#project').value;
+  const r = await (await fetch(`/api/sensory?project=${encodeURIComponent(pk)}&limit=${PAGE}&offset=${offset}`)).json();
+  const rows = r.rows || [], total = r.stats?.live ?? (offset + rows.length);
+  offset += rows.length; exhausted = offset >= total || !rows.length;
+  if (rows.length) $('#list').insertAdjacentHTML('beforeend', rows.map(sensoryCardHTML).join(''));
 }
 // Count + legend shown above the memory list (stm/ltm browse only). The count comes from the
 // selected project's per-view total (already in the dropdown label); the type legend is shared —
@@ -364,10 +422,18 @@ function memoryIntroHTML(view) {
     + `</dl></div>`;
   return head + legend;
 }
-// Full re-render from the top: a query shows all ranked search hits; a blank query
-// shows the first (newest) page of the browse list, which grows via loadMore().
+// Full re-render from the top. Wraps the per-view render in a loading indicator that
+// clears in finally, so every panel/project/page switch shows feedback and a failed
+// fetch never strands the spinner. reloadInner picks the view; each browse view sets
+// loadNextPage for infinite scroll.
 async function reload(flashNew) {
-  loadLedger();  // token-savings ledger for the selected project (all views)
+  setLoading(true);
+  try { await reloadInner(flashNew); }
+  finally { setLoading(false); }
+}
+async function reloadInner(flashNew) {
+  loadLedger();          // token-savings ledger for the selected project (all views)
+  loadNextPage = null;   // reset paging; a browse view re-arms it below
   if (view === 'index') return reloadIndex();
   if (view === 'consolidation') return reloadConsolidation();
   if (view === 'sensory') return reloadSensory();
@@ -375,7 +441,7 @@ async function reload(flashNew) {
   mode = q ? 'search' : 'list';
   offset = 0; exhausted = false;
   const rows = q ? await fetchFacts() : await fetchFacts(`&limit=${PAGE}&offset=0`);
-  if (mode === 'list') { offset = rows.length; exhausted = rows.length < PAGE; }
+  if (mode === 'list') { offset = rows.length; exhausted = rows.length < PAGE; loadNextPage = loadFactsPage; }
   const prev = seen;                        // only cards absent before flash
   seen = new Set(rows.map(r => r.key));
   // Browse mode gets the count + type legend on top; search shows ranked hits only.
@@ -384,17 +450,23 @@ async function reload(flashNew) {
     ? rows.map(r => cardHTML(r, flashNew && !prev.has(r.key))).join('')
     : '<div class="empty">No facts.</div>');
 }
-// Infinite scroll: append the next page of the browse list. Inert during search.
-async function loadMore() {
-  if (mode !== 'list' || loading || exhausted) return;
-  loading = true;
+// Append the next page of the stm/ltm browse list.
+async function loadFactsPage() {
   const rows = await fetchFacts(`&limit=${PAGE}&offset=${offset}`);
   offset += rows.length; exhausted = rows.length < PAGE;
   if (rows.length) {
     $('#list').insertAdjacentHTML('beforeend', rows.map(r => cardHTML(r, false)).join(''));
     rows.forEach(r => seen.add(r.key));     // paged-in cards aren't "new" on the next live update
   }
-  loading = false;
+}
+// Infinite scroll: delegate to the active view's pager. Inert during search / index
+// (loadNextPage === null). Single-flight via `loading`; the "loading more…" pill clears
+// in finally so a failed append never leaves it stuck on.
+async function loadMore() {
+  if (loading || exhausted || !loadNextPage) return;
+  loading = true; setLoadingMore(true);
+  try { await loadNextPage(); }
+  finally { loading = false; setLoadingMore(false); }
 }
 // facts/narrative toggles (memory), delete-one-memory (trash icon), and click-to-expand a chunk (index).
 $('#list').addEventListener('click', async e => {
@@ -438,6 +510,7 @@ $('#views').addEventListener('click', async e => {
   $('#q').value = '';
   $('#q').placeholder = view === 'index'
     ? 'search indexed code / docs… (blank = list)' : 'semantic search within project… (blank = list all)';
+  setLoading(true);        // cover the count-query fetch too; reload()'s finally clears it
   await loadProjects();
   await reload();
 });
@@ -742,7 +815,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Fused search (vector + lexical + FTS) so the box matches every
                 # indexed field — text, title, subtitle, narrative and file paths —
                 # not just the embedded fact text. Each hit renders as its own card.
-                k = store.active_count(project_key) or 1
+                k = min(store.active_count(project_key) or 1, SEARCH_K_CAP)
                 hits = search_fused(store, get_embedder(cfg), project, query, cfg, k=k)
                 out = [_card_from_rows([row], round(sim, 3)) for _score, sim, row in hits]
                 if tier:
@@ -759,7 +832,7 @@ class Handler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             project_key = params.get("project", [""])[0]
             modality = params.get("modality", [""])[0] or None  # 'visual' / 'verbal' / None = both
-            limit = _int_param(params, "limit") or 50
+            limit = _int_param(params, "limit") or PAGE_SIZE
             offset = _int_param(params, "offset") or 0
             store = Store(cfg.db_path)
             live = store.sensory_rows(project_key, include_decayed=False)
@@ -781,23 +854,34 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"rows": rows, "stats": stats}))
         elif parsed.path == "/api/consolidation":
             # Consolidation view: the durable work queue + archived ("forgotten") facts.
+            # Archived facts grow without bound (supersede/displace/prune retire them), so
+            # they page like the browse list. The work queue is already capped (work_items
+            # LIMIT 200), so it ships whole — but only on the first page (offset 0), not
+            # re-sent on every scroll append.
             params = parse_qs(parsed.query)
             project_key = params.get("project", [""])[0]
+            limit = _int_param(params, "limit") or PAGE_SIZE
+            offset = _int_param(params, "offset") or 0
             store = Store(cfg.db_path)
-            archived = [_card_from_rows(rows) for rows in store.list_observations(project_key, active=False)]
-            queue = [
-                {
-                    "stage": r["stage"],
-                    "status": r["status"],
-                    "attempts": r["attempts"],
-                    "ref": r["ref"],
-                    "payload": (r["payload"] or "")[:240],
-                    "enqueued": r["enqueued_at"],
-                }
-                for r in store.work_items(project_key)
+            archived = [
+                _card_from_rows(rows)
+                for rows in store.list_observations(project_key, active=False, limit=limit, offset=offset)
             ]
+            out = {"archived": archived, "archived_total": store.archived_count(project_key)}
+            if offset == 0:
+                out["queue"] = [
+                    {
+                        "stage": r["stage"],
+                        "status": r["status"],
+                        "attempts": r["attempts"],
+                        "ref": r["ref"],
+                        "payload": (r["payload"] or "")[:240],
+                        "enqueued": r["enqueued_at"],
+                    }
+                    for r in store.work_items(project_key)
+                ]
             store.close()
-            self._send(200, json.dumps({"archived": archived, "queue": queue}))
+            self._send(200, json.dumps(out))
         elif parsed.path == "/api/index_projects":
             store = Store(cfg.db_path)
             # Prefer the memory (facts) label/path; fall back to the label recorded at
