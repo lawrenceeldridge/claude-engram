@@ -106,6 +106,8 @@ class Config:
     w_recency: float
     w_freq: float
     supersede_threshold: float
+    supersede_candidates: int
+    supersede_candidate_min_sim: float
     stm_capacity: int
     promote_after_freq: int
     stm_recall_weight: float
@@ -177,6 +179,15 @@ def get_config() -> Config:
         w_recency=_num(_opt("w_recency", "0.3"), 0.3),
         w_freq=_num(_opt("w_freq", "0.2"), 0.2),
         supersede_threshold=_num(_opt("supersede_threshold", "0.85"), 0.85),
+        # Supersession candidate window for the LLM distiller. The distiller can only emit a
+        # `supersedes` link against a fact it is *shown*; recency alone (the old recent-N window)
+        # never surfaces an OLD fact a change contradicts, so a stale fact could never be retired
+        # by a vocabulary-disjoint update. `supersede_candidates` is the total budget offered
+        # (similarity-ranked first — "a highly correlated memory" — then topped up by recency);
+        # `supersede_candidate_min_sim` is a low candidacy gate (the LLM still makes the final
+        # conflict call). Capture-path only (detached); no hot-path or token-budget impact.
+        supersede_candidates=int(_num(_opt("supersede_candidates", "60"), 60)),
+        supersede_candidate_min_sim=_num(_opt("supersede_candidate_min_sim", "0.3"), 0.3),
         # STM/LTM tier (Atkinson-Shiffrin). stm_capacity ships as a generous, non-destructive
         # backstop against runaway STM growth — displacement is a reversible status flip and
         # idempotent, so it only acts far out in the tail. Gentle promotion, no recall penalty.

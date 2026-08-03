@@ -28,6 +28,7 @@ from core.ports.distill import (
     is_distiller_prompt,
 )
 from core.ports.embedding import EmbeddingGateway
+from core.ports.scorer import VectorScorer, get_scorer
 from core.ports.workqueue import WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
 from core.recall import render_block, render_scaffold, search, search_fused
@@ -35,16 +36,70 @@ from core.store import Store
 from core.transcript import extract_incremental_parts, extract_text
 
 
-def _find_superseded(store: Store, project_key: str, vec: list[float], threshold: float) -> list[str]:
+def _scored_active(
+    store: Store, project_key: str, vec: list[float], scorer: VectorScorer
+) -> list[tuple[sqlite3.Row, float]]:
+    """One cosine scan of a project's active facts against ``vec``, via the ``VectorScorer``
+    seam (numpy-vectorised at scale, pure-Python otherwise — same maths, see
+    ``core/ports/scorer.py``). Returns ``(row, similarity)`` pairs parallel to the rows;
+    callers threshold or rank. Dim-mismatched rows score ``DIM_MISMATCH`` (sorts below any
+    real similarity). Shared by the two write-path readers of active similarity —
+    supersession and the distiller's supersede-candidate selection — so there is one scan
+    path, not two."""
+    rows = store.active_rows_for_project(project_key)
+    return list(zip(rows, scorer.cosine_all(rows, vec)))
+
+
+def _find_superseded(
+    store: Store, project_key: str, vec: list[float], threshold: float, scorer: VectorScorer
+) -> list[str]:
     if threshold >= 1.0:
         return []
-    victims = []
-    for row in store.active_rows_for_project(project_key):
-        if row["dim"] and row["dim"] != len(vec):
-            continue
-        if cosine(vec, dequantize_int8(row["vec_int8"], row["scale"])) >= threshold:
-            victims.append(row["id"])
-    return victims
+    return [row["id"] for row, sim in _scored_active(store, project_key, vec, scorer) if sim >= threshold]
+
+
+def _supersede_candidates(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project_key: str,
+    text: str,
+    scorer: VectorScorer,
+) -> list[tuple[str, str]]:
+    """Facts offered to the LLM distiller as supersession candidates: the most *similar* to
+    this session (any age) first, then topped up with the most *recent*.
+
+    The distiller can only emit a ``supersedes`` link against a fact it is shown. The old
+    recency-only window never surfaced an OLD fact that a change contradicts, so a stale fact
+    (e.g. a now-false "blocked" note after an infra change) could never be retired by a
+    vocabulary-disjoint update. Ranking candidates by embedding similarity — "a highly
+    correlated memory" — closes that gap; the LLM still makes the final conflict call, so
+    ``supersede_candidate_min_sim`` is only a loose candidacy gate. Recency fills any
+    remaining budget, preserving the prior behaviour for very-fresh facts whose wording has
+    drifted below the gate.
+
+    Fail-open: any error in the similarity scan degrades to recency-only, so capture never
+    breaks. Bounded by ``supersede_candidates`` to keep the distiller prompt small."""
+    budget = max(1, cfg.supersede_candidates)
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    try:
+        scored = _scored_active(store, project_key, embedder.embed_one(text), scorer)
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        for row, sim in scored:
+            if len(out) >= budget or sim < cfg.supersede_candidate_min_sim:
+                break  # sorted desc → every remaining row is below the gate
+            seen.add(row["id"])
+            out.append((row["id"], row["text"]))
+    except Exception:
+        pass  # fail-open — recency-only candidates below
+    for row in store.recent(project_key, budget):
+        if len(out) >= budget:
+            break
+        if row["id"] not in seen:
+            seen.add(row["id"])
+            out.append((row["id"], row["text"]))
+    return out
 
 
 def _resolve_supersedes(store: Store, project_key: str, refs: list[str]) -> set[str]:
@@ -66,9 +121,13 @@ def add_records(
     records: list[DistilledFact],
     kind: str = "fact",
     tier: str = "stm",
+    scorer: VectorScorer | None = None,
 ) -> int:
     inserted = 0
     now = time.time()
+    # One scorer for the whole batch's supersede scans (numpy-vectorised at scale). Callers
+    # that already built one (capture_text / rescue) pass it in to avoid re-selecting.
+    scorer = scorer or get_scorer(cfg)
     batch: list[tuple[str, str]] = []
     for record in records:
         fact_id = store.fact_id(project["key"], record.text)
@@ -82,7 +141,7 @@ def add_records(
             continue
         vec = embedder.embed_one(record.text)
         victims = _resolve_supersedes(store, project["key"], record.supersedes)
-        victims.update(_find_superseded(store, project["key"], vec, cfg.supersede_threshold))
+        victims.update(_find_superseded(store, project["key"], vec, cfg.supersede_threshold, scorer))
         victims.discard(fact_id)
         blob, scale = quantize_int8(vec)
         store.add(
@@ -248,9 +307,15 @@ def capture_text(
     if is_distiller_prompt(text):
         return 0  # a nested `claude -p` distiller session captured itself — never store it
     distiller = get_distiller(cfg)
-    existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
+    scorer = get_scorer(cfg)
+    # Only the LLM distillers read `existing` to emit supersedes links; the heuristic ignores
+    # it, so we skip the similarity scan for it (recency keeps prior behaviour at zero cost).
+    if cfg.distiller in LLM_DISTILLERS:
+        existing = _supersede_candidates(store, embedder, cfg, project["key"], text, scorer)
+    else:
+        existing = [(row["id"], row["text"]) for row in store.recent(project["key"], cfg.supersede_candidates)]
     records = distiller.distill(text, existing)
-    inserted = add_records(store, embedder, cfg, project, session_id, records)
+    inserted = add_records(store, embedder, cfg, project, session_id, records, scorer=scorer)
     # If an LLM distiller degraded to the heuristic (unreachable / timed out), publish
     # the raw delta to the durable 'rescue' queue so a later healthy session re-distils
     # it and replaces these facts. Idempotent on the delta's content hash.
@@ -290,6 +355,7 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
     queue = get_queue(cfg, store)
     try:
         distiller = get_distiller(cfg)
+        scorer = get_scorer(cfg)
         recovered = 0
         for lease in queue.pull("rescue", limit):
             try:
@@ -298,11 +364,12 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
                 lease.term()  # unparseable payload — dead-letter, never retry
                 continue
             project = store.project_meta(data.get("project_key", ""))
-            existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
-            records = distiller.distill(data.get("text", ""), existing)
+            text = data.get("text", "")
+            existing = _supersede_candidates(store, embedder, cfg, project["key"], text, scorer)
+            records = distiller.distill(text, existing)
             if records and not all(r.degraded for r in records):
                 store.delete_facts(data.get("fact_ids") or [])
-                add_records(store, embedder, cfg, project, data.get("session_id", ""), records)
+                add_records(store, embedder, cfg, project, data.get("session_id", ""), records, scorer=scorer)
                 lease.ack()
                 recovered += 1
             else:
