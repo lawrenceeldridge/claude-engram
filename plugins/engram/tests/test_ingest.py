@@ -130,6 +130,27 @@ class TrivialPromptTests(unittest.TestCase):
         self.assertFalse(ingest.is_trivial_prompt(None))
 
 
+class LowValueFactTests(unittest.TestCase):
+    """The composite import/retro-sweep gate — harness OR ephemeral OR trivial-content, and
+    crucially NO length threshold, so a short-but-real imported fact survives."""
+
+    def test_drops_harness_ephemeral_and_trivial_content(self):
+        self.assertTrue(ingest.is_low_value_fact("<task-notification>agent done</task-notification>"))
+        self.assertTrue(ingest.is_low_value_fact("TypeScript compilation passed"))
+        self.assertTrue(ingest.is_low_value_fact("Option C"))
+        self.assertTrue(ingest.is_low_value_fact("/engram-git commit"))
+
+    def test_keeps_real_facts_including_short_ones(self):
+        self.assertFalse(ingest.is_low_value_fact(REAL_FACT))
+        self.assertFalse(ingest.is_low_value_fact("The deploy target is fly.io."))
+        # Short but real — must NOT be dropped (no length threshold on facts).
+        for terse in ("Use int8 vectors", "Node 20", "React 18", "x", "keep"):
+            self.assertFalse(ingest.is_low_value_fact(terse), f"short real fact dropped: {terse!r}")
+
+    def test_non_str_is_kept(self):
+        self.assertFalse(ingest.is_low_value_fact(None))
+
+
 class RealFactSurvivesEveryGateTests(unittest.TestCase):
     """The over-filtering guard: a genuine decision fact must clear every predicate."""
 
@@ -139,6 +160,7 @@ class RealFactSurvivesEveryGateTests(unittest.TestCase):
         self.assertFalse(ingest.is_narration(REAL_FACT))
         self.assertFalse(ingest.is_ephemeral_status(REAL_FACT))
         self.assertFalse(ingest.is_trivial_prompt(REAL_FACT))
+        self.assertFalse(ingest.is_low_value_fact(REAL_FACT))
         self.assertEqual(ingest.strip_harness_blocks(REAL_FACT), REAL_FACT)
 
 

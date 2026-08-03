@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from core.config import Config
+from core.domain.ingest import is_low_value_fact
 from core.ports.embedding import EmbeddingGateway
 from core.ports.memory_source import MemorySource
 from core.project import Project
@@ -47,16 +48,37 @@ def import_memory_source(
 
     labels = [only_label] if only_label is not None else source.project_labels()
     result: dict = {"available": True, "dry_run": dry_run, "projects": {}, "skipped": []}
+
+    def _kept(records, counter: dict):
+        """Yield source records whose fact is worth keeping, counting the drops into ``counter``.
+
+        The ingestion quality gate applied at the import door (Door D): claude-mem and other
+        sources bypass the capture-time filters, so the same policy runs here — harness blobs,
+        ephemeral CI status and trivial prompt/command echoes never reach the store. Shared by
+        the dry-run count and the real import so ``would_import`` matches what actually lands.
+        Length-independent (``is_low_value_fact``), so a short but real imported fact is kept.
+        """
+        for rec in records:
+            if is_low_value_fact(rec.fact.text):
+                counter["skipped_low_value"] += 1
+            else:
+                yield rec
+
     for label in labels:
         project = resolve(label)
         if project is None:
             result["skipped"].append(label)
             continue
+        counter = {"skipped_low_value": 0}
         if dry_run:
-            would = sum(1 for _ in source.iter_records(only_label=label))
-            result["projects"][label] = {"key": project["key"], "would_import": would}
+            would = sum(1 for _ in _kept(source.iter_records(only_label=label), counter))
+            result["projects"][label] = {
+                "key": project["key"],
+                "would_import": would,
+                "skipped_low_value": counter["skipped_low_value"],
+            }
             continue
-        pairs = ((rec.fact, rec.created_at_epoch) for rec in source.iter_records(only_label=label))
+        pairs = ((rec.fact, rec.created_at_epoch) for rec in _kept(source.iter_records(only_label=label), counter))
         counts = bulk_add_records(store, embedder, cfg, project, session_id, pairs, batch=batch, progress=progress)
-        result["projects"][label] = {"key": project["key"], **counts}
+        result["projects"][label] = {"key": project["key"], **counts, "skipped_low_value": counter["skipped_low_value"]}
     return result

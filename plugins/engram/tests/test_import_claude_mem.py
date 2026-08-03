@@ -442,6 +442,47 @@ class ImportMemorySourceTests(unittest.TestCase):
         self.assertEqual(self.store.count(), 3)
         src.close()
 
+    def test_low_value_records_are_gated_out(self):
+        # Door D: the import bypasses capture, so the ingestion policy runs here — harness blobs,
+        # ephemeral CI status and trivial echoes are dropped; a real fact (even short) is kept.
+        src = self._source(
+            observations=[
+                {
+                    "id": 1,
+                    "project": "ukh-world",
+                    "facts": json.dumps(
+                        [
+                            "TypeScript compilation passed",
+                            "<task-notification>agent finished</task-notification>",
+                            "Option C",
+                            "The auth module uses JWT rotation with a 15m TTL.",
+                        ]
+                    ),
+                }
+            ]
+        )
+        res = self._import(src)
+        self.assertEqual(res["projects"]["ukh-world"]["inserted"], 1)
+        self.assertEqual(res["projects"]["ukh-world"]["skipped_low_value"], 3)
+        self.assertEqual(self.store.count(), 1)
+        src.close()
+
+    def test_dry_run_reports_the_gate(self):
+        src = self._source(
+            observations=[
+                {
+                    "id": 1,
+                    "project": "ukh-world",
+                    "facts": json.dumps(["working tree clean", "The deploy target is fly.io."]),
+                }
+            ]
+        )
+        res = self._import(src, dry_run=True)
+        self.assertEqual(res["projects"]["ukh-world"]["would_import"], 1)
+        self.assertEqual(res["projects"]["ukh-world"]["skipped_low_value"], 1)
+        self.assertEqual(self.store.count(), 0)
+        src.close()
+
     def test_unknown_label_is_skipped_not_written(self):
         src = self._source(observations=[{"id": 1, "project": "mystery", "facts": json.dumps(["x"])}])
         res = self._import(src, resolve=lambda label: None)

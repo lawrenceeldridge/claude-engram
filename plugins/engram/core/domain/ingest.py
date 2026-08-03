@@ -179,35 +179,58 @@ _TRIVIAL_CONFIRMATIONS = frozenset(
     }
 )  # fmt: skip
 
-# Short imperative/confirmation openers: a *short* prompt starting with one of these is a
-# directive ("Apply all", "yes lets commit", "commit the fix"), not a durable fact. The
-# word cap protects substance — a longer prompt starting the same way is kept as a cue.
+# Short imperative/confirmation openers: a *short* prompt/fact starting with one of these is a
+# directive ("Apply all", "yes lets commit", "commit the fix"), not durable content. The word
+# cap protects substance — a longer text starting the same way is kept.
 _TRIVIAL_STARTERS = (
     "yes", "yeah", "yep", "no", "nope", "ok", "okay", "sure",
     "apply", "commit", "push", "merge", "approve", "proceed", "continue",
     "go ", "do it", "run ", "option ", "use ",
 )  # fmt: skip
+_TRIVIAL_MAX_WORDS = 5
 
 _SLASH_ECHO = re.compile(r"^/[a-z0-9][\w-]*(\s.*)?$", re.IGNORECASE)  # a pasted slash-command line
 
 
-def is_trivial_prompt(text: str, min_len: int = 12, max_words: int = 5) -> bool:
-    """True if a user prompt carries no durable content worth storing as a fact.
-
-    Catches: a pasted slash-command echo, an exact bare confirmation, a sub-``min_len``
-    fragment, or a short (``<= max_words``) prompt opening with a confirmation/imperative
-    directive. Conservative — a longer prompt is always kept (it has substance).
-    """
-    if not isinstance(text, str):
-        return False
+def _is_slash_or_confirmation(text: str) -> bool:
+    """Unambiguous junk in BOTH a prompt and an imported fact: a pasted slash-command echo or
+    an exact bare confirmation ("Option C", "lgtm", "/engram-git commit"). Length-independent
+    and precise (exact-set membership, not a fuzzy opener), so it never eats a real terse fact."""
     collapsed = " ".join(text.split())
     if not collapsed:
         return True
-    low = collapsed.lower().rstrip(".!?")
     if _SLASH_ECHO.match(collapsed):
         return True
-    if low in _TRIVIAL_CONFIRMATIONS:
+    return collapsed.lower().rstrip(".!?") in _TRIVIAL_CONFIRMATIONS
+
+
+def is_trivial_prompt(text: str, min_len: int = 12) -> bool:
+    """True if a user *prompt* carries no durable content worth storing as a fact.
+
+    A prompt is trivial if it is a slash-echo / exact confirmation, a short (``<=
+    _TRIVIAL_MAX_WORDS``) directive opening ("yes lets commit", "run the tests"), or a
+    sub-``min_len`` fragment. The fuzzy directive-opener rule is acceptable here because a
+    prompt is steering, not knowledge — but it is deliberately NOT used for facts (see
+    ``is_low_value_fact``). Conservative on length: a longer substantive prompt is kept.
+    """
+    if not isinstance(text, str):
+        return False
+    if _is_slash_or_confirmation(text):
         return True
-    if len(collapsed) < min_len:
+    low = " ".join(text.split()).lower().rstrip(".!?")
+    if len(low.split()) <= _TRIVIAL_MAX_WORDS and low.startswith(_TRIVIAL_STARTERS):
         return True
-    return len(low.split()) <= max_words and low.startswith(_TRIVIAL_STARTERS)
+    return len(" ".join(text.split())) < min_len
+
+
+# --- composite: is this worth keeping as a durable fact? -----------------------
+def is_low_value_fact(text: str) -> bool:
+    """True if stored/importable text is provably low-value memory, not worth keeping as a fact:
+    harness scaffolding, an ephemeral CI/build status verdict, or a slash-echo / exact bare
+    confirmation. Deliberately conservative — NO length threshold and NO fuzzy directive-opener,
+    so a short real fact ("Use int8 vectors", "run loop detected in X") survives. The import gate
+    drops irreversibly, so precision matters. Shared with the retro-sweep. Fail-open (non-str → keep).
+    """
+    if not isinstance(text, str):
+        return False
+    return is_harness_noise(text) or is_ephemeral_status(text) or _is_slash_or_confirmation(text)
