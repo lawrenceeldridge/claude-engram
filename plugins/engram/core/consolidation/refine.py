@@ -2,26 +2,32 @@
 
 Computes the retention score (design §3A) for each active fact and archives the weakest
 (``status='pruned'`` — reversible; recall scans 'active' only). This is the scale-control
-that keeps brute-force search viable (design §8A). Two gated knobs, both default-off (0):
+that keeps brute-force search viable (design §8A). Three gated knobs, each one meaning:
 
 - ``refine_keep_max`` — keep only the top-N by retention, prune the rest. An absolute
   count, so it is **idempotent**: a second pass finds exactly N active and prunes nothing.
-- ``refine_prune_percentile`` — a value in ``(0, 1)`` drops the weakest that *fraction* of
-  the current active set (cohort-relative, so the cut scales with the live population — the
-  SHY "only the relatively strong survive" property, achieved statelessly). A value ``>= 1``
-  is an absolute retention-score floor (idempotent).
+  Ships **on** as a generous, non-destructive backstop (fires only on runaway growth).
+- ``refine_prune_percentile`` — a value strictly in ``(0, 1)`` drops the weakest that
+  *fraction* of the current active set (cohort-relative, so the cut scales with the live
+  population — the SHY "only the relatively strong survive" property, achieved statelessly).
+- ``refine_min_retention`` — the **forgetting curve's absolute retention floor**: prune every
+  fact whose retention score is below it. Because retention decays with dormancy (recency)
+  but is lifted by recall (``use``), reinforcement (``frequency``) and importance
+  (``salience``), this is exactly "a fact fades over time **unless** recalled, reinforced, or
+  important". Idempotent (an absolute floor, recomputed from stored features each pass).
 
 **On repeat semantics.** The percentile is applied *per pass*, so repeated passes prune
-further — it **converges** rather than being strictly idempotent. That is acceptable
-because consolidation runs at sparse checkpoints and archival is reversible; and unlike a
-multiplicative SHY downscale (rejected — see DESIGN §3A), it stays **stateless and
-eval-reproducible**: the cut is recomputed from stored features each pass, never from a
-persisted running score, so it never double-counts recency and a single pass is
-deterministic given the store.
+further — it **converges** rather than being strictly idempotent. ``keep_max`` and
+``min_retention`` are idempotent absolutes. All are stateless and eval-reproducible: the cut
+is recomputed from stored features each pass, never from a persisted running score, so it
+never double-counts recency and a single pass is deterministic given the store. (Unlike a
+multiplicative SHY downscale, rejected — see DESIGN §3A.)
 
-**Retrieval-affecting, so gated default-off** (both knobs 0 → no-op) until the weights are
-`engram eval`-tuned. Scoring is pure; the I/O (row reads, status writes, the supersede-count
-lookup) lives here in the shell.
+**Retrieval-affecting, so the two destructive knobs (``prune_percentile``, ``min_retention``)
+default off** until tuned; ``keep_max`` ships on as a non-destructive ceiling. Note `engram
+eval` is a recall-only benchmark and does **not** exercise this consolidation path, so the
+floor is validated by unit tests + reasoning, not the benchmark. Scoring is pure; the I/O
+(row reads, status writes, the supersede-count lookup) lives here in the shell.
 """
 
 from __future__ import annotations
@@ -36,7 +42,8 @@ def refine(store, cfg, project, now: float | None = None, weights: RetentionWeig
     """Archive the lowest-retention active facts. Returns the number pruned (0 if disabled)."""
     keep_max = cfg.refine_keep_max
     pct = cfg.refine_prune_percentile
-    if keep_max <= 0 and pct <= 0:
+    min_retention = cfg.refine_min_retention
+    if keep_max <= 0 and pct <= 0 and min_retention <= 0:
         return 0  # disabled — behaviour + eval unchanged
 
     now = now if now is not None else time.time()
@@ -58,9 +65,10 @@ def refine(store, cfg, project, now: float | None = None, weights: RetentionWeig
         # set (rounding up, so a non-zero fraction of a non-empty store prunes at least one).
         cut = math.ceil(pct * len(scored))
         to_prune |= {fid for _score, fid in scored[:cut]}
-    elif pct >= 1:
-        # Absolute retention-score floor.
-        to_prune |= {fid for score, fid in scored if score < pct}
+    if min_retention > 0:
+        # The forgetting curve — an absolute retention floor: a fact fades once its score has
+        # decayed below it, unless recall / reinforcement / salience keep it above.
+        to_prune |= {fid for score, fid in scored if score < min_retention}
     if keep_max > 0 and len(scored) > keep_max:
         overflow = len(scored) - keep_max
         to_prune |= {fid for _score, fid in scored[:overflow]}

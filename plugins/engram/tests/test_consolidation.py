@@ -122,10 +122,11 @@ class StageTests(unittest.TestCase):
         self.assertEqual(pruned, 2)
         self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 3)
 
-    def test_refine_threshold_prunes_below_floor(self):
+    def test_refine_min_retention_prunes_below_floor(self):
         for i in range(3):
             self._add(f"fact {i}")
-        cfg = replace(self.cfg, refine_prune_percentile=10.0)  # >=1 raw floor, absurdly high -> everything is below
+        # An absurdly high absolute retention floor -> everything is below it -> all pruned.
+        cfg = replace(self.cfg, refine_min_retention=10.0)
         pruned = refine(self.store, cfg, self.project)
         self.assertEqual(pruned, 3)
         self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 0)

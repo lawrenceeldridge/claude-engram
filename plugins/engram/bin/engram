@@ -74,6 +74,7 @@ def cmd_doctor(args) -> int:
     print(
         f"forgetting  : refine_keep_max={cfg.refine_keep_max or 'off'}  "
         f"refine_prune_pct={cfg.refine_prune_percentile or 'off'}  "
+        f"refine_min_ret={cfg.refine_min_retention or 'off'}  "
         f"purge_days={cfg.purge_horizon_days or 'off'}  half_life_days={cfg.half_life_days}"
     )
     s = store.sensory_stats(project["key"])

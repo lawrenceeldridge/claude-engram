@@ -120,6 +120,7 @@ class Config:
     integrate_threshold: float
     refine_keep_max: int
     refine_prune_percentile: float
+    refine_min_retention: float
     purge_horizon_days: float
     distiller: str
     distiller_cmd: str
@@ -222,6 +223,13 @@ def get_config() -> Config:
         integrate_threshold=_num(_opt("integrate_threshold", "0.92"), 0.92),
         refine_keep_max=int(_num(_opt("refine_keep_max", "20000"), 20000)),
         refine_prune_percentile=_num(_opt("refine_prune_percentile", "0"), 0),
+        # The forgetting curve's absolute retention floor: prune LTM facts whose retention score
+        # (recency + recall + frequency + salience/importance) has decayed below this, so a fact
+        # "fades over time unless recalled, reinforced, or important". Idempotent + reversible
+        # (status='pruned'). Retrieval-affecting AND destructive, so default 0 (off): a safe floor
+        # is store-size-dependent and `engram eval` cannot measure consolidation (recall-only
+        # benchmark). See core/consolidation/refine.py + DESIGN § Memory lifecycle.
+        refine_min_retention=_num(_opt("refine_min_retention", "0"), 0),
         purge_horizon_days=_num(_opt("purge_horizon_days", "0"), 0),
         distiller=_opt("distiller", "claude"),
         distiller_cmd=_opt("distiller_cmd", "claude"),

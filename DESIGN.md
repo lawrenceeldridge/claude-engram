@@ -163,12 +163,46 @@ only *orders* non-conflicting facts. Folding conflict-resolution into the score
 (as a single weighted formula would) lets a stale-but-frequent fact leak — the
 hard filter prevents that.
 
-**Honest limit on conflict detection.** Supersession fires on embedding
-*similarity*, so it catches near-duplicates ("deploy target is X" → "deploy target
-is Y") but not semantically-conflicting rewrites that share little vocabulary
-("I live in Paris" vs "I moved to London"). Precise conflict detection needs
-entity/attribute extraction — the LLM-distiller drop-in, which can emit explicit
-`supersedes` links.
+**Reaching vocabulary-disjoint conflicts.** The cosine path (`_find_superseded` at
+`supersede_threshold`) only catches near-duplicates ("deploy target is X" → "…is Y"),
+not semantically-conflicting rewrites that share little vocabulary ("deploy via Jenkins"
+→ "deploys run on GitHub Actions"). Two mechanisms close that gap:
+- **LLM `supersedes` links over similarity-selected candidates.** The distiller is shown
+  the facts most *similar* to the captured session (any age), not just the newest, so it
+  can emit a `supersedes` link against an old fact a change contradicts even when the
+  wording is disjoint — "invalidated by a highly correlated memory"
+  (`service._supersede_candidates`).
+- **Demand-driven curation.** When a stale fact is actively misleading a session, it can be
+  retired on the spot: `invalidate_memory` (MCP) / `engram forget` by id, or the
+  distiller-assisted `engram review` / `review_memory` audit, which proposes stale /
+  contradicted / redundant entries for keep/update/delete. All are reversible archives
+  (`status='expired'` / `'superseded'`), never deletes (`service.invalidate_facts`,
+  `review_memories`, `apply_review`).
+
+**Age-based maturation.** STM→LTM promotion is no longer activity-only: alongside rehearsal
+(`promote_after_freq`) and replay (recalled), a short-term fact older than `stm_max_age_days`
+(default 1 day) *matures* into LTM regardless of activity, so STM stays a genuinely
+short-term buffer instead of accumulating one-off facts forever. Recall-neutral at the
+default `stm_recall_weight` — it only bounds STM growth (`consolidation/mature.py`).
+
+**The forgetting curve — fades unless recalled.** The retention score (`consolidation/scoring.py`)
+composes recency decay, recall (`use`), reinforcement (`frequency`), encoding depth,
+novelty (`surprise`) and **importance** (`salience`, from the observation type via
+`domain/scoring.salience_of` — a decision/bugfix outlasts a passing discovery). The `refine`
+stage prunes (reversibly, `status='pruned'`) facts whose retention has decayed below
+`refine_min_retention` — so a fact *fades over time unless it is recalled, reinforced, or
+important*. It ships **off** (destructive, and a safe floor is store-size-dependent); note
+`engram eval` is a recall-only benchmark and does **not** exercise consolidation, so the
+floor is validated by unit tests + reasoning, not the benchmark.
+
+**Supersession completes the fade at once — deliberately hard, not soft.** A newer fact that
+supersedes an older one archives it immediately (`status='superseded'`, filtered at SQL),
+rather than accelerating a gradual decay. This is the same measured choice as "conflicts vs
+ordering are deliberately separate": a *soft*-decayed conflicting fact can still out-rank the
+fact that replaced it while it fades, leaking stale-but-frequent memory. Hard supersession is
+the strongest form of "the old entry's fade advances" — it advances to completion — and it
+stays **reversible** (archived, restorable), which is the safety net a soft variant would add
+complexity to provide. The soft accelerated-decay variant is therefore **not** adopted.
 
 ### Multi-store tiers + the "sleep" pass (built)
 
