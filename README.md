@@ -381,6 +381,7 @@ on the recall hot path. Inspect it with `engram queue`. Tune via `userConfig` (o
 | `queue_backoff` | `5,30,120,600` | retry backoff schedule, seconds (comma-separated) |
 | `lease_ttl` | `300` | seconds a claimed item is leased before reclaim (crash recovery) |
 | `queue_dead_after` | `604800` | dead-letter a pending item unprocessed this long (7 days); 0 disables. Inspect/clear with `engram queue` |
+| `queue_dead_purge_after` | `259200` | delete a dead-letter this long after it went dead (3 days; measured from enqueue + `queue_dead_after`); 0 keeps dead-letters indefinitely |
 
 The queue sits behind a Separated Interface (`core/ports/workqueue.py`), so a future
 out-of-process backend could attach without touching the core; today the sole backend

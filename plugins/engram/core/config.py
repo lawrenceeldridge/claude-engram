@@ -117,6 +117,7 @@ class Config:
     queue_backoff: tuple[float, ...]
     lease_ttl: float
     queue_dead_after: float
+    queue_dead_purge_after: float
     integrate_threshold: float
     refine_keep_max: int
     refine_prune_percentile: float
@@ -214,6 +215,9 @@ def get_config() -> Config:
         # A pending work item no worker ever pulls (e.g. rescue with no LLM distiller to drain it)
         # dead-letters past this age, so the queue can't accumulate silently forever.
         queue_dead_after=_num(_opt("queue_dead_after", str(7 * 86400)), 7 * 86400),
+        # A dead-letter is deleted this long after it went dead (measured from enqueue +
+        # queue_dead_after), so items that can't be rescued don't linger forever. Default 3 days; 0 disables.
+        queue_dead_purge_after=_num(_opt("queue_dead_purge_after", str(3 * 86400)), 3 * 86400),
         # Consolidation (sleep pass), split by blast radius. ON by default as non-destructive,
         # reversible backstops: integrate is a high-threshold near-identical mop-up sitting
         # above supersede (0.85), and refine_keep_max is a generous idempotent ceiling that

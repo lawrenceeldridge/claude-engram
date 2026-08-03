@@ -110,6 +110,20 @@ class SensoryPagePagingTests(unittest.TestCase):
         self.assertIn("exhausted = offset >= total", PAGE)
 
 
+class BrowseIndexTests(unittest.TestCase):
+    """The composite index backing fast grouped browse (STM/LTM/archived) at scale — a page
+    was a full scan of every active fact in the project (~9s cold at 135k STM rows) without it."""
+
+    def test_facts_browse_index_created_by_migration(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(Path(d) / "m.db")
+            names = {
+                r[0] for r in store.db.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='facts'")
+            }
+            store.close()
+        self.assertIn("idx_facts_browse", names)
+
+
 class SearchKCapTests(unittest.TestCase):
     """Phase 4 — capping the viewer's fused-search k is truncation only: the capped top-k
     is an exact prefix of the uncapped ranking. Because k also sizes the FTS candidate pool
