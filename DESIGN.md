@@ -272,19 +272,22 @@ mechanism and is individually gated and reversible:
   set. Ships **on** at `integrate_threshold=0.92` — a low-risk near-identical mop-up sitting
   above `supersede_threshold` (0.85), which does the bulk of dedup on the write path; still
   `engram eval`-gated for any change.
-- **Refine** (`refine.py`) — *SHY-style forgetting*: score every active fact with a pure
-  **retention score** (`consolidation/scoring.py`) and archive the weakest. Two gated
-  knobs make the cut *relative*, so it self-limits as the store grows (the SHY "only the
-  relatively strong survive" property, achieved statelessly — no persisted running score):
-  `refine_keep_max` keeps the top-N (an absolute count → **idempotent**), and
-  `refine_prune_percentile` in `(0,1)` drops the weakest that fraction of the live active
-  set (`≥1` = an absolute score floor). This keeps the active set small enough that
+- **Refine** (`refine.py`) — *SHY-style forgetting* + the **forgetting curve**: score every
+  active fact with a pure **retention score** (`consolidation/scoring.py` — recency, recall,
+  frequency, importance/`salience`, depth, novelty) and archive the weakest. Three gated
+  knobs, each one meaning: `refine_keep_max` keeps the top-N (an absolute count →
+  **idempotent**); `refine_prune_percentile` in `(0,1)` drops the weakest that fraction of the
+  live active set (self-limiting as the store grows — the SHY "only the relatively strong
+  survive" property, stateless, no persisted running score); and `refine_min_retention` is an
+  absolute retention floor — a fact fades once its score decays below it *unless* recall,
+  reinforcement, or importance keep it up. This keeps the active set small enough that
   brute-force search stays viable (see § the bytes layer / vector-store decision in the
   STM-LTM design). Split by blast radius: `refine_keep_max` ships **on** at 20000 (a generous,
-  idempotent ceiling that only fires on runaway growth), while `refine_prune_percentile` ships
-  **off** (it forgets every pass and a good rate is store-dependent). Both are **`engram
-  eval`-gated** (they change what is injected); archival is a reversible status flip
-  (`status='pruned'`), never a delete.
+  idempotent ceiling that only fires on runaway growth), while `refine_prune_percentile` and
+  `refine_min_retention` ship **off** (they forget, and a good rate/floor is store-dependent).
+  Archival is a reversible status flip (`status='pruned'`), never a delete. Note `engram eval`
+  is recall-only and does **not** exercise consolidation, so these are validated by unit tests
+  + reasoning, not the benchmark.
 - **Rescue** (`service.rescue`) — re-distils degraded deltas parked on the durable queue
   when an LLM distiller was down, so a transient outage doesn't leave low-quality facts
   behind. It needs the embedder + distiller and runs at the head of every capture, so it
@@ -369,7 +372,7 @@ consolidate upward. In both modes an explicit `.engram-root` sentinel overrides 
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
 | Durable queue becomes a de-facto dependency | `WorkQueue` is a stdlib-only SQLite queue behind a Separated Interface; no external backend or broker; core stays importable with the standard library alone |
-| Consolidation prunes a still-useful fact | only `refine_keep_max` (a generous idempotent ceiling) ships on; the forgetting lever `refine_prune_percentile` is default-off; all are `engram eval`-gated; archival is a reversible status flip, not a delete; purge is default-off and only removes rows past a long cold horizon |
+| Consolidation prunes a still-useful fact | only `refine_keep_max` (a generous idempotent ceiling) ships on; the forgetting levers `refine_prune_percentile` and `refine_min_retention` are default-off; archival is a reversible status flip, not a delete; purge is default-off and only removes rows past a long cold horizon. (`engram eval` is recall-only, so it can't measure these — they're unit-tested instead.) |
 | STM leaks low-confidence facts into context | promotion is rehearsal/recall-gated; `stm_recall_weight` can down-rank STM; A/B with `engram eval` |
 
 ## Status of the levers
@@ -378,16 +381,21 @@ Done and measured:
 - **Semantic embeddings** — `fastembed` (bge-base default), benchmarked vs the stub.
 - **LLM distiller** — atomic facts + explicit `supersedes` links, via local Ollama
   (`distiller=ollama`, zero-token) or Claude on Haiku (`distiller=claude`).
-- **Conflict resolution** — similarity supersession *and* explicit LLM links for
-  vocabulary-disjoint conflicts.
+- **Conflict resolution** — similarity supersession *and* explicit LLM `supersedes` links for
+  vocabulary-disjoint conflicts, the latter over **similarity-selected candidates (any age)** so
+  an old fact a change contradicts is reachable — plus demand-driven curation
+  (`invalidate_memory` / `engram forget`, and the distiller-assisted `review`).
 - **Hard expiry** — TTL sweep with frequency protection.
-- **Multi-store tiers + sleep pass** — explicit STM/LTM `tier` with rehearsal/recall
-  promotion, an offline `consolidate()` pass (replay / displace / integrate / refine /
-  purge), and a pure retention score. The consolidation knobs ship **split by blast radius**:
-  non-destructive, reversible backstops default **on** (`integrate_threshold=0.92`,
-  `refine_keep_max=20000`, `stm_capacity=2000`), while the levers that forget or destroy —
-  `refine_prune_percentile` (compounds every pass) and `purge_horizon_days` (irreversible
-  hard-delete) — stay **off**. All remain `engram eval`-gated.
+- **Multi-store tiers + sleep pass** — explicit STM/LTM `tier` with promotion by rehearsal,
+  recall, **and age** (`stm_max_age_days`, on by default — the time-based maturation path); an
+  offline `consolidate()` pass (replay / mature / displace / integrate / refine / purge); and a
+  pure retention score that now includes **importance** (`salience` from the observation type).
+  The consolidation knobs ship **split by blast radius**: non-destructive, reversible backstops
+  default **on** (`integrate_threshold=0.92`, `refine_keep_max=20000`, `stm_capacity=2000`,
+  `stm_max_age_days=1`), while the levers that forget or destroy — `refine_prune_percentile`
+  (compounds every pass), `refine_min_retention` (the forgetting-curve floor), and
+  `purge_horizon_days` (irreversible hard-delete) — stay **off**. `engram eval` is recall-only
+  and does not exercise consolidation, so these are validated by unit tests, not the benchmark.
 - **REM-style integration** — the `integrate` stage: a stdlib heuristic dedup floor plus an
   opt-in LLM tier (`merge_cluster`) that abstracts a near-duplicate cluster into one fact or
   vetoes the merge. Reversible (`status='merged'`), fail-open; the LLM tier is opt-in, the

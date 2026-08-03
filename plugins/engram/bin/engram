@@ -66,11 +66,12 @@ def cmd_doctor(args) -> int:
     # Resolved consolidation config (env / userConfig overrides already applied) — 'off'
     # marks a disabled lever, so shipped defaults are never mistaken for the live state.
     print(
-        f"consolidation: supersede={cfg.supersede_threshold}  "
+        f"consolidation: supersede={cfg.supersede_threshold} (cand={cfg.supersede_candidates}@{cfg.supersede_candidate_min_sim})  "
         f"integrate={cfg.integrate_threshold or 'off'}  "
         f"stm_capacity={cfg.stm_capacity or 'off'} "
         f"(promote>={cfg.promote_after_freq}, mature={f'{cfg.stm_max_age_days}d' if cfg.stm_max_age_days > 0 else 'off'})"
     )
+    print(f"curation    : review={'on' if cfg.review_enabled else 'off'} (needs an LLM distiller)  distiller={cfg.distiller}")
     print(
         f"forgetting  : refine_keep_max={cfg.refine_keep_max or 'off'}  "
         f"refine_prune_pct={cfg.refine_prune_percentile or 'off'}  "
