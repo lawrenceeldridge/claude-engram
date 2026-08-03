@@ -728,34 +728,23 @@ def parse_antipatterns(output: str) -> list[DistilledFact]:
     return records
 
 
-class ClaudeCliDistiller(Distiller):
-    """Headless ``claude -p``. Defaults to Haiku — cheap and fast for extraction."""
+class _LLMDistiller(Distiller):
+    """Shared orchestration for LLM-backed distillers.
 
-    def __init__(self, cmd: str = "claude", model: str = "", timeout: int = 120) -> None:
-        self.cmd = cmd
-        self.model = model or "haiku"
-        self.timeout = timeout
+    Every operation is the same shape — build a prompt, run it through ``_complete``, parse the
+    JSON — so the only thing that varies between backends is *how the completion runs*.
+    Subclasses supply just their construction and ``_complete``; the two concrete backends below
+    (a ``claude -p`` subprocess and an OpenAI-compatible HTTP endpoint) differ in nothing else.
 
+    Fail-open is preserved per operation: ``distill`` falls back to the heuristic, ``summarize``
+    / ``extract_antipatterns`` / ``review`` swallow to their Null/Special-Case, and
+    ``merge_cluster`` deliberately lets exceptions propagate so the caller can tell a transient
+    error apart from a genuine DISTINCT veto (see ``Distiller.merge_cluster``).
+    """
+
+    @abstractmethod
     def _complete(self, prompt: str) -> str:
-        args = [self.cmd, "-p"]
-        if self.model:
-            args += ["--model", self.model]
-        # Distillation is text-in → JSON-out: the subprocess needs NO tools. `--tools ""`
-        # disables the entire built-in tool set so the model *cannot* touch the working tree.
-        # Without it the nested session inherits the project's (often permissive) allow-list —
-        # e.g. `Bash(cat > *)` — and a weak model can misread the transcript embedded in the
-        # prompt as instructions and write files (observed: it clobbered a source file mid-edit).
-        # This is the tool-side guard; ENGRAM_DISABLE below is the hook-side guard. Kept last so
-        # the variadic `--tools` can't swallow a following flag.
-        args += ["--tools", ""]
-        # The nested `claude -p` is itself a Claude session that would fire engram's hooks and
-        # capture this very prompt (a self-referential loop). ENGRAM_DISABLE makes those hooks
-        # no-op, breaking the recursion at its root.
-        env = {**os.environ, "ENGRAM_DISABLE": "1"}
-        result = subprocess.run(args, input=prompt, capture_output=True, text=True, timeout=self.timeout, env=env)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or "llm error")[:200])
-        return result.stdout
+        """Run one text-in → text-out completion. The only backend-specific step."""
 
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
         try:
@@ -790,7 +779,37 @@ class ClaudeCliDistiller(Distiller):
             return []
 
 
-class HTTPDistiller(Distiller):
+class ClaudeCliDistiller(_LLMDistiller):
+    """Headless ``claude -p``. Defaults to Haiku — cheap and fast for extraction."""
+
+    def __init__(self, cmd: str = "claude", model: str = "", timeout: int = 120) -> None:
+        self.cmd = cmd
+        self.model = model or "haiku"
+        self.timeout = timeout
+
+    def _complete(self, prompt: str) -> str:
+        args = [self.cmd, "-p"]
+        if self.model:
+            args += ["--model", self.model]
+        # Distillation is text-in → JSON-out: the subprocess needs NO tools. `--tools ""`
+        # disables the entire built-in tool set so the model *cannot* touch the working tree.
+        # Without it the nested session inherits the project's (often permissive) allow-list —
+        # e.g. `Bash(cat > *)` — and a weak model can misread the transcript embedded in the
+        # prompt as instructions and write files (observed: it clobbered a source file mid-edit).
+        # This is the tool-side guard; ENGRAM_DISABLE below is the hook-side guard. Kept last so
+        # the variadic `--tools` can't swallow a following flag.
+        args += ["--tools", ""]
+        # The nested `claude -p` is itself a Claude session that would fire engram's hooks and
+        # capture this very prompt (a self-referential loop). ENGRAM_DISABLE makes those hooks
+        # no-op, breaking the recursion at its root.
+        env = {**os.environ, "ENGRAM_DISABLE": "1"}
+        result = subprocess.run(args, input=prompt, capture_output=True, text=True, timeout=self.timeout, env=env)
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or "llm error")[:200])
+        return result.stdout
+
+
+class HTTPDistiller(_LLMDistiller):
     """Any OpenAI-compatible chat endpoint (Ollama / LM Studio / llama.cpp / vLLM).
 
     With a local server this is zero-token and fully offline. Stdlib-only.
@@ -824,38 +843,6 @@ class HTTPDistiller(Distiller):
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
             data = json.loads(response.read().decode())
         return data["choices"][0]["message"]["content"]
-
-    def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
-        try:
-            records = observations_to_facts(parse_observations(self._complete(_build_prompt(text, existing))))
-            if records:
-                return records
-        except Exception:
-            pass
-        return HeuristicDistiller().distill(text, existing)
-
-    def summarize(self, text: str) -> DistilledFact | None:
-        try:
-            return parse_summary(self._complete(_build_summary_prompt(text)))
-        except Exception:
-            return None
-
-    def merge_cluster(self, texts: list[str]) -> str | None:
-        return parse_merge(self._complete(_build_merge_prompt(texts)))
-
-    def extract_antipatterns(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
-        try:
-            return parse_antipatterns(self._complete(_build_antipattern_prompt(text, existing)))
-        except Exception:
-            return []
-
-    def review(self, facts: list[tuple[str, str]], context: str = "") -> list[dict]:
-        if not facts:
-            return []
-        try:
-            return parse_review(self._complete(_build_review_prompt(facts, context)), {fid for fid, _ in facts})
-        except Exception:
-            return []
 
 
 # Distiller backends that call out to an LLM — so they can transiently fail (and are the
