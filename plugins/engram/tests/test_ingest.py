@@ -151,6 +151,22 @@ class LowValueFactTests(unittest.TestCase):
         self.assertFalse(ingest.is_low_value_fact(None))
 
 
+class LowValueMemoryTests(unittest.TestCase):
+    """The retro-sweep dispatch — a stored row judged by its kind's live-door policy."""
+
+    def test_prompt_rows_use_the_prompt_gate(self):
+        # "yes lets commit" isn't caught by the fact gate, but IS a trivial prompt.
+        self.assertTrue(ingest.is_low_value_memory("prompt", "yes lets commit"))
+        self.assertFalse(ingest.is_low_value_fact("yes lets commit"))  # fact gate leaves it
+
+    def test_fact_rows_use_the_fact_gate(self):
+        self.assertTrue(ingest.is_low_value_memory("discovery", "TypeScript compilation passed"))
+        self.assertFalse(ingest.is_low_value_memory("discovery", "Use int8 vectors"))  # short real fact kept
+
+    def test_prompt_gate_disabled_at_zero(self):
+        self.assertFalse(ingest.is_low_value_memory("prompt", "yes lets commit", min_prompt_len=0))
+
+
 class RealFactSurvivesEveryGateTests(unittest.TestCase):
     """The over-filtering guard: a genuine decision fact must clear every predicate."""
 

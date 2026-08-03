@@ -8,6 +8,7 @@ Subcommands:
   core        show the stable session-start memory block
   review      distiller-assisted audit — propose stale/invalid memories to retire
   forget      retire specific facts by id (reversible archive)
+  prune-noise archive already-stored low-value memories (reversible; dry-run unless --yes)
   projects    list every project in the global store
   prune       delete all memory for the current project
   uninstall   uninstall the plugin, keeping memory (add --purge-data to remove it)
@@ -71,7 +72,9 @@ def cmd_doctor(args) -> int:
         f"stm_capacity={cfg.stm_capacity or 'off'} "
         f"(promote>={cfg.promote_after_freq}, mature={f'{cfg.stm_max_age_days}d' if cfg.stm_max_age_days > 0 else 'off'})"
     )
-    print(f"curation    : review={'on' if cfg.review_enabled else 'off'} (needs an LLM distiller)  distiller={cfg.distiller}")
+    print(
+        f"curation    : review={'on' if cfg.review_enabled else 'off'} (needs an LLM distiller)  distiller={cfg.distiller}"
+    )
     print(
         f"forgetting  : refine_keep_max={cfg.refine_keep_max or 'off'}  "
         f"refine_prune_pct={cfg.refine_prune_percentile or 'off'}  "
@@ -240,6 +243,63 @@ def cmd_sweep(args) -> int:
     print(f"expired {n} fact(s) older than {days:g}d (kept frequency >= {cfg.ttl_keep_frequency}) in {where}")
     store.close()
     return 0
+
+
+def _prune_noise_scope(store, cfg, args) -> list[tuple[str, str]]:
+    """(key, label) projects to sweep: ``--all`` = every project; ``--project`` matches a label
+    or key; otherwise the cwd-resolved current project."""
+    if args.all:
+        return [(r["project_key"], r["project_label"]) for r in store.projects()]
+    if args.project:
+        return [
+            (r["project_key"], r["project_label"])
+            for r in store.projects()
+            if args.project in (r["project_key"], r["project_label"])
+        ]
+    proj = _project(cfg, args)
+    return [(proj["key"], proj["label"])]
+
+
+def cmd_prune_noise(args) -> int:
+    """Retro-clean already-stored low-value memories — the historical counterpart to the
+    capture-time ingestion gate, for noise that entered before the gate existed (e.g. a bulk
+    import). Applies the same per-kind policy (prompts by the prompt gate, facts by the fact
+    gate). Reversible: matches are archived (status 'pruned'), never deleted. Dry-run by
+    default — pass --yes to apply."""
+    from core.domain.ingest import is_low_value_memory
+
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    try:
+        scope = _prune_noise_scope(store, cfg, args)
+        if not scope:
+            print(f"no project matching {args.project!r}" if args.project else "no project resolved")
+            return 0
+        min_prompt_len = cfg.ingest_min_prompt_len
+        matched: list[str] = []
+        samples: list[str] = []
+        for key, _label in scope:
+            for row in store.active_rows_for_project(key):
+                if is_low_value_memory(row["kind"], row["text"], min_prompt_len):
+                    matched.append(row["id"])
+                    if len(samples) < 8:
+                        samples.append(row["text"])
+        where = "all projects" if args.all else scope[0][1]
+        noun = "memory" if len(matched) == 1 else "memories"
+        if not matched:
+            print(f"no low-value memories found in {where}")
+        elif args.yes:
+            archived = store.set_status(matched, "pruned")
+            print(f"archived {archived} low-value {noun} in {where} (reversible — status 'pruned')")
+        else:
+            print(f"{len(matched)} low-value {noun} in {where} would be archived (dry-run; pass --yes to apply)")
+            for text in samples:
+                print(f"  · {text[:100]}")
+            if len(matched) > len(samples):
+                print(f"  … and {len(matched) - len(samples)} more")
+        return 0
+    finally:
+        store.close()
 
 
 def cmd_consolidate(args) -> int:
@@ -675,6 +735,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--days", type=float, default=0, help="TTL in days (default: config ttl_days)")
     p.add_argument("--all", action="store_true", help="sweep every project, not just the current one")
     p.set_defaults(func=cmd_sweep)
+
+    p = sub.add_parser(
+        "prune-noise",
+        help="archive already-stored low-value memories (reversible: harness/CI-status/trivial-prompt noise)",
+    )
+    add_cwd(p)
+    p.add_argument("--project", metavar="LABEL|KEY", help="target a specific project (default: current)")
+    p.add_argument("--all", action="store_true", help="sweep every project, not just the current one")
+    p.add_argument("--yes", action="store_true", help="apply (archive matches); without it, dry-run reports only")
+    p.set_defaults(func=cmd_prune_noise)
 
     p = sub.add_parser(
         "consolidate",

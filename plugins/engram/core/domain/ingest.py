@@ -234,3 +234,14 @@ def is_low_value_fact(text: str) -> bool:
     if not isinstance(text, str):
         return False
     return is_harness_noise(text) or is_ephemeral_status(text) or _is_slash_or_confirmation(text)
+
+
+def is_low_value_memory(kind: str, text: str, min_prompt_len: int = 12) -> bool:
+    """Retro-sweep gate for an already-stored row: judge it by the SAME per-kind policy the live
+    capture doors apply — a ``'prompt'`` row by the prompt gate (:func:`is_trivial_prompt`, which
+    may use the length/directive rules because a prompt is steering), anything else by the fact
+    gate (:func:`is_low_value_fact`). The retro-sweep only archives (reversible), so the more
+    aggressive prompt gate is safe here. Caller passes the row's ``kind`` + ``text``."""
+    if kind == "prompt":
+        return min_prompt_len > 0 and is_trivial_prompt(text, min_prompt_len)
+    return is_low_value_fact(text)
