@@ -856,14 +856,24 @@ class Store:
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params += [limit, offset]
-        groups = self.db.execute(sql, params).fetchall()
-        return [
-            self.db.execute(
-                f"SELECT * FROM facts WHERE {cond} AND {grp} = ? ORDER BY rowid ASC",
-                (*cparams, row["grp"]),
-            ).fetchall()
-            for row in groups
-        ]
+        group_ids = [row["grp"] for row in self.db.execute(sql, params).fetchall()]
+        if not group_ids:
+            return []
+        # Fetch every selected group's facts in ONE query, then bucket in Python — not a
+        # per-group query (N+1). The N+1 was the real cost at scale: each per-group lookup
+        # filters on COALESCE(observation_id, id), which no index can serve, so it re-scanned
+        # the whole tier — 50 scans of 135k rows ≈ 11s. One IN query is a single scan (~0.2s).
+        placeholders = ",".join("?" * len(group_ids))
+        rows = self.db.execute(
+            f"SELECT * FROM facts WHERE {cond} AND {grp} IN ({placeholders}) ORDER BY rowid ASC",
+            (*cparams, *group_ids),
+        ).fetchall()
+        by_group: dict[object, list[sqlite3.Row]] = {}
+        for row in rows:
+            key = row["observation_id"] if row["observation_id"] is not None else row["id"]
+            by_group.setdefault(key, []).append(row)
+        # Preserve the group query's newest-first order; every group_id has ≥1 row.
+        return [by_group[g] for g in group_ids if g in by_group]
 
     def work_items(self, project_key: str, limit: int = 200) -> list[sqlite3.Row]:
         """Work-queue rows for a project (all stages/statuses), newest first — the Consolidation view."""

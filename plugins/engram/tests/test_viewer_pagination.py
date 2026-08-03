@@ -83,6 +83,20 @@ class ArchivedCountAndPagingTests(_SeededStore):
         self.assertEqual(len(seen), 5)
         self.assertEqual(len(set(seen)), 5)  # no duplicates across pages
 
+    def test_batched_fetch_preserves_group_and_intra_group_order(self):
+        # Regression for the N+1 -> single-IN rewrite: multi-fact groups must come back
+        # intact, newest group first (by MAX created_at), facts within a group rowid-ordered.
+        self._fact("a1", "alpha", status="active", obs="obs-A", created=1.0)
+        self._fact("b1", "beta one", status="active", obs="obs-B", created=2.0)
+        self._fact("b2", "beta two", status="active", obs="obs-B", created=5.0)  # newest overall
+        self._fact("c1", "gamma", status="active", obs="obs-C", created=3.0)
+        groups = self.store.list_observations("pk", active=True)
+        # Group order = newest MAX(created_at) first: B(5) > C(3) > A(1).
+        self.assertEqual([rows[0]["observation_id"] for rows in groups], ["obs-B", "obs-C", "obs-A"])
+        # The two-fact group is intact and in insertion (rowid) order.
+        beta = next(rows for rows in groups if rows[0]["observation_id"] == "obs-B")
+        self.assertEqual([r["id"] for r in beta], ["b1", "b2"])
+
 
 class ConsolidationPagePagingTests(unittest.TestCase):
     """Phase 2 — the served page wires archived pagination through the unified pager."""
