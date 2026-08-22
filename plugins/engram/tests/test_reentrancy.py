@@ -85,32 +85,18 @@ class HookNoOpTests(unittest.TestCase):
 
 
 class DistillerEnvTests(unittest.TestCase):
-    def test_claude_distiller_sets_disable_env(self):
-        captured = {}
+    """The distiller subprocess must be spawned inside a tight isolation envelope.
 
-        class _Result:
-            returncode = 0
-            stdout = "{}"
-            stderr = ""
+    All three tests inspect the exact ``subprocess.run`` call the Gateway makes, so they
+    share one helper that patches ``subprocess.run`` and returns the captured ``args`` / ``kwargs``.
+    """
 
-        def fake_run(args, **kwargs):
-            captured["env"] = kwargs.get("env")
-            return _Result()
+    def _spawn_args(self, **distiller_kwargs) -> tuple[list, dict]:
+        """Invoke ``ClaudeCliDistiller._complete`` with ``subprocess.run`` stubbed.
 
-        orig = distill.subprocess.run
-        distill.subprocess.run = fake_run
-        try:
-            ClaudeCliDistiller(cmd="claude")._complete("some prompt")
-        finally:
-            distill.subprocess.run = orig
-        self.assertIsNotNone(captured["env"], "distiller must pass an explicit env")
-        self.assertEqual(captured["env"].get("ENGRAM_DISABLE"), "1")
-
-    def test_claude_distiller_runs_with_no_tools(self):
-        # Regression: the headless distiller must be spawned tool-less (`--tools ""`) so a
-        # confused model can't write to the working tree via the project's allow-list
-        # (e.g. `Bash(cat > *)`). This is the tool-side guard; ENGRAM_DISABLE is the hook-side one.
-        captured = {}
+        Returns the ``(args, kwargs)`` the Gateway would have passed to the real subprocess.
+        """
+        captured: dict = {}
 
         class _Result:
             returncode = 0
@@ -119,20 +105,50 @@ class DistillerEnvTests(unittest.TestCase):
 
         def fake_run(args, **kwargs):
             captured["args"] = args
+            captured["kwargs"] = kwargs
             return _Result()
 
-        orig = distill.subprocess.run
-        distill.subprocess.run = fake_run
-        try:
-            ClaudeCliDistiller(cmd="claude", model="haiku")._complete("some prompt")
-        finally:
-            distill.subprocess.run = orig
-        args = captured["args"]
+        with mock.patch.object(distill.subprocess, "run", fake_run):
+            ClaudeCliDistiller(**distiller_kwargs)._complete("some prompt")
+        return captured["args"], captured["kwargs"]
+
+    def test_claude_distiller_sets_disable_env(self):
+        _, kwargs = self._spawn_args(cmd="claude")
+        env = kwargs.get("env")
+        self.assertIsNotNone(env, "distiller must pass an explicit env")
+        self.assertEqual(env.get("ENGRAM_DISABLE"), "1")
+
+    def test_claude_distiller_runs_with_no_tools(self):
+        # Regression: the headless distiller must be spawned tool-less (`--tools ""`) so a
+        # confused model can't write to the working tree via the project's allow-list
+        # (e.g. `Bash(cat > *)`). This is the tool-side guard; ENGRAM_DISABLE is the hook-side one.
+        args, _ = self._spawn_args(cmd="claude", model="haiku")
         self.assertIn("--tools", args)
         self.assertEqual(args[args.index("--tools") + 1], "", "--tools value must be '' (all tools disabled)")
         joined = " ".join(args)
         for banned in ("Edit", "Write", "Bash", "NotebookEdit"):
             self.assertNotIn(banned, joined, f"distiller must not be granted the {banned} tool")
+
+    def test_claude_distiller_isolates_mcp(self):
+        # Regression: `--tools ""` disables only the BUILT-IN tool set — it does NOT stop the
+        # nested `claude -p` loading ambient MCP servers (Chrome DevTools, Linear, plugin MCP
+        # servers, …), which are then auto-permitted by the inherited allow-list and can perform
+        # side-effecting "ghost actions". `--strict-mcp-config` (with NO `--mcp-config`) loads
+        # zero MCP servers — verified behaviourally: without it an engram `recall` MCP tool call
+        # executes; with it the MCP server never starts. See docs/generated/plans/plan-distiller-mcp-sandbox.md.
+        args, _ = self._spawn_args(cmd="claude", model="haiku")
+        self.assertIn("--strict-mcp-config", args, "distiller must load ZERO MCP servers")
+        # No --mcp-config source → the strict set is empty (that is the whole point).
+        self.assertNotIn("--mcp-config", args, "no MCP config source may be passed — the strict set must stay empty")
+        # No MCP tool may be granted by name either.
+        self.assertNotIn("mcp__", " ".join(args), "distiller must not be granted any mcp__ tool")
+        # Ordering guard: the variadic `--tools <tools...>` must stay LAST so it can't swallow
+        # `--strict-mcp-config`. Assert strict appears before --tools.
+        self.assertLess(
+            args.index("--strict-mcp-config"),
+            args.index("--tools"),
+            "--strict-mcp-config must precede the variadic --tools so it isn't swallowed",
+        )
 
 
 class DistillerPromptBackstopTests(unittest.TestCase):

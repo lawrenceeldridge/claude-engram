@@ -117,7 +117,12 @@ quality lever. Strategy pattern behind one interface:
 - **HeuristicDistiller** (default) — dependency-free line extraction. Cannot detect
   conflicts, so it leans on similarity-based supersession.
 - **ClaudeCliDistiller** (`distiller=claude`) — headless `claude -p`, defaulting to
-  **Haiku** (the right tier for cheap extraction).
+  **Haiku** (the right tier for cheap extraction). Spawned inside a tight isolation
+  envelope so a model reading the transcript-in-prompt cannot act on it: `--tools ""`
+  disables the **built-in** tools, `--strict-mcp-config` (with no `--mcp-config`) loads
+  **zero MCP servers** — without the latter the nested session would inherit ambient MCP
+  servers (browser, tracker, …) *and* the project allow-list and perform side-effecting
+  "ghost actions" — and `ENGRAM_DISABLE=1` no-ops engram's own hooks (recursion guard).
 - **HTTPDistiller** (`distiller=ollama`) — POSTs to any OpenAI-compatible endpoint
   via stdlib urllib; point it at a local Ollama / LM Studio / llama.cpp / vLLM
   server for **zero-token, offline** distillation.
