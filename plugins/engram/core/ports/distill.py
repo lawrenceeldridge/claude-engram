@@ -725,16 +725,26 @@ class ClaudeCliDistiller(_LLMDistiller):
         self.timeout = timeout
 
     def _complete(self, prompt: str) -> str:
-        args = [self.cmd, "-p"]
+        # Distillation is text-in → JSON-out: the subprocess needs NO tools at all. A weak model
+        # can misread the transcript embedded in the prompt as instructions and act on it (prompt
+        # injection), so both tool surfaces the nested session could reach are closed here — the
+        # Gateway owns its own subprocess isolation envelope. Two surfaces, two flags:
+        #
+        #   --strict-mcp-config : load ONLY MCP servers from --mcp-config; with none passed, the
+        #     effective set is EMPTY. Without it the nested `claude -p` loads every ambient MCP
+        #     server (Chrome DevTools, Linear, …) and can drive them — the built-in `--tools ""`
+        #     does nothing about MCP tools (they aren't in the built-in set). Observed: the
+        #     distiller navigated Chrome and opened tickets while "summarising".
+        #   --tools "" : disable the entire BUILT-IN tool set (Bash/Edit/Write/…) so the model
+        #     *cannot* touch the working tree. Observed: it clobbered a source file mid-edit.
+        #
+        # Together they leave nothing for the project's (often permissive, ~200-entry) inherited
+        # settings.local.json allow-list to grant — closing availability makes permission moot.
+        # This is the tool-side guard; ENGRAM_DISABLE below is the hook-side (recursion) guard.
+        args = [self.cmd, "-p", "--strict-mcp-config"]
         if self.model:
             args += ["--model", self.model]
-        # Distillation is text-in → JSON-out: the subprocess needs NO tools. `--tools ""`
-        # disables the entire built-in tool set so the model *cannot* touch the working tree.
-        # Without it the nested session inherits the project's (often permissive) allow-list —
-        # e.g. `Bash(cat > *)` — and a weak model can misread the transcript embedded in the
-        # prompt as instructions and write files (observed: it clobbered a source file mid-edit).
-        # This is the tool-side guard; ENGRAM_DISABLE below is the hook-side guard. Kept last so
-        # the variadic `--tools` can't swallow a following flag.
+        # `--tools` is variadic (`<tools...>`) — kept LAST so it can't swallow a following flag.
         args += ["--tools", ""]
         # The nested `claude -p` is itself a Claude session that would fire engram's hooks and
         # capture this very prompt (a self-referential loop). ENGRAM_DISABLE makes those hooks
