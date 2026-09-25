@@ -49,6 +49,8 @@ core to Claude Code.
 | `embedding.py` | Gateway + Separated Interface for embedding providers. |
 | `adapters/fastembed_gw.py` | fastembed Gateway adapter (opt-in, real semantic model). |
 | `adapters/__init__.py` | Adapter package init. |
+| `domain/episodes.py` | Pure episodic pipeline: `exchange_units` (user turn + the assistant turns answering it, verbatim, ~800-char split), `should_keep_exchange` (length gate), `prepare_exchanges` (redact → gate; shared by capture and the LongMemEval bench), `episode_key` (the `<session>:<delta start>` key shared by a delta's exchanges and the `facts.episode` provenance link). |
+| `domain/privacy.py` | Pure `redact` (credentials, emails, non-project paths → `«redacted»`) for verbatim storage, and `privacy_flags` (the bench's human-gate detector). |
 | `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`, `has_overlap`) for the confidence identity cue and the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
 | `quantize.py` | int8 (primary search rep) + binary sign-bit quantisation. |
 | `provision.py` | Self-provisions the private fastembed venv (no manual pip). |
@@ -62,7 +64,7 @@ core to Claude Code.
 | `code_symbols.py` | Python symbol extraction via stdlib `ast`. |
 | `treesitter_symbols.py` | TS/JS symbol extraction via `tree-sitter-language-pack`. |
 | `chunking.py` | Markdown/doc chunking by heading structure. |
-| `index_recall.py` | Ranked index search backing `search_code` / `search_docs`. |
+| `index_recall.py` | Ranked index search backing `search_code` / `search_docs` / `search_history` (scoped by kind and optionally one source/episode; cosine via the shared `VectorScorer`). |
 | `fusion.py` | Reciprocal-rank fusion (FTS5 bm25 ⊕ cosine) + diversity-budget packing. |
 
 ### Shared
@@ -85,7 +87,7 @@ core to Claude Code.
 | `index_docs.py` | SessionStart — auto-index the project (single-flight, file-capped). |
 | `index_edit.py` | PostToolUse — re-index each Edited/Written file. |
 | `capture.py` | Stop / SessionEnd / PreCompact — detached capture + throttled summary. |
-| `mcp_server.py` | `engram-memory` MCP server (`recall`, `search_code`, `get_symbol`, `code_outline`, `search_docs`, `get_doc_section`, `doc_outline`, `index_docs`, `list_projects`). |
+| `mcp_server.py` | `engram-memory` MCP server (`recall`, `search_code`, `get_symbol`, `code_outline`, `search_docs`, `get_doc_section`, `doc_outline`, `search_history`, `index_docs`, `list_projects`, `invalidate_memory`, `review_memory`); `TOOLS` is the one registry — dispatch is by name to the `_Engine` method. |
 | `daemon.py` | Optional resident embedder (keeps the model warm). |
 | `engram` | The CLI — `doctor`, `capture`, `recall`, `core`, `projects`, `prune`, `sweep`, `setup`, `daemon`, `viewer`, `stats`, `drift`, `eval`, `demo`. |
 | `_bootstrap.py` | Shared path/interpreter bootstrap for the entry points. |
@@ -111,6 +113,7 @@ core to Claude Code.
 |---|---|
 | `run_eval.py` | Runs the labelled paraphrase set through the real quantised search path (Recall@1/@3, MRR@10, bytes/fact); owns the shared `add_eval_arguments` flag set used by `bin/engram eval`. |
 | `confidence_eval.py` | `--confidence`: calibration of the `recall` verdict (AUROC, Brier/ECE, ok-precision/recall) over answerable + unanswerable queries on the production `search_fused_with_stats` path. |
+| `longmemeval.py` | `--longmemeval`: LongMemEval session retrieval — parity / verbatim-exchange / distilled / hybrid arms, session metrics + chars@5. |
 | `age_eval.py` | `--aged`: old- vs new-gold Recall@k on both production rankers (`search`, `search_fused`) across recency weights, against the age-blind (recency-off) ranking. |
 | `retrieval.py` / `stores.py` | Shared rankers over the real paths + Recall@k/MRR scorer; throwaway eval stores with explicit timestamps. |
 | `replay_ledger.py` | Replays the last N real `recall_events` queries on a snapshot of the live store (unlabelled reality check). |

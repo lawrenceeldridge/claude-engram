@@ -172,3 +172,20 @@ def platt_apply(score: float, params: tuple[float, float]) -> float:
         return 0.0
     a, b = params
     return _sigmoid(a * score + b)
+
+
+def recall_any_at_k(ranked: Sequence[str], gold: set[str], k: int) -> bool:
+    """True when any gold id is in the top ``k`` (LongMemEval's ``recall_any@k``)."""
+    return bool(gold & set(ranked[:k]))
+
+
+def recall_all_at_k(ranked: Sequence[str], gold: set[str], k: int) -> bool:
+    """True when every gold id is in the top ``k`` (LongMemEval's ``recall_all@k``)."""
+    return bool(gold) and gold <= set(ranked[:k])
+
+
+def ndcg_at_k(ranked: Sequence[str], gold: set[str], k: int) -> float:
+    """Binary-relevance NDCG@k: DCG of the ranking over the ideal DCG (all gold first)."""
+    dcg = sum(1.0 / math.log2(rank + 2) for rank, item in enumerate(ranked[:k]) if item in gold)
+    ideal = sum(1.0 / math.log2(rank + 2) for rank in range(min(len(gold), k)))
+    return dcg / ideal if ideal else 0.0

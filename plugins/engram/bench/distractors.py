@@ -16,9 +16,10 @@ from __future__ import annotations
 import argparse
 import random
 
-from bench.mine_corpus import contamination_hit, privacy_flags
+from bench.mine_corpus import contamination_hit
 from bench.snapshot import snapshot_db
 from core.domain.lexical import token_set
+from core.domain.privacy import privacy_flags
 from core.project import Project
 from core.store import Store
 

@@ -38,6 +38,7 @@ from bench.backends import make_embedder, parse_spec  # noqa: E402
 from bench.cli_args import add_eval_arguments  # noqa: E402
 from bench.confidence_eval import run_confidence  # noqa: E402
 from bench.distractors import load_distractors  # noqa: E402
+from bench.longmemeval import run_longmemeval  # noqa: E402
 from bench.report import print_rows  # noqa: E402
 from bench.retrieval import score_queries, search_ranker  # noqa: E402
 from bench.stats import bootstrap_ci, mcnemar_exact, wilson  # noqa: E402
@@ -315,6 +316,8 @@ def main(args: argparse.Namespace) -> int:
             run_confidence(data, cfg, backends, distractors, args.ok_precision)
         if args.aged:
             run_aged(data, cfg, backends, distractors)
+    if args.longmemeval:
+        run_longmemeval(cfg, backends, args)
     return 0
 
 

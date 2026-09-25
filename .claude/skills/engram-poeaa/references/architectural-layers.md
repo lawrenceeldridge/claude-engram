@@ -35,7 +35,7 @@ claude-engram is **one package** (`plugins/engram/`) with one internal hexagonal
                                 │
                       Functional Core / Domain (core)
                       ───────────────────────────────
-                      distill · scoring · quantize · fusion · confidence · lexical
+                      distill · scoring · quantize · fusion · confidence · lexical · episodes · privacy · …
                       (pure functions over facts + quantised vectors)
                                 │
                                 ▲ depends on (via ports)

@@ -23,8 +23,11 @@ from bench.stats import (  # noqa: E402
     brier,
     ece,
     mcnemar_exact,
+    ndcg_at_k,
     platt_apply,
     platt_fit,
+    recall_all_at_k,
+    recall_any_at_k,
     reliability_bins,
     wilson,
 )
@@ -177,6 +180,23 @@ class PlattTests(unittest.TestCase):
 
     def test_no_recall_maps_to_zero(self):
         self.assertEqual(platt_apply(float("-inf"), (5.0, -1.0)), 0.0)
+
+
+class RetrievalMetricTests(unittest.TestCase):
+    def test_recall_any_and_all(self):
+        ranked = ["a", "b", "c", "d"]
+        self.assertTrue(recall_any_at_k(ranked, {"c", "z"}, 3))
+        self.assertFalse(recall_any_at_k(ranked, {"d"}, 3))
+        self.assertTrue(recall_all_at_k(ranked, {"a", "c"}, 3))
+        self.assertFalse(recall_all_at_k(ranked, {"a", "d"}, 3))
+        self.assertFalse(recall_all_at_k(ranked, set(), 3))  # no gold: undefined, never a hit
+
+    def test_ndcg_known_values(self):
+        self.assertAlmostEqual(ndcg_at_k(["g", "x"], {"g"}, 5), 1.0)
+        self.assertAlmostEqual(ndcg_at_k(["x", "g"], {"g"}, 5), 1 / math.log2(3))
+        # two gold at ranks 1 and 3: (1 + 1/log2 4) / (1 + 1/log2 3)
+        self.assertAlmostEqual(ndcg_at_k(["g1", "x", "g2"], {"g1", "g2"}, 5), (1 + 0.5) / (1 + 1 / math.log2(3)))
+        self.assertEqual(ndcg_at_k(["x"], set(), 5), 0.0)
 
 
 if __name__ == "__main__":

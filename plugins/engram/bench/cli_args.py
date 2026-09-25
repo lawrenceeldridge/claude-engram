@@ -42,3 +42,22 @@ def add_eval_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ok-precision", type=float, default=0.90, help="--confidence: how often an `ok` verdict must be right"
     )
+    parser.add_argument(
+        "--longmemeval",
+        action="store_true",
+        help="also run LongMemEval session retrieval: parity / verbatim / distilled / hybrid arms",
+    )
+    parser.add_argument("--lme-path", type=Path, help="--longmemeval: local longmemeval_s_cleaned.json")
+    parser.add_argument(
+        "--lme-download", action="store_true", help="--longmemeval: fetch the dataset (HF, MIT) into the data dir"
+    )
+    parser.add_argument(
+        "--lme-limit", type=int, default=60, help="--longmemeval: stratified question sample (0 = all 500)"
+    )
+    parser.add_argument("--lme-out", type=Path, help="--longmemeval: append per-question arm scores (JSONL) here")
+    parser.add_argument(
+        "--lme-llm",
+        type=int,
+        default=0,
+        help="--longmemeval: also run an LLM-distilled arm on the first N sampled questions (external API cost)",
+    )

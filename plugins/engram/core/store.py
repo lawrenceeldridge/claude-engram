@@ -199,6 +199,18 @@ def _add_columns(db: sqlite3.Connection, specs: list[tuple[str, str]]) -> None:
             db.execute(f"ALTER TABLE facts ADD COLUMN {ddl}")
 
 
+def _chunk_scope(project_key: str, kind: str | None, source_path: str | None, *, table: str = "") -> tuple[str, list]:
+    """The WHERE clause (and its params) scoping chunk queries to a project, and optionally one
+    kind and/or one source — shared by the outline, vector-scan and FTS reads."""
+    col = f"{table}." if table else ""
+    clauses, params = [f"{col}project_key = ?"], [project_key]
+    for name, value in (("source_path", source_path), ("kind", kind)):
+        if value is not None:
+            clauses.append(f"{col}{name} = ?")
+            params.append(value)
+    return " AND ".join(clauses), params
+
+
 def _v1_lifecycle(db: sqlite3.Connection) -> None:
     _add_columns(
         db,
@@ -463,6 +475,14 @@ def _v18_facts_browse_index(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_facts_browse ON facts(project_key, tier, status, created_at)")
 
 
+def _v19_fact_episode(db: sqlite3.Connection) -> None:
+    # Provenance link from a fact to the episode (transcript delta) it was captured from — the
+    # source key of that delta's verbatim `exchange` chunks, so on-demand recall can point at the
+    # conversation behind a fact. Additive and nullable (facts not captured from a transcript, and
+    # every fact written before this, stay NULL); self-healing via _add_columns.
+    _add_columns(db, [("episode", "episode TEXT")])
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -486,6 +506,7 @@ _MIGRATIONS = [
     _v16_sensory,
     _v17_sensory_schema,
     _v18_facts_browse_index,
+    _v19_fact_episode,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -529,15 +550,18 @@ class Store:
     def exists(self, fact_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM facts WHERE id = ?", (fact_id,)).fetchone() is not None
 
-    def reinforce(self, fact_id: str, now: float | None = None) -> int:
+    def reinforce(self, fact_id: str, now: float | None = None, *, episode: str | None = None) -> int:
         """Consolidation — strengthen a fact seen again and refresh its recency.
 
+        A given ``episode`` re-points the fact's provenance at the conversation that just restated it
+        (the newest trace is the one retention keeps longest); None leaves the link as it was.
         Returns the fact's new frequency so the caller can decide promotion
         (STM→LTM on rehearsal); 0 if the fact is absent.
         """
         self.db.execute(
-            "UPDATE facts SET frequency = frequency + 1, last_seen = ?, status = 'active' WHERE id = ?",
-            (_now(now), fact_id),
+            "UPDATE facts SET frequency = frequency + 1, last_seen = ?, status = 'active', "
+            "episode = COALESCE(?, episode) WHERE id = ?",
+            (_now(now), episode, fact_id),
         )
         self.db.commit()
         row = self.db.execute("SELECT frequency FROM facts WHERE id = ?", (fact_id,)).fetchone()
@@ -765,6 +789,7 @@ class Store:
         type: str = "",
         observation_id: str = "",
         tier: str = "stm",
+        episode: str | None = None,
     ) -> bool:
         fid = self.fact_id(project["key"], text)
         stamp = created_at if created_at is not None else time.time()
@@ -772,8 +797,8 @@ class Store:
             "INSERT OR IGNORE INTO facts "
             "(id, project_key, project_label, project_path, session_id, kind, text, "
             " title, subtitle, narrative, files, type, observation_id, created_at, last_seen, dim, scale, "
-            " vec_int8, vec_bits, importance, frequency, status, tier) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?)",
+            " vec_int8, vec_bits, importance, frequency, status, tier, episode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)",
             (
                 fid,
                 project["key"],
@@ -796,6 +821,7 @@ class Store:
                 vec_bits,
                 importance,
                 tier,
+                episode,
             ),
         )
         self.db.commit()
@@ -1335,7 +1361,7 @@ class Store:
 
     def _insert_chunk_rows(self, project_key: str, source_path: str, chunks: list[dict], stamp: float) -> None:
         """The shared chunk INSERT for both the file writer (replace_source_chunks) and the
-        snapshot writer (replace_snapshot_chunks) — the column list lives in exactly one place."""
+        non-file writer (replace_nonfile_chunks) — the column list lives in exactly one place."""
         self.db.executemany(
             "INSERT OR REPLACE INTO chunks "
             "(id, project_key, source_path, kind, anchor, title, heading_path, level, "
@@ -1365,20 +1391,53 @@ class Store:
             ],
         )
 
-    def replace_snapshot_chunks(self, project_key: str, url: str, chunks: list[dict], now: float | None = None) -> int:
-        """Swap the snapshot chunk(s) for a URL — the index's visual long-term-store column. Unlike
-        replace_source_chunks this writes NO chunk_sources row: a snapshot's source is a URL, not a
-        file on disk, so it is exempt from file drift-reconciliation (index_project reconciles the
-        filesystem against chunk_sources) and gets age-based freshness at read time. Delete-then-insert
-        scoped to kind='snapshot'. Returns the number of chunks written."""
+    def replace_nonfile_chunks(
+        self, project_key: str, kind: str, source: str, chunks: list[dict], now: float | None = None
+    ) -> int:
+        """Swap a non-file source's ``kind`` chunks — a snapshot's URL (the index's visual column) or
+        a conversation session (episodic exchanges). Unlike replace_source_chunks this writes NO
+        chunk_sources row: the source is not a file on disk, so it is exempt from file
+        drift-reconciliation (index_project reconciles the filesystem against chunk_sources) and its
+        freshness is decided at read time by kind. Delete-then-insert scoped to (source, kind).
+        Returns the number of chunks written."""
         stamp = _now(now)
         with self.db:
             self.db.execute(
-                "DELETE FROM chunks WHERE project_key = ? AND source_path = ? AND kind = 'snapshot'",
-                (project_key, url),
+                "DELETE FROM chunks WHERE project_key = ? AND source_path = ? AND kind = ?",
+                (project_key, source, kind),
             )
-            self._insert_chunk_rows(project_key, url, chunks, stamp)
+            self._insert_chunk_rows(project_key, source, chunks, stamp)
         return len(chunks)
+
+    def prune_nonfile_chunks(
+        self, project_key: str, kind: str, *, max_age_seconds: float, keep_max: int, now: float | None = None
+    ) -> int:
+        """Forget a non-file kind's oldest chunks — those indexed more than ``max_age_seconds`` ago
+        (0 = no age limit), then any beyond the newest ``keep_max`` (0 = no cap). The FTS index
+        follows via the delete trigger. Returns the number of chunks deleted."""
+        stamp = _now(now)
+        deleted = 0
+        with self.db:
+            if max_age_seconds > 0:
+                deleted += self.db.execute(
+                    "DELETE FROM chunks WHERE project_key = ? AND kind = ? AND indexed_at < ?",
+                    (project_key, kind, stamp - max_age_seconds),
+                ).rowcount
+            if keep_max > 0:
+                deleted += self.db.execute(
+                    "DELETE FROM chunks WHERE id IN (SELECT id FROM chunks WHERE project_key = ? AND kind = ? "
+                    "ORDER BY indexed_at DESC LIMIT -1 OFFSET ?)",
+                    (project_key, kind, keep_max),
+                ).rowcount
+        return deleted
+
+    def chunk_stats(self, project_key: str, kind: str) -> dict:
+        """``{"count", "bytes"}`` of one chunk kind's stored bodies for a project (doctor)."""
+        count, size = self.db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(body)), 0) FROM chunks WHERE project_key = ? AND kind = ?",
+            (project_key, kind),
+        ).fetchone()
+        return {"count": count, "bytes": size}
 
     def delete_source(self, project_key: str, source_path: str) -> None:
         """Drop a vanished file's chunks and source row (called for files gone since last index)."""
@@ -1400,45 +1459,48 @@ class Store:
         self, project_key: str, source_path: str | None = None, kind: str | None = None
     ) -> list[sqlite3.Row]:
         """Ordered skeleton (no body): anchor/title/heading_path/level/summary per chunk."""
-        sql = (
+        where, params = _chunk_scope(project_key, kind, source_path)
+        return self.db.execute(
             "SELECT id, source_path, kind, anchor, title, heading_path, level, summary "
-            "FROM chunks WHERE project_key = ?"
-        )
-        params: list = [project_key]
-        if source_path is not None:
-            sql += " AND source_path = ?"
-            params.append(source_path)
-        if kind is not None:
-            sql += " AND kind = ?"
-            params.append(kind)
-        sql += " ORDER BY source_path, byte_start"
-        return self.db.execute(sql, params).fetchall()
+            f"FROM chunks WHERE {where} ORDER BY source_path, byte_start",
+            params,
+        ).fetchall()
 
-    def chunk_rows(self, project_key: str, kind: str | None = None) -> list[sqlite3.Row]:
-        """All chunk rows for a project (vector-channel scan input), optionally one kind."""
-        sql = "SELECT * FROM chunks WHERE project_key = ?"
-        params: list = [project_key]
-        if kind is not None:
-            sql += " AND kind = ?"
-            params.append(kind)
-        return self.db.execute(sql, params).fetchall()
+    def chunk_rows(
+        self, project_key: str, kind: str | None = None, source_path: str | None = None
+    ) -> list[sqlite3.Row]:
+        """All chunk rows for a project (vector-channel scan input), optionally one kind / source."""
+        where, params = _chunk_scope(project_key, kind, source_path)
+        return self.db.execute(f"SELECT * FROM chunks WHERE {where}", params).fetchall()
 
-    def chunk_fts_search(self, project_key: str, query: str, limit: int = 50, kind: str | None = None) -> list[str]:
+    def chunk_fts_search(
+        self,
+        project_key: str,
+        query: str,
+        limit: int = 50,
+        kind: str | None = None,
+        source_path: str | None = None,
+    ) -> list[str]:
         """Chunk ids matching an FTS5 keyword query, best-ranked first (weighted columns)."""
         match = _fts_match_expr(query)
         if not match:
             return []
+        where, params = _chunk_scope(project_key, kind, source_path, table="c")
         sql = (
             "SELECT c.id FROM chunks_fts JOIN chunks c ON c.rowid = chunks_fts.rowid "
-            "WHERE chunks_fts MATCH ? AND c.project_key = ?"
+            f"WHERE chunks_fts MATCH ? AND {where} ORDER BY bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0) LIMIT ?"
         )
-        params: list = [match, project_key]
-        if kind is not None:
-            sql += " AND c.kind = ?"
-            params.append(kind)
-        sql += " ORDER BY bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0) LIMIT ?"
-        params.append(limit)
-        return [row[0] for row in self.db.execute(sql, params).fetchall()]
+        return [row[0] for row in self.db.execute(sql, [match, *params, limit]).fetchall()]
+
+    def unlink_forgotten_episodes(self, project_key: str) -> int:
+        """Clear the ``episode`` link on facts whose exchanges have all been forgotten, so on-demand
+        recall never points at a conversation that is gone. Returns the number of facts unlinked."""
+        with self.db:
+            return self.db.execute(
+                "UPDATE facts SET episode = NULL WHERE project_key = ? AND episode IS NOT NULL "
+                "AND episode NOT IN (SELECT DISTINCT source_path FROM chunks WHERE project_key = ? AND kind = 'exchange')",
+                (project_key, project_key),
+            ).rowcount
 
     def set_index_meta(self, project: Project) -> None:
         """Record a project's human label/path for the index, so an index-only project

@@ -27,7 +27,7 @@ def consolidate(store, cfg, project, now: float | None = None, embedder=None) ->
     both promotion paths run before displacement and those rows leave the STM overflow set;
     then STM displacement, then integrate (dedup near-duplicates before the retention cut
     scores them), then the retention prune, then the time-based hard purge of already-archived
-    rows. replay/mature/displace/integrate and the keep_max/absolute-floor refine modes are
+    rows, then episodic forgetting (verbatim exchanges past ``episodic_ttl_days`` or the cap). replay/mature/displace/integrate and the keep_max/absolute-floor refine modes are
     idempotent; the refine *percentile* mode is per-pass/convergent (see refine.py). All
     archival is reversible (only purge deletes, and only long-cold rows).
     """
@@ -46,6 +46,18 @@ def consolidate(store, cfg, project, now: float | None = None, embedder=None) ->
     # only by supersession or here, when the files they warn about no longer exist on disk.
     invalidated = invalidate_stale_antipatterns(store, project, now)
     purged = store.purge(cfg.purge_horizon_days * 86400, now) if cfg.purge_horizon_days > 0 else 0
+    # Episodic forgetting: verbatim exchanges past the retention horizon or beyond the per-project
+    # cap leave the index (they are an on-demand trace, not facts — a hard delete, like purge).
+    # Facts outlive their exchanges, so a fact whose whole episode is gone loses its link.
+    forgotten = store.prune_nonfile_chunks(
+        project["key"],
+        "exchange",
+        max_age_seconds=cfg.episodic_ttl_days * 86400,
+        keep_max=cfg.episodic_max_chunks,
+        now=now,
+    )
+    if forgotten:
+        store.unlink_forgotten_episodes(project["key"])
     return {
         "promoted": promoted,
         "matured": matured,
@@ -54,4 +66,5 @@ def consolidate(store, cfg, project, now: float | None = None, embedder=None) ->
         "pruned": pruned,
         "invalidated": invalidated,
         "purged": purged or 0,
+        "forgotten": forgotten,
     }

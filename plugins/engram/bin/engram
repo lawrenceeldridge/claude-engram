@@ -88,6 +88,11 @@ def cmd_doctor(args) -> int:
         f"capacity={cfg.sensory_capacity or 'off'}  ttl={cfg.sensory_ttl_seconds or 'off'}s  "
         f"attention_window={cfg.attention_window_seconds}s"
     )
+    e = store.chunk_stats(project["key"], "exchange")
+    print(
+        f"episodic    : {'on' if cfg.episodic_enabled else 'off'}  {e['count']} exchanges ({e['bytes'] / 1e6:.1f} MB)  "
+        f"min_chars={cfg.episodic_min_chars}  ttl={cfg.episodic_ttl_days or 'off'}d  cap={cfg.episodic_max_chunks or 'off'}"
+    )
     store.close()
     return 0
 

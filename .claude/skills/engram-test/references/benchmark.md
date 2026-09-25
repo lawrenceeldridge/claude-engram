@@ -33,7 +33,8 @@ python3 bin/engram eval --backends "hash,fastembed" --confidence  # recall-verdi
 
 `bin/engram eval` and `bench/run_eval.py` share one flag definition
 (`run_eval.add_eval_arguments`), so every scenario flag works from both: `--stm`,
-`--antipatterns`, `--integrate`, `--confidence` (+ `--ok-precision`), `--aged`; `--distractors`,
+`--antipatterns`, `--integrate`, `--confidence` (+ `--ok-precision`), `--aged`, `--longmemeval`
+(+ `--lme-path` / `--lme-download` / `--lme-limit` / `--lme-llm`); `--distractors`,
 `--distractor-project`, `--distractor-db` pad the store for `--confidence` / `--aged`.
 
 ### Backend spec: `name[@model][%dim][+float]`
@@ -141,6 +142,21 @@ both paired McNemar exact. The dataset cannot reward
 recency (nothing in it is "newer and therefore truer"), so it measures one thing: whether age
 overrides relevance. Fusion weights have no config knob; variants override them with a scoped
 `mock.patch.dict` inside the bench only.
+
+## LongMemEval session retrieval (`--longmemeval`)
+
+`bench/longmemeval.py` scores four arms on LongMemEval-S (HF `xiaowu0162/longmemeval-cleaned`,
+MIT — fetched at runtime with `--lme-download` into `<data dir>/bench-cache/`, never committed;
+the run prints the file's sha256): **P** one document per session (user turns), pure cosine —
+mempalace's 96.6% "raw" configuration, the only number comparable with theirs; **V** ~800-char
+verbatim exchanges prepared exactly as capture stores them (`core/domain/episodes.prepare_exchanges`:
+split → redact → length gate; `indexer.exchange_chunk_units`) through engram's hybrid chunk search;
+**D** facts distilled per session through the `recall` tool path; **H** rank fusion of V and D
+units. Metrics are LongMemEval's own at session level (recall_any@k, recall_all@5, NDCG@5, per
+question type) plus engram's token axis (chars in the top-5 units). The sample is stratified over
+*scoreable* questions (abstention questions have no evidence). **D always uses the offline
+heuristic distiller** — never the configured one, which may be an LLM; an LLM-distilled run needs
+explicit `--lme-llm N` (external calls, capped to N questions). ~40 s/question on fastembed.
 ---
 
 ## Adding a metric or backend

@@ -20,7 +20,7 @@ across all of them:
 
 | Seam | Directory | Primary patterns |
 |------|-----------|------------------|
-| Domain / functional core | `core/domain/` (`scoring.py`, `quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`), pure fns of `core/ports/distill.py` | Functional Core, Value Object |
+| Domain / functional core | `core/domain/*` (every module — e.g. `scoring.py`, `fusion.py`, `confidence.py`, `episodes.py`, `privacy.py`), pure fns of `core/ports/distill.py` | Functional Core, Value Object |
 | Service layer (write) | `core/service.py` | Command / Handler, function-style Service Layer |
 | Service layer (read) | `core/recall.py` | Query Object, DTO / Null Object |
 | Persistence | `core/store.py` | Repository over Data Mapper |

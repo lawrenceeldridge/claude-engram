@@ -30,7 +30,7 @@ bin/*  (composition roots, driving adapters: hooks, CLI, MCP server, daemon)
    │ wires
    ▼
 core/  (app + persistence at root: service, store, config, project, provision, transcript, daemon_client)
-  ├─ domain/   (pure Functional Core: scoring, quantize, fusion, confidence, lexical)
+  ├─ domain/   (pure Functional Core — every module: scoring, quantize, fusion, confidence, lexical, episodes, privacy, …)
   ├─ ports/    (Separated Interfaces: embedding, distill, workqueue)
   ├─ recall/   (read side — search/render; `from core.recall import …`)
   ├─ index/    (code/docs index: indexer, chunking, code_symbols, treesitter_symbols, drift, index_recall)

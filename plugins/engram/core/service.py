@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterable
 
 from core.config import Config
 from core.domain.entities import extract_entities
+from core.domain.episodes import episode_key, prepare_exchanges
 from core.domain.ingest import is_trivial_prompt
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.domain.scoring import salience_of
@@ -33,7 +34,7 @@ from core.ports.workqueue import WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
 from core.recall import best_match, recall_confidence, render_block, render_scaffold, search, search_fused_with_stats
 from core.store import Store
-from core.transcript import extract_incremental_parts, extract_text
+from core.transcript import TranscriptDelta, extract_incremental_parts, extract_text
 
 
 def _scored_active(
@@ -126,6 +127,7 @@ def add_records(
     kind: str = "fact",
     tier: str = "stm",
     scorer: VectorScorer | None = None,
+    episode: str | None = None,
 ) -> int:
     inserted = 0
     now = time.time()
@@ -139,7 +141,7 @@ def add_records(
         if store.exists(fact_id):
             # Rehearsal — a fact seen again reinforces, and once rehearsed enough
             # (frequency >= promote_after_freq) it transfers from STM to LTM.
-            freq = store.reinforce(fact_id, now)
+            freq = store.reinforce(fact_id, now, episode=episode)
             if freq >= cfg.promote_after_freq:
                 store.promote(fact_id, now)
             continue
@@ -166,6 +168,7 @@ def add_records(
             type=record.type,
             observation_id=record.observation_id,
             tier=tier,
+            episode=episode,
         )
         if victims:
             store.supersede(list(victims), fact_id)
@@ -307,6 +310,8 @@ def capture_text(
     project: Project,
     session_id: str,
     text: str,
+    *,
+    episode: str | None = None,
 ) -> int:
     if is_distiller_prompt(text):
         return 0  # a nested `claude -p` distiller session captured itself — never store it
@@ -319,14 +324,20 @@ def capture_text(
     else:
         existing = [(row["id"], row["text"]) for row in store.recent(project["key"], cfg.supersede_candidates)]
     records = distiller.distill(text, existing)
-    inserted = add_records(store, embedder, cfg, project, session_id, records, scorer=scorer)
+    inserted = add_records(store, embedder, cfg, project, session_id, records, scorer=scorer, episode=episode)
     # If an LLM distiller degraded to the heuristic (unreachable / timed out), publish
     # the raw delta to the durable 'rescue' queue so a later healthy session re-distils
     # it and replaces these facts. Idempotent on the delta's content hash.
     if records and cfg.distiller in LLM_DISTILLERS and all(r.degraded for r in records):
         fact_ids = [store.fact_id(project["key"], r.text) for r in records]
         payload = json.dumps(
-            {"text": text, "fact_ids": fact_ids, "session_id": session_id, "project_key": project["key"]}
+            {
+                "text": text,
+                "fact_ids": fact_ids,
+                "session_id": session_id,
+                "project_key": project["key"],
+                "episode": episode,
+            }
         )
         queue = get_queue(cfg, store)
         try:
@@ -373,7 +384,16 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
             records = distiller.distill(text, existing)
             if records and not all(r.degraded for r in records):
                 store.delete_facts(data.get("fact_ids") or [])
-                add_records(store, embedder, cfg, project, data.get("session_id", ""), records, scorer=scorer)
+                add_records(
+                    store,
+                    embedder,
+                    cfg,
+                    project,
+                    data.get("session_id", ""),
+                    records,
+                    scorer=scorer,
+                    episode=data.get("episode"),
+                )
                 lease.ack()
                 recovered += 1
             else:
@@ -598,6 +618,8 @@ def capture_prompts(
     project: Project,
     session_id: str,
     prompts: list[str],
+    *,
+    episode: str | None = None,
 ) -> int:
     """Store user prompts verbatim (kind='prompt') — a 1:1 copy, not distilled.
 
@@ -618,7 +640,7 @@ def capture_prompts(
             continue
         fid = store.fact_id(project["key"], prompt)
         if store.exists(fid):
-            store.reinforce(fid, now)
+            store.reinforce(fid, now, episode=episode)
             continue
         vec = embedder.embed_one(prompt)
         blob, scale = quantize_int8(vec)
@@ -634,6 +656,7 @@ def capture_prompts(
             vec_bits=pack_bits(vec),
             importance=salience_of("prompt"),
             created_at=now,
+            episode=episode,
         )
         inserted += 1
     return inserted
@@ -659,8 +682,14 @@ def capture_transcript_incremental(
     rescue(store, embedder, cfg)  # drain any heuristic-fallback backlog first (durable queue)
     cursor_key = f"{project['key']}:{session_id or transcript_path}"
     start = store.get_capture_cursor(cursor_key)
-    text, prompts, end = extract_incremental_parts(transcript_path, start)
-    if end == start:
+    delta = extract_incremental_parts(transcript_path, start)
+    if delta.end == start:
+        return 0
+    text = delta.text
+    if is_distiller_prompt(text):
+        # A nested `claude -p` distiller session captured itself (backstop behind ENGRAM_DISABLE):
+        # none of it is conversation — no sensory record, prompts, facts or episode. Skip past it.
+        store.set_capture_cursor(cursor_key, delta.end)
         return 0
     # Verbal intake into the A-S sensory register: record the perceived conversation delta (in full
     # — no cap) so ALL input enters one register (visual page snapshots + verbal conversation), per
@@ -673,10 +702,47 @@ def capture_transcript_incremental(
             store.add_sensory(project["key"], "verbal", text, observation_id=session_id or None, now=time.time())
         except Exception:
             pass
-    capture_prompts(store, embedder, cfg, project, session_id, prompts)
-    inserted = capture_text(store, embedder, cfg, project, session_id, text) if text.strip() else 0
-    store.set_capture_cursor(cursor_key, end)
+    # Episodic trace: the delta's exchanges kept verbatim beside the facts distilled from it. Indexed
+    # first so the facts can link to it only once it exists — `episode` stays None when the layer
+    # is off, nothing substantive was said, or indexing failed. ADDITIVE and fail-open, like the
+    # sensory tee: an error here leaves `facts` text byte-identical and the cursor still advances.
+    episode = None
+    if cfg.episodic_enabled and delta.turns:
+        try:
+            if capture_episodes(store, embedder, cfg, project, session_id, delta):
+                episode = episode_key(session_id, delta.start)
+        except Exception:
+            pass
+    capture_prompts(store, embedder, cfg, project, session_id, delta.prompts, episode=episode)
+    inserted = capture_text(store, embedder, cfg, project, session_id, text, episode=episode) if text.strip() else 0
+    store.set_capture_cursor(cursor_key, delta.end)
     return inserted
+
+
+def capture_episodes(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    delta: TranscriptDelta,
+    *,
+    now: float | None = None,
+) -> int:
+    """Index a transcript delta's substantive exchanges verbatim — the episodic trace (kind
+    ``exchange``) beside the semantic facts. Redacted before storage, gated by length, keyed by
+    episode (``episode_key``) so re-capturing a delta replaces rather than duplicates.
+    Runs in the detached capture worker only. Returns the number of exchanges indexed."""
+    from core.index.indexer import exchange_chunk_units, index_nonfile
+
+    stamp = now if now is not None else time.time()
+    exchanges = prepare_exchanges(delta.turns, project["path"], cfg.episodic_min_chars)
+    episode = episode_key(session_id, delta.start)
+    title = time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+    records = index_nonfile(
+        store, embedder, project, "exchange", episode, exchange_chunk_units(episode, exchanges, title), now=stamp
+    )
+    return len(records)
 
 
 def index_prompt_block(
@@ -888,6 +954,8 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]
     ``invalidate_memory``. This is the on-demand pull only; the passive per-turn injection
     (``render_block``) is unaffected, so the hot-path token budget does not change. The same
     ids are returned separately for retrieval attribution (recall_count / last_recalled).
+    A fact captured with its conversation also carries ``episode`` — the key ``search_history``
+    scopes to for the verbatim exchanges behind it; omitted (zero bytes) when there is none.
     """
     packed: list[dict] = []
     packed_ids: list[str] = []
@@ -896,15 +964,16 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]
         text = row["text"]
         if packed and used + len(text) > max_chars:
             continue
-        packed.append(
-            {
-                "id": row["id"],
-                "text": text,
-                "similarity": round(float(sim), 4),
-                "kind": row["kind"],
-                "frequency": row["frequency"] or 1,
-            }
-        )
+        fact = {
+            "id": row["id"],
+            "text": text,
+            "similarity": round(float(sim), 4),
+            "kind": row["kind"],
+            "frequency": row["frequency"] or 1,
+        }
+        if row["episode"]:
+            fact["episode"] = row["episode"]
+        packed.append(fact)
         packed_ids.append(row["id"])
         used += len(text)
     return packed, len(hits) - len(packed), packed_ids

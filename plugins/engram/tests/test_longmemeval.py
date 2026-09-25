@@ -1,0 +1,193 @@
+"""LongMemEval harness tests — stdlib, hash embedder, inline fixture, no network.
+
+The harness decides whether engram gains a verbatim layer, so its plumbing is pinned: parsing,
+the stratified sample, each arm's unit construction and session mapping, abstention exclusion,
+the hybrid fusion, dataset resolution, and the atomic download.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from bench import longmemeval as lme  # noqa: E402
+from core.config import get_config  # noqa: E402
+from core.ports.distill import HeuristicDistiller  # noqa: E402
+
+
+def _entry(qid: str, qtype: str, question: str, sessions: dict[str, list[tuple[str, str]]], gold: list[str]) -> dict:
+    return {
+        "question_id": qid,
+        "question_type": qtype,
+        "question": question,
+        "haystack_session_ids": list(sessions),
+        "haystack_dates": [f"2023/05/{i + 1:02d}" for i in range(len(sessions))],
+        "haystack_sessions": [[{"role": r, "content": c} for r, c in turns] for turns in sessions.values()],
+        "answer_session_ids": gold,
+    }
+
+
+FIXTURE = [
+    _entry(
+        "q1",
+        "single-session-user",
+        "What colour is my new bicycle?",
+        {
+            "s-bike": [("user", "I just bought a new bicycle and it is bright green."), ("assistant", "Lovely!")],
+            "s-food": [("user", "Recommend a pasta recipe with mushrooms."), ("assistant", "Try a creamy risotto.")],
+            "s-work": [("user", "My manager moved our standup to Tuesdays."), ("assistant", "Noted.")],
+        },
+        ["s-bike"],
+    ),
+    _entry(
+        "q2",
+        "multi-session",
+        "Which city did I say my sister moved to?",
+        {
+            "s-sis": [("user", "My sister finally moved to Lisbon last month."), ("assistant", "Exciting.")],
+            "s-car": [("user", "The car needs new tyres before winter."), ("assistant", "Book a garage.")],
+        },
+        ["s-sis"],
+    ),
+    _entry("q3_abs", "single-session-user", "What is my dog's name?", {"s-x": [("user", "hello")]}, []),
+]
+
+
+class ParseAndSampleTests(unittest.TestCase):
+    def test_parse_fields_and_abstention(self):
+        qs = lme.parse(FIXTURE)
+        self.assertEqual([q.qid for q in qs], ["q1", "q2", "q3_abs"])
+        self.assertEqual(qs[0].gold, frozenset({"s-bike"}))
+        self.assertEqual(qs[0].sessions[0].turns[0][0], "user")
+        self.assertEqual([q.abstention for q in qs], [False, False, True])
+        self.assertEqual([q.scoreable for q in qs], [True, True, False])
+
+    def test_stratified_sample_is_seeded_and_round_robin(self):
+        qs = lme.parse(FIXTURE)
+        sample = lme.stratified_sample(qs, 2, seed=1)
+        self.assertEqual(len(sample), 2)
+        self.assertEqual({q.qtype for q in sample}, {"multi-session", "single-session-user"})
+        self.assertEqual(sample, lme.stratified_sample(qs, 2, seed=1))
+        self.assertEqual(lme.stratified_sample(qs, 0), qs)  # 0 = all
+
+    def test_session_units(self):
+        s = lme.parse(FIXTURE)[0].sessions[0]
+        self.assertEqual(lme.session_document(s), "I just bought a new bicycle and it is bright green.")
+        self.assertIn("Lovely!", lme.session_text(s))
+
+
+class RankingTests(unittest.TestCase):
+    def test_sessions_of_keeps_first_appearance(self):
+        units = [("u1", "s2", "a"), ("u2", "s1", "b"), ("u3", "s2", "c")]
+        self.assertEqual(lme.sessions_of(units), ["s2", "s1"])
+
+    def test_score_known_values(self):
+        units = [("u1", "s2", "abc"), ("u2", "s1", "de")]
+        row = lme.score(units, frozenset({"s1"}))
+        self.assertEqual((row["any@1"], row["any@3"], row["all@5"]), (False, True, True))
+        self.assertEqual(row["chars@5"], 5)
+
+    def test_hybrid_fuses_units_from_both_arms(self):
+        v = [("v1", "s1", "x"), ("v2", "s2", "y")]
+        d = [("d1", "s2", "z")]
+        fused = lme.rank_hybrid(v, d)
+        self.assertEqual({u[0] for u in fused}, {"v1", "v2", "d1"})
+        self.assertEqual(len(fused), 3)
+
+
+class EvaluateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.cfg = get_config()
+
+    def tearDown(self):
+        os.environ.pop("ENGRAM_DATA_DIR", None)
+        self.tmp.cleanup()
+
+    def test_all_arms_run_and_abstention_is_excluded(self):
+        result = lme.evaluate_longmemeval("hash", lme.parse(FIXTURE), self.cfg, HeuristicDistiller())
+        self.assertEqual((result["scored"], result["abstention"]), (2, 1))
+        self.assertEqual([r["arm"] for r in result["summary"]], list(lme.ARMS))
+        self.assertTrue(all(r["n"] == 2 for r in result["summary"]))
+        parity = next(r for r in result["summary"] if r["arm"] == "P")
+        self.assertEqual(parity["R_any@1"], 1.0)  # lexically clear fixture: the answer session ranks first
+        self.assertEqual([r["comparison"] for r in result["paired"]][0], "D -> V")
+        self.assertEqual(set(result["paired"][0]), set(lme.PAIRED_COLS))
+        self.assertEqual([r["qid"] for r in result["records"]], ["q1", "q2"])
+        self.assertEqual(set(result["records"][0]["arms"]), set(lme.ARMS))
+
+    def test_verbatim_arm_indexes_exchanges_and_maps_to_sessions(self):
+        q = lme.parse(FIXTURE)[0]
+        cfg = replace(self.cfg, episodic_min_chars=0)  # mapping, not the gate, is under test here
+        units = lme.rank_verbatim(lme.make_embedder("hash", None, 0, cfg), cfg, q, Path(self.tmp.name))
+        self.assertTrue(units)
+        self.assertTrue(all(sid in {"s-bike", "s-food", "s-work"} for _u, sid, _t in units))
+        self.assertTrue(all(text.startswith("User:") for _u, _s, text in units))
+
+    def test_plus_float_is_rejected(self):
+        with self.assertRaises(ValueError):
+            lme.evaluate_longmemeval("hash+float", [], self.cfg, HeuristicDistiller())
+
+
+class DatasetTests(unittest.TestCase):
+    def test_resolve_prefers_explicit_path_then_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = mock.Mock(data_dir=tmp)
+            args = argparse.Namespace(lme_path=None, lme_download=False)
+            self.assertIsNone(lme.resolve_dataset(args, cfg))
+            cached = Path(tmp) / "bench-cache" / lme.LME_FILE
+            cached.parent.mkdir(parents=True)
+            cached.write_text("[]")
+            self.assertEqual(lme.resolve_dataset(args, cfg), cached)
+            explicit = Path(tmp) / "other.json"
+            self.assertEqual(
+                lme.resolve_dataset(argparse.Namespace(lme_path=explicit, lme_download=False), cfg), explicit
+            )
+
+    def test_download_is_atomic_and_not_repeated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def fake_fetch(url, dest):
+                Path(dest).write_text(json.dumps(FIXTURE))
+
+            with mock.patch.object(lme.urllib.request, "urlretrieve", side_effect=fake_fetch) as fetch:
+                path = lme.download(Path(tmp))
+                again = lme.download(Path(tmp))
+            self.assertEqual(path, again)
+            self.assertEqual(fetch.call_count, 1)
+            self.assertFalse(path.with_suffix(".part").exists())
+            questions, digest = lme.load(path)
+            self.assertEqual((len(questions), len(digest)), (3, 64))
+
+
+class DistillerSafetyTests(unittest.TestCase):
+    """The D arm must never inherit an LLM distiller from ENGRAM_DISTILLER — one external call per
+    session, unapproved (it happened once in development). LLM runs are explicit opt-in only."""
+
+    def _runs(self, configured: str, llm_limit: int, sample=("q1", "q2", "q3")):
+        runs = lme.distiller_runs(replace(get_config(), distiller=configured), list(sample), llm_limit)
+        return [(label, run_cfg.distiller, subset) for label, run_cfg, subset in runs]
+
+    def test_default_runs_only_the_heuristic_even_when_an_llm_is_configured(self):
+        self.assertEqual(self._runs("claude", 0), [("heuristic", "heuristic", ["q1", "q2", "q3"])])
+
+    def test_llm_run_is_opt_in_uses_the_configured_llm_and_is_capped(self):
+        self.assertEqual(self._runs("ollama", 2)[1], ("ollama", "ollama", ["q1", "q2"]))
+
+    def test_llm_run_falls_back_to_claude_when_no_llm_is_configured(self):
+        self.assertEqual(self._runs("heuristic", 1)[1][:2], ("claude", "claude"))
+
+
+if __name__ == "__main__":
+    unittest.main()

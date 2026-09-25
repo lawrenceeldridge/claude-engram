@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from core.config import Config
+from core.domain.episodes import Exchange
 from core.domain.quantize import quantize_int8
 from core.index.chunking import split_markdown
 from core.index.code_symbols import extract_code_symbols
@@ -181,6 +182,25 @@ def _snapshot_summary(text: str) -> str:
     return first[:200]
 
 
+def exchange_chunk_units(episode: str, exchanges: list[Exchange], title: str) -> list[dict]:
+    """Index units for one episode's verbatim exchanges — the shape both capture and the LongMemEval
+    benchmark store, so what is measured is what ships. Anchors are ``<episode>:<turn>.<part>``."""
+    return [
+        {
+            "anchor": f"{episode}:{ex.turn}.{ex.part}",
+            "kind": "exchange",
+            "title": title,
+            "heading_path": episode,
+            "level": 0,
+            "summary": ex.text.split("\n", 1)[0][:160],
+            "body": ex.text,
+            "byte_start": 0,
+            "byte_end": len(ex.text.encode()),
+        }
+        for ex in exchanges
+    ]
+
+
 def index_snapshot(
     store: Store,
     embedder: EmbeddingGateway,
@@ -212,9 +232,7 @@ def index_snapshot(
         "byte_start": 0,
         "byte_end": len(body.encode()),
     }
-    record = _record_from_unit(store, embedder, project, url or "", unit)
-    stamp = now if now is not None else time.time()
-    store.replace_snapshot_chunks(project["key"], url or "", [record], stamp)
+    (record,) = index_nonfile(store, embedder, project, "snapshot", url or "", [unit], now=now)
     return {"status": "indexed", "chunks": 1, "content_hash": record["content_hash"]}
 
 
@@ -340,7 +358,6 @@ def _build_chunks(
     ext = Path(source_path).suffix.lower()
     is_code = ext in _CODE_EXTENSIONS
     units = _code_units(text, ext) if is_code else _doc_units(source_path, text)
-    records: list[dict] = []
     seen_anchors: dict[str, int] = {}
     for unit in units:
         anchor = unit["anchor"]  # disambiguate overloads / duplicate names within a file
@@ -354,33 +371,61 @@ def _build_chunks(
         if distiller is not None and not is_code:  # LLM summaries only add value for prose
             summary = _llm_summary(distiller, unit["heading_path"], unit["body"]) or summary
         unit["summary"] = summary
-        records.append(_record_from_unit(store, embedder, project, source_path, unit))
+    return _records_from_units(store, embedder, project, source_path, units)
+
+
+def _records_from_units(
+    store: Store, embedder: EmbeddingGateway, project: Project, source_path: str, units: list[dict]
+) -> list[dict]:
+    """Embed chunk units and build their stored records — the embed+quantize step shared by the
+    file indexer (_build_chunks) and the non-file indexer (index_nonfile). Each unit carries
+    anchor/kind/title/heading_path/level/summary/body/byte_start/byte_end; ``summary`` is used
+    as-is (any LLM summary is applied by the caller before this).
+
+    Embeds one unit per call, deliberately: on CPU fastembed's batched path measured *slower*
+    than per-text inference for chunk-sized inputs (143 × ~1 kB: 6.1 s single vs 7.3–9.1 s
+    batched), and batching the file indexer regressed ``eval_code_index`` from 60 s to 104 s."""
+    records = []
+    for unit in units:
+        vec = embedder.embed_one(_embed_text(unit["title"], unit["heading_path"], unit["summary"], unit["body"]))
+        blob, scale = quantize_int8(vec)
+        records.append(
+            {
+                "id": store.chunk_id(project["key"], source_path, unit["anchor"]),
+                "kind": unit["kind"],
+                "anchor": unit["anchor"],
+                "title": unit["title"],
+                "heading_path": unit["heading_path"],
+                "level": unit["level"],
+                "summary": unit["summary"],
+                "body": unit["body"],
+                "byte_start": unit["byte_start"],
+                "byte_end": unit["byte_end"],
+                "content_hash": hashlib.sha256(unit["body"].encode()).hexdigest(),
+                "dim": len(vec),
+                "scale": scale,
+                "vec_int8": blob,
+            }
+        )
     return records
 
 
-def _record_from_unit(store: Store, embedder: EmbeddingGateway, project: Project, source_path: str, unit: dict) -> dict:
-    """Embed one chunk unit and build its stored record — the embed+quantize step shared by the
-    file indexer (_build_chunks) and the snapshot indexer (index_snapshot). ``unit`` carries
-    anchor/kind/title/heading_path/level/summary/body/byte_start/byte_end; ``summary`` is used
-    as-is (any LLM summary is applied by the caller before this)."""
-    vec = embedder.embed_one(_embed_text(unit["title"], unit["heading_path"], unit["summary"], unit["body"]))
-    blob, scale = quantize_int8(vec)
-    return {
-        "id": store.chunk_id(project["key"], source_path, unit["anchor"]),
-        "kind": unit["kind"],
-        "anchor": unit["anchor"],
-        "title": unit["title"],
-        "heading_path": unit["heading_path"],
-        "level": unit["level"],
-        "summary": unit["summary"],
-        "body": unit["body"],
-        "byte_start": unit["byte_start"],
-        "byte_end": unit["byte_end"],
-        "content_hash": hashlib.sha256(unit["body"].encode()).hexdigest(),
-        "dim": len(vec),
-        "scale": scale,
-        "vec_int8": blob,
-    }
+def index_nonfile(
+    store: Store,
+    embedder: EmbeddingGateway,
+    project: Project,
+    kind: str,
+    source: str,
+    units: list[dict],
+    *,
+    now: float | None = None,
+) -> list[dict]:
+    """Index units whose source is not a file on disk (a URL, a conversation session) as ``kind``
+    chunks, replacing that source's previous ``kind`` chunks; no drift tracking (see
+    ``Store.replace_nonfile_chunks``). Returns the stored records."""
+    records = _records_from_units(store, embedder, project, source, units)
+    store.replace_nonfile_chunks(project["key"], kind, source, records, now if now is not None else time.time())
+    return records
 
 
 def _llm_summary(distiller, heading_path: str, body: str) -> str:

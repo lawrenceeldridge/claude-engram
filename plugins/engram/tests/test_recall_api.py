@@ -413,8 +413,11 @@ class McpServerTests(unittest.TestCase):
                 "code_outline",
                 "invalidate_memory",
                 "review_memory",
+                "search_history",
             },
         )
+        for name in names:  # dispatch is by name: every advertised tool has its handler
+            self.assertTrue(callable(getattr(self.mcp.ENGINE, name, None)), name)
 
     def test_notification_gets_no_response(self):
         self.assertIsNone(self.mcp._handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
@@ -498,9 +501,12 @@ class DistillStructuredTests(unittest.TestCase):
         with os.fdopen(fd, "w") as fh:
             fh.write("\n".join(rows))
         try:
-            text, prompts, _end = extract_incremental_parts(path, 0)
-            self.assertEqual(prompts, ["Fix the timezone bug please."])
-            self.assertIn("Edited serve.py", text)
+            delta = extract_incremental_parts(path, 0)
+            self.assertEqual(delta.prompts, ["Fix the timezone bug please."])
+            self.assertIn("Edited serve.py", delta.text)
+            self.assertEqual(
+                delta.turns, [("user", "Fix the timezone bug please."), ("assistant", "Done.\nEdited serve.py")]
+            )  # the tool_result-only user message carries no text, so it is not a turn
         finally:
             os.unlink(path)
 

@@ -258,7 +258,7 @@
     "sensory_enabled": {
       "type": "boolean",
       "title": "Sensory register",
-      "description": "Atkinson-Shiffrin sensory register: a single modality-tagged intake stage all perception enters (page a11y snapshots + conversation), holding raw text briefly and decaying unless attended. Foundation only — intake hooks and promotion land in later phases; the table and sweep are inert until then.",
+      "description": "Atkinson-Shiffrin sensory register: a single modality-tagged intake stage all perception enters (page a11y snapshots via a PostToolUse hook, the conversation delta at capture), holding raw text briefly and decaying unless attended; attended snapshots are promoted to the index in the detached capture worker.",
       "default": true
     },
     "attention_window_seconds": {
@@ -280,6 +280,33 @@
       "title": "Sensory TTL (seconds)",
       "description": "How long an unattended perception lives in the register before it decays ('lost from SR'); decayed tombstones are hard-purged past this age so the table stays bounded. 0 = no TTL decay.",
       "default": 900,
+      "min": 0
+    },
+    "episodic_enabled": {
+      "type": "boolean",
+      "title": "Episodic memory (verbatim exchanges)",
+      "description": "Keep each conversation exchange (a user turn and the assistant turns answering it) verbatim in the index, redacted for credentials, emails and non-project paths, so detail a distilled fact dropped can be fetched on demand. Never injected per prompt — distilled facts stay the injected layer. Written in the detached capture worker; local only.",
+      "default": true
+    },
+    "episodic_min_chars": {
+      "type": "number",
+      "title": "Episodic minimum length",
+      "description": "Exchanges shorter than this many characters, role labels included (one-line trivia like a lone 'thanks'), are not kept; they decay with the sensory register instead. Kept low on purpose: short statements can carry the answer.",
+      "default": 24,
+      "min": 0
+    },
+    "episodic_ttl_days": {
+      "type": "number",
+      "title": "Episodic retention (days)",
+      "description": "Exchanges older than this are forgotten by the consolidation pass. 0 = no age limit.",
+      "default": 180,
+      "min": 0
+    },
+    "episodic_max_chunks": {
+      "type": "number",
+      "title": "Episodic cap (per project)",
+      "description": "At most this many exchange chunks are kept per project; the consolidation pass forgets the oldest beyond it. 0 = no cap.",
+      "default": 20000,
       "min": 0
     },
     "integrate_threshold": {

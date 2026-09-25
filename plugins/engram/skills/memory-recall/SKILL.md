@@ -63,6 +63,15 @@ the question, act on them (checking `freshness`: `fresh` = trust; `edited`/`stal
 re-read the live file). Empty results usually mean the project isn't indexed yet:
 fall back to a normal search (and consider running `index_docs`).
 
+### Step 2c: Fetch the conversation behind a fact
+
+A recalled fact is a one-line summary. When you need the exact wording, numbers or
+reasoning behind it, **`search_history`** searches past sessions kept verbatim (redacted):
+conversation `exchanges` by default, or browser page `snapshots`. If the fact carries an
+`episode`, pass it to search only that conversation. Results are outlines; then
+`get_doc_section(ref=<anchor>)` for one exchange. Use this only when a fact is too terse —
+most questions are answered by the fact alone.
+
 ### Step 3: Report honestly
 
 When you act on recalled facts, say so briefly ("from memory: …"). When recall

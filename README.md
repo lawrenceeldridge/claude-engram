@@ -98,8 +98,9 @@ serves ranked outlines:
   drifts from disk.
 - **Snapshots too** — a third kind alongside doc sections and code symbols: page
   accessibility snapshots the browser tools produce, promoted from the sensory register
-  and searchable like the rest (freshness is age-based — a URL isn't a file on disk). Scope
-  a search by kind (`docs` / `code` / `snapshots`).
+  and searchable like the rest (freshness is age-based — a URL isn't a file on disk) through
+  `search_history` (`kind: "snapshots"`); the viewer scopes by kind (docs / code / snapshots /
+  history).
 
 ## Memory-first enforcement (`ENGRAM_ENFORCE`)
 
@@ -156,12 +157,13 @@ index on demand (these are what the memory-first guard steers toward):
 
 | Tool | Returns |
 |---|---|
-| `recall` | Distilled facts for the current project with a calibrated verdict (`ok` / `low_confidence` / `no_memory`). |
+| `recall` | Distilled facts for the current project with a calibrated verdict (`ok` / `low_confidence` / `no_memory`); a fact captured with its conversation carries its `episode`. |
 | `search_code` | Ranked code-symbol outlines (qualname + signature + anchor + freshness). |
 | `get_symbol` | One symbol's full source by anchor, with a symbol-precise freshness check. |
 | `code_outline` | Whole-file / project symbol outline. |
 | `search_docs` | Ranked doc-section outlines. |
-| `get_doc_section` | One doc section's body by anchor. |
+| `get_doc_section` | One doc section's body by anchor — or one past exchange / page snapshot from `search_history`. |
+| `search_history` | Ranked outlines of past sessions kept verbatim — conversation `exchanges` (default) or page `snapshots`; pass a fact's `episode` to search just that conversation. |
 | `doc_outline` | Document/heading outline. |
 | `index_docs` | (Re)index the current project's code + docs. |
 | `list_projects` | Every project in the global store with its active-fact count. |
@@ -358,7 +360,8 @@ pruning is off by default** — turn the forgetting curve on deliberately. Set v
 ### Sensory register — intake
 
 The fleeting first stage all perception enters (page snapshots + conversation), before
-attention transfers the worthy parts onward (snapshots → index, conversation → facts). A
+attention transfers the worthy parts onward (snapshots → index, conversation → distilled facts
+and, verbatim, episodic exchanges — see below). A
 separate, capacity- and TTL-bounded table that never touches recall. Set via `userConfig`
 (or `ENGRAM_*` env):
 
@@ -368,6 +371,26 @@ separate, capacity- and TTL-bounded table that never touches recall. Set via `us
 | `attention_window_seconds` | `300` | window within which re-perceiving the same page counts as *attention* (which promotes it) — the A-S selective read-out, not rehearsal |
 | `sensory_capacity` | `64` | max live perceptions per project before the oldest unattended ones decay (0 = unbounded) |
 | `sensory_ttl_seconds` | `900` | how long an unattended perception lives before it decays; decayed tombstones are purged past this age (0 = no TTL decay) |
+
+### Episodic memory — verbatim exchanges
+
+Distilled facts are the compact layer injected into prompts; alongside them engram can keep
+each conversation **exchange** (a user turn plus the assistant turns answering it) verbatim, so
+detail a fact dropped can be fetched on demand — never injected per prompt. Exchanges are
+redacted (credentials, emails, non-project paths) before they are stored, written in the
+detached capture worker, and forgotten by the consolidation pass past the retention limits.
+Find them with the `search_history` MCP tool, then read one with `get_doc_section`. Each fact
+captured from a conversation records its `episode` (returned by `recall`), so
+`search_history(episode=…)` searches just the conversation the fact came from; the link is
+cleared once that conversation has been forgotten. Measured on LongMemEval session retrieval (470 questions, fastembed): facts alone R@5 0.891,
+verbatim exchanges 0.983.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `episodic_enabled` | `true` | keep redacted verbatim exchanges in the index (kind `exchange`) |
+| `episodic_min_chars` | `24` | shorter exchanges, role labels included (one-line trivia like a lone "thanks"), are not kept |
+| `episodic_ttl_days` | `180` | exchanges older than this are forgotten (0 = no age limit) |
+| `episodic_max_chunks` | `20000` | per-project cap; the oldest beyond it are forgotten (0 = no cap) |
 
 ### Durable work queue — WorkQueue
 
@@ -443,7 +466,10 @@ short-term facts against their older long-term competitors — the measurable ch
 before changing any STM-ranking default (short-term is a *state*, not a faster clock).
 `--antipatterns` and `--integrate` run the global anti-pattern and gist-chunking scenarios;
 `--aged` checks that old relevant facts keep their rank on both recall paths (recency should
-only order facts, never override relevance).
+only order facts, never override relevance). `--longmemeval` (with `--lme-download` once — the
+MIT-licensed dataset is fetched at runtime, never bundled) compares distilled facts, verbatim
+exchanges and both on LongMemEval session retrieval, including a configuration comparable with
+mempalace's published number.
 
 `--confidence` measures whether the `recall` tool's `ok` verdict means "the returned
 facts contain the answer": the answerable queries plus 89 unanswerable, near-topic ones
