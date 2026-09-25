@@ -34,7 +34,7 @@ Two adapter classes:
 
 | Hexagonal layer | claude-engram examples |
 |-----------------|---------------------|
-| **Domain (core)** | `core/store.py` (facts + embeddings + chunks data), `core/recall.py` (`Hit`), `core/distill.py` (`DistilledFact`, `Observation`), and the pure functions in `core/scoring.py`, `core/quantize.py`, `core/fusion.py`, `core/confidence.py`, `core/lexical.py` |
+| **Domain (core)** | `core/store.py` (facts + embeddings + chunks data), `core/recall.py` (`Hit`), `core/distill.py` (`DistilledFact`, `Observation`), and the pure functions in `core/domain/` (`scoring.py`, `quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`) |
 | **Service Layer (core, orchestration)** | `core/service.py` (capture entry functions — the write side), `core/recall.py` (`search` / `search_fused` entry functions — the read side) |
 | **Secondary (driven) adapters** | `core/adapters/fastembed_gw.py` (the only place heavy deps import), the `Distiller` impls (`ClaudeCliDistiller`, `HTTPDistiller`), `core/daemon_client.py` (thin client → resident embedder, fail-open) |
 | **Primary (driving) adapters** | the `bin/*` hooks (`recall_prompt.py`, `recall_session_start.py`, `capture.py`), the `engram` CLI, `bin/mcp_server.py`, `bin/daemon.py` |
@@ -96,7 +96,7 @@ The metaphor: a thin imperative shell wraps a large functional core. The shell d
 **claude-engram applicability.** ✅ **Default.** The core is pure:
 
 - **`core/distill.py`** — `heuristic_facts` and the parsers compute facts from transcript text with no I/O.
-- **`core/scoring.py`, `core/quantize.py`, `core/fusion.py`, `core/confidence.py`, `core/lexical.py`** — ranking, quantisation, RRF fusion, confidence and lexical scoring are all pure functions on their inputs.
+- **`core/domain/` (`scoring.py`, `quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`)** — ranking, quantisation, RRF fusion, confidence and lexical scoring are all pure functions on their inputs.
 
 The imperative shell is **`core/service.py`** (talks to the DB, drives the embedder/distiller, spawns the detached capture worker) and the **`bin/*`** entry points. Tests for the pure core need no mocks. When adding a scoring / ranking / quantisation step, make it a **pure function** — even if the shell has to gather more data first.
 

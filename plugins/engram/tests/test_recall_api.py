@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -21,29 +22,58 @@ sys.path.insert(0, str(ROOT / "bin"))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.domain.confidence import compute_confidence  # noqa: E402
+from core.domain.confidence import PoolStats, compute_confidence, pool_stats  # noqa: E402
 from core.domain.lexical import has_overlap, tokenize  # noqa: E402
 from core.ports.embedding import HashEmbedding  # noqa: E402
+from core.recall import FusedResult, search_fused, search_fused_with_stats  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
 class ConfidenceTests(unittest.TestCase):
+    # Scores are cosine similarities in the range a real embedder (fastembed) produces.
     def test_empty_scores_zero(self):
         self.assertEqual(compute_confidence([])["confidence"], 0.0)
 
     def test_dominant_top_with_identity_is_high(self):
-        strong = compute_confidence([1.2, 0.1], has_identity_match=True)["confidence"]
+        strong = compute_confidence([0.85, 0.40], has_identity_match=True)["confidence"]
         self.assertGreater(strong, 0.6)
 
     def test_tied_top_lowers_confidence(self):
-        tied = compute_confidence([0.5, 0.49], has_identity_match=True)["confidence"]
-        clear = compute_confidence([0.5, 0.05], has_identity_match=True)["confidence"]
+        tied = compute_confidence([0.78, 0.77], has_identity_match=True)["confidence"]
+        clear = compute_confidence([0.78, 0.40], has_identity_match=True)["confidence"]
         self.assertLess(tied, clear)
 
     def test_identity_miss_penalised(self):
-        hit = compute_confidence([0.8, 0.1], has_identity_match=True)["confidence"]
-        miss = compute_confidence([0.8, 0.1], has_identity_match=False)["confidence"]
+        hit = compute_confidence([0.80, 0.45], has_identity_match=True)["confidence"]
+        miss = compute_confidence([0.80, 0.45], has_identity_match=False)["confidence"]
         self.assertLess(miss, hit)
+
+    def test_order_independent(self):
+        # Rank fusion returns hits in fused order, not similarity order. These are the live
+        # sims that scored 0.007 when the runner-up was read as top1 (gap clamped to 0).
+        fused_order = [0.698, 0.723, 0.760]
+        self.assertEqual(compute_confidence(fused_order), compute_confidence(sorted(fused_order, reverse=True)))
+        self.assertGreater(compute_confidence(fused_order)["components"]["gap"], 0.0)
+
+
+class PoolStatsTests(unittest.TestCase):
+    def test_empty_pool(self):
+        self.assertEqual(pool_stats([]), PoolStats(0, 0.0, 0.0))
+
+    def test_single_value_has_zero_spread(self):
+        self.assertEqual(pool_stats([0.7]), PoolStats(1, 0.7, 0.0))
+
+    def test_constant_pool_never_negative_variance(self):
+        # Float cancellation in E[x^2] - E[x]^2 can dip below 0; std must clamp to 0, not NaN.
+        stats = pool_stats([0.1] * 1000)
+        self.assertAlmostEqual(stats.mean, 0.1)
+        self.assertEqual(stats.std, 0.0)
+
+    def test_known_population_moments(self):
+        stats = pool_stats(iter([0.2, 0.4, 0.6, 0.8]))  # any iterable, consumed once
+        self.assertEqual(stats.n, 4)
+        self.assertAlmostEqual(stats.mean, 0.5)
+        self.assertAlmostEqual(stats.std, 0.05**0.5)  # population variance = 0.05
 
 
 class LexicalTests(unittest.TestCase):
@@ -283,6 +313,56 @@ class RecallStructuredTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "ok")
         self.assertGreaterEqual(result["confidence"], self.cfg.recall_min_confidence)
         self.assertTrue(any("github actions" in f["text"] for f in result["facts"]))
+
+    def test_confidence_judges_best_match_not_fused_first(self):
+        # Fusion's recency/frequency channels can rank a newer, weaker fact above an older,
+        # better-matching one. Returned order must follow fusion; confidence and the ledger's
+        # top_sim must follow the best cosine match — otherwise old memories read as ~0.
+        service.add_facts(
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
+            ["Deploys go through github actions with a manual approval gate.", "Frontend uses tailwind."],
+        )
+        old_strong, new_weak = sorted(self.store.rows_for_project(self.project["key"]), key=lambda r: r["text"])
+        fused = FusedResult([(0.9, 0.698, new_weak), (0.8, 0.760, old_strong)], pool_stats([0.698, 0.760]))
+        query = "github actions approval gate"
+        with mock.patch.object(service, "search_fused_with_stats", return_value=fused):
+            result = service.recall_structured(self.store, self.embedder, self.cfg, self.project, query)
+
+        expected = compute_confidence([0.760, 0.698], has_identity_match=has_overlap(query, old_strong["text"]))
+        self.assertEqual(result["confidence"], expected["confidence"])
+        self.assertEqual([f["id"] for f in result["facts"]], [new_weak["id"], old_strong["id"]])
+        top_sim = self.store.db.execute("SELECT top_sim FROM recall_events ORDER BY id DESC LIMIT 1").fetchone()[0]
+        self.assertAlmostEqual(top_sim, 0.760)
+
+    def test_search_fused_is_the_hits_of_search_fused_with_stats(self):
+        texts = [
+            "The deployment pipeline runs on github actions with a manual approval gate.",
+            "Frontend styling uses tailwind utility classes.",
+            "The sqlite store keeps int8 vectors per fact.",
+            "Approval of a release needs two reviewers.",
+            "Recall injects at most three facts per prompt.",
+            "The viewer serves on localhost only.",
+        ]
+        service.add_facts(self.store, self.embedder, self.cfg, self.project, "s1", texts)
+        self.assertEqual(self.store.active_count(self.project["key"]), len(texts))
+        query = "deployment approval"
+        plain = search_fused(self.store, self.embedder, self.project, query, self.cfg, k=4)
+        result = search_fused_with_stats(self.store, self.embedder, self.project, query, self.cfg, k=4)
+        self.assertEqual([(s, sim, r["id"]) for s, sim, r in plain], [(s, sim, r["id"]) for s, sim, r in result.hits])
+        # The pool is every comparable fact scanned, not just the k returned.
+        self.assertEqual(result.pool.n, len(texts))
+
+    def test_pool_excludes_dimension_mismatched_rows(self):
+        service.add_facts(
+            self.store, self.embedder, self.cfg, self.project, "s1", ["deployment runs on github actions"]
+        )
+        other_space = HashEmbedding(dim=self.cfg.dim // 2)
+        result = search_fused_with_stats(self.store, other_space, self.project, "deployment", self.cfg)
+        self.assertEqual((result.hits, result.pool.n), ([], 0))
 
     def test_budget_packs_and_reports_dropped(self):
         facts = [f"fact number {i} about compact memory storage systems and budgets" for i in range(20)]

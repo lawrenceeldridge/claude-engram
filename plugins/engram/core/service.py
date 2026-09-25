@@ -15,10 +15,8 @@ import time
 from collections.abc import Callable, Iterable
 
 from core.config import Config
-from core.domain.confidence import compute_confidence
 from core.domain.entities import extract_entities
 from core.domain.ingest import is_trivial_prompt
-from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.domain.scoring import salience_of
 from core.domain.sensory import normalize_url, should_promote
@@ -33,7 +31,7 @@ from core.ports.embedding import EmbeddingGateway
 from core.ports.scorer import VectorScorer, get_scorer
 from core.ports.workqueue import WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
-from core.recall import render_block, render_scaffold, search, search_fused
+from core.recall import best_match, recall_confidence, render_block, render_scaffold, search, search_fused_with_stats
 from core.store import Store
 from core.transcript import extract_incremental_parts, extract_text
 
@@ -928,7 +926,9 @@ def recall_structured(
     a JSON-friendly dict carrying a calibrated ``confidence`` and a ``verdict``
     (ok / low_confidence / no_memory) so the caller can decide whether to trust
     memory or fall back to a wider, more expensive search. Ranking is rank-fusion
-    (``search_fused``); confidence reads the cosine similarities carried through it.
+    (``search_fused_with_stats``) and decides the order facts are returned in;
+    ``recall_confidence`` judges the best-*matching* hit, which fusion's recency/frequency
+    channels can demote below a newer, weaker one.
     Never raises on an empty store — it returns an explicit no_memory verdict.
     """
     max_chars = cfg.recall_max_chars if max_chars is None else max_chars
@@ -936,10 +936,10 @@ def recall_structured(
     # injected focus; an explicit k still overrides. The injected hot path (recall_prompt_block
     # -> search -> top_k) is unaffected, so the per-turn token focus stays small.
     k = cfg.activated_k if k is None else k
-    hits = search_fused(store, embedder, project, query, cfg, k=k)
-    sims = [sim for _score, sim, _row in hits]
-    identity = has_overlap(query, hits[0][2]["text"]) if hits else None
-    confidence = compute_confidence(sims, has_identity_match=identity)["confidence"]
+    fused = search_fused_with_stats(store, embedder, project, query, cfg, k=k)
+    hits = fused.hits
+    best = best_match(hits)
+    confidence = recall_confidence(query, fused)["confidence"]
 
     if not hits:
         verdict = "embedding_mismatch" if _embedding_mismatch(store, embedder, project["key"]) else "no_memory"
@@ -964,7 +964,7 @@ def recall_structured(
         project["key"],
         query,
         returned=len(facts),
-        top_sim=sims[0] if sims else 0.0,
+        top_sim=best[1] if best else 0.0,
         confidence=confidence,
         verdict=verdict,
     )

@@ -430,19 +430,32 @@ ollama pull qwen2.5:3b        # or llama3.2:3b
 
 `engram eval` runs a labelled paraphrase set through the real quantised search path
 and reports Recall@1/@3, MRR@10, and operational cost. Backend spec is
-`name[@model][+float]`:
+`name[@model][%dim][+float]`:
 
 ```bash
 python3 bin/engram eval --backends "hash,fastembed,fastembed@BAAI/bge-small-en-v1.5,fastembed+float"
 python3 bin/engram eval --backends hash --stm    # add the STM-tier lever scenario
+python3 bin/engram eval --backends "hash,fastembed" --confidence   # recall-verdict calibration
 ```
 
 The `--stm` scenario reports how `stm_recall_weight` trades off recall of fresh
 short-term facts against their older long-term competitors — the measurable check
 before changing any STM-ranking default (short-term is a *state*, not a faster clock).
+`--antipatterns` and `--integrate` run the global anti-pattern and gist-chunking scenarios;
+`--aged` checks that old relevant facts keep their rank on both recall paths (recency should
+only order facts, never override relevance).
+
+`--confidence` measures whether the `recall` tool's `ok` verdict means "the returned
+facts contain the answer": the answerable queries plus 89 unanswerable, near-topic ones
+run through the real on-demand recall path, and each candidate confidence score is
+reported for discrimination (AUROC), calibration (Brier/ECE) and `ok` precision/recall.
+`--distractors N --distractor-project <key|label>` pads the store with facts mined at
+runtime from a snapshot of a real store (filtered, never written to the repo) to
+reproduce real density; `bench/replay_ledger.py` replays real recall-ledger queries on a
+snapshot of the live store.
 
 Measured on the bundled set (297 facts, 244 paraphrased queries — mined from real
-sessions, with 50 hard negatives; the earlier 64/77 set is frozen as
+sessions, with 58 untargeted hard-negative facts; the earlier 64/77 set is frozen as
 `bench/dataset-v1.json` for reproducibility of published figures):
 
 | backend | Recall@1 | Recall@3 | MRR@10 | bytes/fact |

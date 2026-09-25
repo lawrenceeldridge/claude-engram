@@ -1229,6 +1229,22 @@ class Store:
         ).fetchall()
         return {"total": total, "by_verdict": {row["verdict"]: row["c"] for row in rows}}
 
+    def recent_recall_queries(
+        self, limit: int, verdicts: tuple[str, ...] = ("ok", "low_confidence")
+    ) -> list[tuple[str, str]]:
+        """Distinct ``(project_key, query)`` pairs from the ledger, most recently asked first.
+
+        Restricted to recalls that returned facts (``verdicts``), so a replay re-asks questions
+        memory could answer rather than empty-store or misconfigured ones.
+        """
+        marks = ",".join("?" * len(verdicts))
+        rows = self.db.execute(
+            f"SELECT project_key, query FROM recall_events WHERE verdict IN ({marks}) "
+            "GROUP BY project_key, query ORDER BY MAX(ts) DESC LIMIT ?",
+            (*verdicts, limit),
+        ).fetchall()
+        return [(row["project_key"], row["query"]) for row in rows]
+
     def record_usage(
         self, project_key: str, kind: str, *, bytes_in: int = 0, bytes_saved: int = 0, now: float | None = None
     ) -> None:

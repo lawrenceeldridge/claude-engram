@@ -28,12 +28,19 @@ python3 bin/engram eval --backends "hash,fastembed"              # stub vs real 
 python3 bin/engram eval --backends "fastembed,fastembed+float"   # isolate int8 loss
 python3 bin/engram eval --backends "fastembed@BAAI/bge-small-en-v1.5,fastembed@BAAI/bge-base-en-v1.5"
 python3 bench/run_eval.py --backends hash,fastembed           # equivalent, direct
+python3 bin/engram eval --backends "hash,fastembed" --confidence  # recall-verdict calibration
 ```
 
-### Backend spec: `name[@model][+float]`
+`bin/engram eval` and `bench/run_eval.py` share one flag definition
+(`run_eval.add_eval_arguments`), so every scenario flag works from both: `--stm`,
+`--antipatterns`, `--integrate`, `--confidence` (+ `--ok-precision`), `--aged`; `--distractors`,
+`--distractor-project`, `--distractor-db` pad the store for `--confidence` / `--aged`.
+
+### Backend spec: `name[@model][%dim][+float]`
 
 - `name` — `hash` (lexical stub, zero-dep) or `fastembed` (real model).
 - `@model` — optional fastembed model id (blank ⇒ `BAAI/bge-base-en-v1.5`).
+- `%dim` — truncate a Matryoshka-trained model's vectors to `dim`.
 - `+float` — rank on raw full-precision vectors in memory instead of the quantised
   store. The gap between a backend and its `+float` twin is **exactly the int8
   quantization loss** — that is how "int8 ≈ float" was established.
@@ -52,18 +59,19 @@ Per backend, over the bundled labelled set:
 | **bytes/fact** | storage cost of one fact's embedding (the "bytes" budget) |
 | corpus embed time / per-query latency | operational cost (the "latency" budget) |
 
-Reference numbers (bundled set — 18 facts, 14 paraphrased queries):
+Reference numbers (bundled set — 297 facts, 244 paraphrased queries; same table as
+README § Benchmarking retrieval quality — keep the two in sync):
 
 | backend | Recall@1 | Recall@3 | MRR@10 | bytes/fact |
 |---|---|---|---|---|
-| hash (lexical stub) | 0.07 | 0.36 | 0.27 | 288 |
-| fastembed bge-small int8 | 0.36 | 0.71 | 0.57 | 432 |
-| **fastembed bge-base int8 (default)** | **0.79** | **0.86** | **0.85** | 864 |
+| hash (lexical stub) | 0.148 | 0.234 | 0.210 | 288 |
+| fastembed bge-small int8 | 0.398 | 0.611 | 0.518 | 432 |
+| **fastembed bge-base int8 (default)** | **0.463** | **0.656** | **0.574** | 864 |
 
 Reading them: the `hash` stub only matches shared vocabulary, so its recall is
 floor-level and it exists as the zero-dep default, not as a quality target. Model
-size is the real lever (bge-base ≈ 2.2× bge-small's Recall@1); int8 vs float is
-noise, so the compact int8 store stays.
+size is the real lever; int8 vs float is noise, so the compact int8 store stays.
+Paired comparisons (McNemar exact, seeded bootstrap) are printed below the table.
 
 ---
 
@@ -80,22 +88,70 @@ noise, so the compact int8 store stays.
 
 - **Queries are paraphrased away from the fact wording** so lexical matching is
   stressed and semantic recall is what's actually measured.
-- The last facts are **hard-negative distractors** — plausible but irrelevant, to
+- Facts no query targets are **hard-negative distractors** — plausible but irrelevant, to
   catch a backend that retrieves on surface features.
 - `relevant` is a list of indices into `facts`.
+- Scenario keys (`stm_scenario`, `antipattern_scenario`, `duplicate_cluster_scenario`,
+  `confidence_scenario`) feed the flag-gated scenarios and never touch the headline Recall@k.
+  In particular, **unanswerable queries live in `confidence_scenario.unanswerable`, never in
+  `queries`** — `bench.retrieval.score_queries` would count them as misses and move the published numbers.
 
-The set is small (14 queries) — treat single-query swings as noise; widening it is
-listed under "Remaining" in DESIGN.md. When adding a fact/query, keep the
-paraphrase gap (don't echo the fact's vocabulary in its query) or the benchmark
-stops measuring what it's for.
+At 244 queries, deltas of ~0.1 clear the Wilson interval; smaller ones need the paired
+tests. When adding a fact/query, keep the paraphrase gap (don't echo the fact's vocabulary
+in its query) or the benchmark stops measuring what it's for. `bench/dataset-v1.json` is
+frozen for reproducibility of earlier published figures.
 
+---
+
+## Recall-verdict calibration (`--confidence`)
+
+Measures whether the `recall` tool's `ok` verdict means "the returned facts contain the
+answer" (`bench/confidence_eval.py`). Answerable `queries` + `confidence_scenario.unanswerable`
+run through the production on-demand path (`search_fused_with_stats` at `activated_k`); a
+query is positive only if a gold fact is **returned**. Per candidate score (`current` is
+production's `recall_confidence`; the others are alternatives under evaluation) it reports:
+
+| Output | Meaning |
+|---|---|
+| AUROC [CI], ΔAUROC vs current [paired CI] | discrimination — rank-based, invariant to rescaling |
+| Brier, ECE | calibration of 2-fold cross-fitted Platt probabilities |
+| ok precision / recall at p ≥ `--ok-precision` | the gate as a calibrated score would ship (default 0.90) |
+| shipped gate | `current ≥ recall_min_confidence` — the verdict as it ships today |
+
+Density matters (the failure mode is many near-neighbours), so `--distractors N
+--distractor-project <key|label>` pads the store with facts mined **at runtime** from a
+snapshot of a real engram DB (`bench/distractors.py`, `bench/snapshot.py`) — never written
+to the repo; contamination/privacy-flagged and dataset-near-duplicate facts are dropped.
+`bench/replay_ledger.py` is the unlabelled reality check: it replays the last N real ledger
+queries on a snapshot of the live store.
+
+
+## Age-aware ranking (`--aged`)
+
+DESIGN.md's contract is that recency decay only *orders* non-conflicting facts (conflicts are
+removed by supersession), so an old relevant fact must not lose its rank for being old.
+`bench/age_eval.py` stamps each dataset fact old (90–240 d) or new (0–14 d) by a seeded coin,
+splits queries by the age of their gold, and scores **both** production rankers — `search`
+(the per-prompt hook's priority score) and `search_fused` (the `recall` tool's rank fusion) —
+at their shipped weights and weaker recency settings. Old-gold hit@3 is compared with the same
+ranker with recency off (*age-blind* — on one store that is exactly "age carries no weight"; an
+all-stamped-now store is not neutral for fusion, whose recency channel then ranks by insertion
+order), and new-gold hit@3 with the shipped weights (what weakening recency costs recent facts);
+both paired McNemar exact. The dataset cannot reward
+recency (nothing in it is "newer and therefore truer"), so it measures one thing: whether age
+overrides relevance. Fusion weights have no config knob; variants override them with a scoped
+`mock.patch.dict` inside the bench only.
 ---
 
 ## Adding a metric or backend
 
 - A new **backend** is a new `EmbeddingGateway` implementation wired into
-  `make_embedder()` in `bench/run_eval.py`; it then runs through the same store
+  `make_embedder()` in `bench/backends.py`; it then runs through the same store
   path, so its numbers are comparable.
+- New **statistics** go in `bench/stats.py` (pure, seeded) with a known-value test in
+  `tests/test_bench_stats.py`; tables print through `bench/report.print_rows`; ranking + Recall@k/MRR scoring live in
+  `bench/retrieval.py` (`search_ranker`, `fused_ranker`, `score_queries`), throwaway stores in
+  `bench/stores.build_store`.
 - A new **metric** goes in the per-backend result dict; keep the existing columns
   so historical comparisons still line up.
 - Always report the `+float` twin when touching quantisation, so the int8-loss

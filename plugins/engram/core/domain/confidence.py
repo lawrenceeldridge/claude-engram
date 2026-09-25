@@ -20,13 +20,41 @@ score these values come from, so folding it in again would double-count it.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 _WEIGHTS = {"gap": 0.35, "strength": 0.40, "identity": 0.25}
 
-# Squash constant for `strength`: 1 - e^(-top1/k). With priority scores in the
-# ~0-1.5 range a k of 0.5 saturates a genuinely strong hit while keeping a
-# barely-over-threshold hit low.
+# Squash constant for `strength`: 1 - e^(-top1/k). Scores are cosine similarities
+# in [-1, 1]. With a real embedder (fastembed) related and unrelated text alike
+# land ~0.6-0.85, so this term moves little across queries (measured median 0.79
+# on a live store) — it separates a barely-there hit from a solid one, not
+# relevant from irrelevant.
 _STRENGTH_K = 0.5
+
+
+@dataclass(frozen=True)
+class PoolStats:
+    """Distribution of query similarity over every comparable fact recall scanned.
+
+    The background a top hit is judged against: how similar the *whole store* is to
+    the query, not just the runner-up. ``std`` is the population standard deviation.
+    """
+
+    n: int
+    mean: float
+    std: float
+
+
+def pool_stats(sims: Iterable[float]) -> PoolStats:
+    """One pass over the scanned similarities (callers pass comparable values only)."""
+    values = list(sims)
+    n = len(values)
+    if n == 0:
+        return PoolStats(0, 0.0, 0.0)
+    mean = math.fsum(values) / n
+    variance = max(0.0, math.fsum(v * v for v in values) / n - mean * mean)
+    return PoolStats(n, mean, math.sqrt(variance))
 
 
 def compute_confidence(
@@ -34,9 +62,11 @@ def compute_confidence(
     *,
     has_identity_match: bool | None = None,
 ) -> dict:
-    """Return ``{"confidence": float, "components": {...}}`` for a ranked score list.
+    """Return ``{"confidence": float, "components": {...}}`` for a list of scores.
 
-    ``scores`` must be sorted descending (as ``recall.search`` returns them).
+    ``scores`` are cosine similarities in any order: they are ranked here, so a
+    caller whose hits are ordered by something else (rank fusion mixes in recency
+    and frequency) can't silently zero the gap by passing a runner-up first.
     Components are returned alongside so a debug caller can see *why* a number
     was low.
     """
@@ -48,8 +78,9 @@ def compute_confidence(
     if not scores:
         return {"confidence": 0.0, "components": components}
 
-    top1 = scores[0]
-    top2 = scores[1] if len(scores) > 1 else 0.0
+    ranked = sorted(scores, reverse=True)
+    top1 = ranked[0]
+    top2 = ranked[1] if len(ranked) > 1 else 0.0
 
     components["gap"] = 0.0 if top1 <= 0 else max(0.0, min(1.0, (top1 - top2) / top1))
     components["strength"] = max(0.0, min(1.0, 1.0 - math.exp(-top1 / _STRENGTH_K)))

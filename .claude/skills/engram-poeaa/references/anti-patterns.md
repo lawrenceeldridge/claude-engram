@@ -53,8 +53,8 @@ type in `core/`; a caller mutating a row and calling a persistence method on it.
 **Symptom.** A scoring/distillation/quantisation/fusion function reads the DB, loads a model,
 spawns a subprocess, reads the clock, or uses randomness.
 **Diagnostic tells.** `import sqlite3` / a `Store` reference / `subprocess` / `urllib` / model
-loading / `time.time()` / `random` inside `core/scoring.py`, `distill.py` (the pure fns),
-`quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`.
+loading / `time.time()` / `random` inside `core/domain/` (`scoring.py`, `quantize.py`,
+`fusion.py`, `confidence.py`, `lexical.py`) or the pure fns of `core/ports/distill.py`.
 **Fix.** Move the I/O to the shell (`service.py`, `recall.py` callers, `bin/*`); pass
 already-resolved values into the pure function. Keep the core testable without mocks. See
 `catalog/11-architectural-style.md` § Functional Core / Imperative Shell.

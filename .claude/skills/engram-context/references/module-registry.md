@@ -39,7 +39,7 @@ core to Claude Code.
 | `service.py` | Capture Command/Handler — `add_facts`, consolidation, `_find_superseded`; idempotent per fact. |
 | `recall.py` | Read side — Query Object `search`, hybrid re-rank, `render_block` DTO (Null Object on empty). |
 | `scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`. |
-| `confidence.py` | Calibrates the `recall` verdict (`ok` / `low_confidence` / `no_memory`). |
+| `domain/confidence.py` | Pure score behind the `recall` verdict (`ok` / `low_confidence`): gap × strength × identity over cosine sims (order-independent). |
 | `distill.py` | Distiller Strategy — heuristic (default) + Claude-CLI + HTTP/Ollama; atomic facts + `supersedes` links; heuristic fallback. |
 | `transcript.py` | Parse Claude Code transcripts into capturable text. |
 
@@ -49,7 +49,7 @@ core to Claude Code.
 | `embedding.py` | Gateway + Separated Interface for embedding providers. |
 | `adapters/fastembed_gw.py` | fastembed Gateway adapter (opt-in, real semantic model). |
 | `adapters/__init__.py` | Adapter package init. |
-| `lexical.py` | `hash` lexical embedding stub (zero-dep default) + lexical/FTS support. |
+| `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`, `has_overlap`) for the confidence identity cue and the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
 | `quantize.py` | int8 (primary search rep) + binary sign-bit quantisation. |
 | `provision.py` | Self-provisions the private fastembed venv (no manual pip). |
 | `daemon_client.py` | Thin client to the resident daemon; falls back in-process (fail-open). |
@@ -109,8 +109,16 @@ core to Claude Code.
 
 | File | Role |
 |---|---|
-| `run_eval.py` | Runs the labelled paraphrase set through the real quantised search path (Recall@1/@3, MRR@10, bytes/fact). |
-| `dataset.json` | The labelled facts + paraphrased queries. |
+| `run_eval.py` | Runs the labelled paraphrase set through the real quantised search path (Recall@1/@3, MRR@10, bytes/fact); owns the shared `add_eval_arguments` flag set used by `bin/engram eval`. |
+| `confidence_eval.py` | `--confidence`: calibration of the `recall` verdict (AUROC, Brier/ECE, ok-precision/recall) over answerable + unanswerable queries on the production `search_fused_with_stats` path. |
+| `age_eval.py` | `--aged`: old- vs new-gold Recall@k on both production rankers (`search`, `search_fused`) across recency weights, against the age-blind (recency-off) ranking. |
+| `retrieval.py` / `stores.py` | Shared rankers over the real paths + Recall@k/MRR scorer; throwaway eval stores with explicit timestamps. |
+| `replay_ledger.py` | Replays the last N real `recall_events` queries on a snapshot of the live store (unlabelled reality check). |
+| `distractors.py` / `snapshot.py` | Runtime-only distractor mining (contamination/privacy-filtered) from a `sqlite3.backup` snapshot; never written to the repo. |
+| `stats.py` / `report.py` / `backends.py` | Pure seeded statistics; table printing; backend spec parsing + embedder construction. |
+| `mine_corpus.py` | Dev tool: mines dataset *candidates* from the live store for the human review gate. |
+| `replay.py` / `run_ab.py` / `eval_code_index.py` | Transcript counterfactual replay; paired live A/B; code-index model scoping. |
+| `dataset.json` | The labelled facts + paraphrased queries, plus scenario keys (`stm_`/`antipattern_`/`duplicate_cluster_`/`confidence_scenario`). |
 
 ## `viewer/` — localhost browser (stdlib `http.server`)
 
