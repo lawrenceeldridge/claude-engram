@@ -331,7 +331,9 @@ Env-only knobs (no `userConfig` entry):
 | `ENGRAM_PYTHON` / `python` userConfig | *(blank)* | pin an interpreter that already has fastembed; blank = auto-provisioned managed venv |
 
 Advanced ranking weights (`w_sim`, `w_recency`, `w_freq`) are tunable via `ENGRAM_*`
-env vars; defaults `1.0 / 0.3 / 0.2`.
+env vars; defaults `1.0 / 0.05 / 0.2`. The recency weight is deliberately small: it
+breaks near-ties in favour of newer facts without letting age override relevance
+(at the former 0.3, relevant facts older than a few months were almost never injected).
 
 ### Memory lifecycle — STM/LTM tiers & consolidation
 

@@ -181,7 +181,9 @@ def get_config() -> Config:
         cross_project=_opt("cross_project", "false").lower() in ("1", "true", "yes", "on"),
         half_life_days=_num(_opt("half_life_days", "30"), 30),
         w_sim=_num(_opt("w_sim", "1.0"), 1.0),
-        w_recency=_num(_opt("w_recency", "0.3"), 0.3),
+        # 0.05, not 0.3: at 0.3 the recency term (up to 0.3) dwarfs typical cosine gaps (~0.03),
+        # so the per-prompt hook almost never injected an old relevant fact (engram eval --aged).
+        w_recency=_num(_opt("w_recency", "0.05"), 0.05),
         w_freq=_num(_opt("w_freq", "0.2"), 0.2),
         supersede_threshold=_num(_opt("supersede_threshold", "0.85"), 0.85),
         # Supersession candidate window for the LLM distiller. The distiller can only emit a

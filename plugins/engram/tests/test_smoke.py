@@ -13,6 +13,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -61,6 +62,18 @@ class ScoringTests(unittest.TestCase):
 
     def test_priority_weights(self):
         self.assertGreater(priority(0.9, 0.5, 0.5, 1, 0.3, 0.2), priority(0.1, 0.5, 0.5, 1, 0.3, 0.2))
+
+    def test_default_recency_weight_does_not_override_relevance(self):
+        # Recency may break near-ties, never override relevance: at the shipped weights a fact
+        # 0.1 more similar must outrank a fresh one even when it is 240 days old. (At the former
+        # w_recency 0.3 it did not — 0.801 vs 1.000 — and the hook buried old memories.)
+        ranking_keys = tuple(f"_{k}" for k in ("W_SIM", "W_RECENCY", "W_FREQ", "HALF_LIFE_DAYS"))
+        shipped_env = {k: v for k, v in os.environ.items() if not k.upper().endswith(ranking_keys)}
+        with mock.patch.dict(os.environ, shipped_env, clear=True):  # code defaults, not ambient overrides
+            cfg = get_config()
+        old = priority(0.80, recency_decay(240 * 86400, cfg.half_life_days), 0.0, cfg.w_sim, cfg.w_recency, cfg.w_freq)
+        new = priority(0.70, recency_decay(0, cfg.half_life_days), 0.0, cfg.w_sim, cfg.w_recency, cfg.w_freq)
+        self.assertGreater(old, new)
 
 
 class DistillerTests(unittest.TestCase):

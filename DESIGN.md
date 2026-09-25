@@ -164,7 +164,11 @@ top-k by priority are injected.
 
 **Conflicts vs ordering are deliberately separate.** Genuine conflicts are removed
 by *hard supersession* (a superseded fact can never resurface); soft recency decay
-only *orders* non-conflicting facts. Folding conflict-resolution into the score
+mostly *orders* non-conflicting facts — its weight is kept small (`w_recency` 0.05) so it
+breaks near-ties rather than overriding relevance. Measured with `engram eval --aged`: at
+the former 0.3, relevant 90–240-day-old facts reached the injected top-3 in ~1% of queries
+(vs 62% age-blind); at 0.05, 44% with no loss for recent facts (fastembed, bundled set).
+Folding conflict-resolution into the score
 (as a single weighted formula would) lets a stale-but-frequent fact leak — the
 hard filter prevents that.
 
