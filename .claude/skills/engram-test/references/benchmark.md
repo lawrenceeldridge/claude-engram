@@ -34,7 +34,7 @@ python3 bin/engram eval --backends "hash,fastembed" --confidence  # recall-verdi
 `bin/engram eval` and `bench/run_eval.py` share one flag definition
 (`run_eval.add_eval_arguments`), so every scenario flag works from both: `--stm`,
 `--antipatterns`, `--integrate`, `--confidence` (+ `--ok-precision`), `--aged`, `--longmemeval`
-(+ `--lme-path` / `--lme-download` / `--lme-limit` / `--lme-llm`); `--distractors`,
+(+ `--lme-path` / `--lme-download` / `--lme-limit` / `--lme-out` / `--lme-shipped` / `--lme-llm`); `--distractors`,
 `--distractor-project`, `--distractor-db` pad the store for `--confidence` / `--aged`.
 
 ### Backend spec: `name[@model][%dim][+float]`
@@ -157,6 +157,21 @@ question type) plus engram's token axis (chars in the top-5 units). The sample i
 *scoreable* questions (abstention questions have no evidence). **D always uses the offline
 heuristic distiller** — never the configured one, which may be an LLM; an LLM-distilled run needs
 explicit `--lme-llm N` (external calls, capped to N questions). ~40 s/question on fastembed.
+Session ids are replaced by neutral per-question ordinals at parse time: LongMemEval's own ids
+label the evidence (`answer_…` vs `sharegpt_…` / `ultrachat_…`), and an exchange's title and
+episode key are embedded and FTS-indexed, so a raw id would leak the answer to the ranker.
+`--lme-out` appends each question's record as it finishes, so a long run stopped early keeps every
+completed question (the stratified sample is round-robin by type, so any prefix stays balanced).
+
+`--lme-shipped` adds three arms that run the **shipped** path end to end instead of the bench's
+direct calls: each session is written as a Claude Code transcript and captured by
+`capture_transcript_incremental` (verbatim prompts, distilled facts, exchanges, the `episode`
+link), then read back through the model's two surfaces at their default `k` / character budget —
+**Vs** `search_history` exchanges, **Ds** `recall` facts mapped to a session by their `episode`
+only (an unlinked fact credits no session), **Hs** both fused. Paired rows V→Vs, D→Ds, H→Hs show
+what the shipped surfaces lose or gain against the direct arms (~2× runtime). The distiller for
+every arm comes from the run's config alone (`distiller_runs` pins the heuristic), and the harness
+tests fail if any test reaches an LLM distiller subprocess.
 ---
 
 ## Adding a metric or backend

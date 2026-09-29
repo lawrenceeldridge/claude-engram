@@ -56,6 +56,12 @@ def add_eval_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--lme-out", type=Path, help="--longmemeval: append per-question arm scores (JSONL) here")
     parser.add_argument(
+        "--lme-shipped",
+        action="store_true",
+        help="--longmemeval: also run the shipped capture → recall / search_history path (Vs/Ds/Hs; ~2x runtime,"
+        " and with --lme-llm the LLM run distils each session twice)",
+    )
+    parser.add_argument(
         "--lme-llm",
         type=int,
         default=0,

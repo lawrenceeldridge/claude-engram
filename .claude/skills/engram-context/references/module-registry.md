@@ -113,7 +113,7 @@ core to Claude Code.
 |---|---|
 | `run_eval.py` | Runs the labelled paraphrase set through the real quantised search path (Recall@1/@3, MRR@10, bytes/fact); owns the shared `add_eval_arguments` flag set used by `bin/engram eval`. |
 | `confidence_eval.py` | `--confidence`: calibration of the `recall` verdict (AUROC, Brier/ECE, ok-precision/recall) over answerable + unanswerable queries on the production `search_fused_with_stats` path. |
-| `longmemeval.py` | `--longmemeval`: LongMemEval session retrieval — parity / verbatim-exchange / distilled / hybrid arms, session metrics + chars@5. |
+| `longmemeval.py` | `--longmemeval`: LongMemEval session retrieval — parity / verbatim-exchange / distilled / hybrid arms, plus `--lme-shipped` (transcript → capture → `recall` / `search_history`), session metrics + chars@5. |
 | `age_eval.py` | `--aged`: old- vs new-gold Recall@k on both production rankers (`search`, `search_fused`) across recency weights, against the age-blind (recency-off) ranking. |
 | `retrieval.py` / `stores.py` | Shared rankers over the real paths + Recall@k/MRR scorer; throwaway eval stores with explicit timestamps. |
 | `replay_ledger.py` | Replays the last N real `recall_events` queries on a snapshot of the live store (unlabelled reality check). |

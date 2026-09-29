@@ -22,7 +22,6 @@ sys.path.insert(0, str(ROOT))
 
 from bench import longmemeval as lme  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.ports.distill import HeuristicDistiller  # noqa: E402
 
 
 def _entry(qid: str, qtype: str, question: str, sessions: dict[str, list[tuple[str, str]]], gold: list[str]) -> dict:
@@ -67,10 +66,18 @@ class ParseAndSampleTests(unittest.TestCase):
     def test_parse_fields_and_abstention(self):
         qs = lme.parse(FIXTURE)
         self.assertEqual([q.qid for q in qs], ["q1", "q2", "q3_abs"])
-        self.assertEqual(qs[0].gold, frozenset({"s-bike"}))
+        self.assertEqual(qs[0].gold, frozenset({"s00"}))  # "s-bike", the first haystack session
         self.assertEqual(qs[0].sessions[0].turns[0][0], "user")
         self.assertEqual([q.abstention for q in qs], [False, False, True])
         self.assertEqual([q.scoreable for q in qs], [True, True, False])
+
+    def test_session_ids_are_neutral_so_no_unit_carries_the_answer_label(self):
+        # LongMemEval ids label the evidence ("answer_…" vs "sharegpt_…"); units embed/FTS-index them
+        entry = _entry("q", "t", "?", {"answer_ab12_1": [("user", "x")], "sharegpt_zz_0": [("user", "y")]}, [])
+        entry["answer_session_ids"] = ["answer_ab12_1", "answer_gone_9"]
+        q = lme.parse([entry])[0]
+        self.assertEqual([s.sid for s in q.sessions], ["s00", "s01"])
+        self.assertEqual(q.gold, frozenset({"s00", "absent:answer_gone_9"}))  # a missing gold stays a miss
 
     def test_stratified_sample_is_seeded_and_round_robin(self):
         qs = lme.parse(FIXTURE)
@@ -109,14 +116,21 @@ class EvaluateTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
-        self.cfg = get_config()
+        # Hermetic whatever the developer's env (ENGRAM_DISTILLER=claude is common): the heuristic
+        # distiller, and a hard guard — an LLM distiller fails open to the heuristic, so a stray call
+        # would otherwise pass silently while spending external API calls.
+        self.cfg = replace(get_config(), distiller="heuristic")
+        llm = mock.patch("core.ports.distill.subprocess.run")
+        self.llm_call = llm.start()
+        self.addCleanup(llm.stop)
+        self.addCleanup(lambda: self.assertFalse(self.llm_call.called, "a harness test reached an LLM distiller"))
 
     def tearDown(self):
         os.environ.pop("ENGRAM_DATA_DIR", None)
         self.tmp.cleanup()
 
     def test_all_arms_run_and_abstention_is_excluded(self):
-        result = lme.evaluate_longmemeval("hash", lme.parse(FIXTURE), self.cfg, HeuristicDistiller())
+        result = lme.evaluate_longmemeval("hash", lme.parse(FIXTURE), self.cfg)
         self.assertEqual((result["scored"], result["abstention"]), (2, 1))
         self.assertEqual([r["arm"] for r in result["summary"]], list(lme.ARMS))
         self.assertTrue(all(r["n"] == 2 for r in result["summary"]))
@@ -132,12 +146,56 @@ class EvaluateTests(unittest.TestCase):
         cfg = replace(self.cfg, episodic_min_chars=0)  # mapping, not the gate, is under test here
         units = lme.rank_verbatim(lme.make_embedder("hash", None, 0, cfg), cfg, q, Path(self.tmp.name))
         self.assertTrue(units)
-        self.assertTrue(all(sid in {"s-bike", "s-food", "s-work"} for _u, sid, _t in units))
+        self.assertTrue(all(sid in {"s00", "s01", "s02"} for _u, sid, _t in units))
         self.assertTrue(all(text.startswith("User:") for _u, _s, text in units))
+
+    def test_shipped_arms_are_opt_in_and_paired_with_their_direct_arm(self):
+        default = lme.evaluate_longmemeval("hash", lme.parse(FIXTURE), self.cfg)
+        self.assertEqual(default["arms"], lme.ARMS)
+        shipped = lme.evaluate_longmemeval("hash", lme.parse(FIXTURE), self.cfg, shipped=True)
+        self.assertEqual([r["arm"] for r in shipped["summary"]], [*lme.ARMS, *lme.SHIPPED_ARMS])
+        self.assertIn("D -> Ds", [r["comparison"] for r in shipped["paired"]])
+
+    def test_shipped_path_captures_the_transcript_and_maps_both_surfaces_by_episode(self):
+        q = lme.parse(FIXTURE)[0]
+        ranked = lme.rank_shipped(lme.make_embedder("hash", None, 0, self.cfg), self.cfg, q, Path(self.tmp.name))
+        sids = {s.sid for s in q.sessions}
+        self.assertTrue(ranked["Vs"] and ranked["Ds"])
+        self.assertTrue({sid for _u, sid, _t in ranked["Vs"]} <= sids)  # every exchange maps to its session
+        self.assertTrue({sid for _u, sid, _t in ranked["Ds"]} <= sids)  # every fact is linked to its episode
+        self.assertEqual(lme.sessions_of(ranked["Vs"])[0], "s00")  # the bicycle session
+        self.assertEqual(len(ranked["Hs"]), len({u[0] for u in ranked["Vs"] + ranked["Ds"]}))
+
+    def test_session_transcript_round_trips_through_the_capture_parser(self):
+        from core.transcript import extract_incremental_parts
+
+        session = lme.parse(FIXTURE)[0].sessions[0]
+        path = Path(self.tmp.name) / "t.jsonl"
+        path.write_text(lme.session_transcript(session), encoding="utf-8")
+        self.assertEqual(tuple(extract_incremental_parts(str(path), 0).turns), session.turns)
+
+    def test_each_record_reaches_progress_as_its_question_finishes(self):
+        seen = []
+        result = lme.evaluate_longmemeval(
+            "hash", lme.parse(FIXTURE), self.cfg, lambda done, total, rec: seen.append((done, total, rec["qid"]))
+        )
+        self.assertEqual(seen, [(1, 2, "q1"), (2, 2, "q2")])
+        self.assertEqual([r["qid"] for r in result["records"]], ["q1", "q2"])
+
+    def test_report_appends_records_to_lme_out_incrementally(self):
+        out = Path(self.tmp.name) / "records.jsonl"
+        subset = [q for q in lme.parse(FIXTURE) if q.scoreable]
+        with mock.patch("builtins.print"):
+            lme._report(["hash"], "heuristic", self.cfg, subset, out, shipped=False)
+        rows = [json.loads(line) for line in out.read_text().splitlines()]
+        self.assertEqual(
+            [(r["backend"], r["distiller"], r["qid"]) for r in rows],
+            [("hash", "heuristic", "q1"), ("hash", "heuristic", "q2")],
+        )
 
     def test_plus_float_is_rejected(self):
         with self.assertRaises(ValueError):
-            lme.evaluate_longmemeval("hash+float", [], self.cfg, HeuristicDistiller())
+            lme.evaluate_longmemeval("hash+float", [], self.cfg)
 
 
 class DatasetTests(unittest.TestCase):

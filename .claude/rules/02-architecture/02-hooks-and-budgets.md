@@ -33,7 +33,8 @@ into, block, or slow the interactive turn:
 
 ## Detached-capture rule
 
-Capture (transcript read → distil → embed → persist) is heavy and latency-tolerant,
+Capture (transcript read → distil → embed → persist, plus the verbatim exchanges → index) is
+heavy and latency-tolerant,
 so it **never runs inline**. The Stop/SessionEnd/PreCompact hook spawns a worker and
 returns immediately (single-flight, so worker/daemon pileup can't happen). LLM
 distillation, when enabled, runs *inside* that detached worker — off the interactive

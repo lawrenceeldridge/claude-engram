@@ -383,7 +383,8 @@ Find them with the `search_history` MCP tool, then read one with `get_doc_sectio
 captured from a conversation records its `episode` (returned by `recall`), so
 `search_history(episode=…)` searches just the conversation the fact came from; the link is
 cleared once that conversation has been forgotten. Measured on LongMemEval session retrieval (470 questions, fastembed): facts alone R@5 0.891,
-verbatim exchanges 0.983.
+verbatim exchanges 0.983; through the shipped tools end to end (hash): `recall` alone 0.864,
+`recall` + `search_history` 0.913.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -469,7 +470,8 @@ before changing any STM-ranking default (short-term is a *state*, not a faster c
 only order facts, never override relevance). `--longmemeval` (with `--lme-download` once — the
 MIT-licensed dataset is fetched at runtime, never bundled) compares distilled facts, verbatim
 exchanges and both on LongMemEval session retrieval, including a configuration comparable with
-mempalace's published number.
+mempalace's published number; `--lme-shipped` adds the shipped path end to end (transcript →
+capture → `recall` / `search_history` at their default budgets).
 
 `--confidence` measures whether the `recall` tool's `ok` verdict means "the returned
 facts contain the answer": the answerable queries plus 89 unanswerable, near-topic ones
@@ -529,8 +531,9 @@ zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for
 zero-token local). The memory lifecycle adds explicit STM/LTM tiers with
-rehearsal- and retrieval-based promotion and a consolidation ("sleep") pass (replay →
-displace → integrate near-duplicates → refine/forget → purge); capture and recovery
+rehearsal-, retrieval- and age-based promotion and a consolidation ("sleep") pass (replay →
+mature → displace → integrate near-duplicates → refine → invalidate → purge → forget verbatim
+exchanges past retention); capture and recovery
 run through a durable, zero-dependency SQLite **Command** queue (retry + dead-letter +
 crash recovery), off the recall hot path. See
 [DESIGN.md](DESIGN.md) for the full architecture, POEAA pattern choices, caching

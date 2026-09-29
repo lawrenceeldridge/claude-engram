@@ -325,8 +325,8 @@ def cmd_consolidate(args) -> int:
     else:
         targets = [_project(cfg, args)]
     # Route through the shared orchestrator so the CLI can't drift from the
-    # checkpoint pass (bin/capture.py) — same stages, same order (replay →
-    # displace → integrate → refine → purge), each gated/idempotent/reversible.
+    # checkpoint pass (bin/capture.py) — same stages, same order (consolidate()
+    # is the one place that defines them), each gated.
     # Totals are accumulated per stage the orchestrator reports, so a stage added
     # later (e.g. `merged`) flows through to the summary without touching this code.
     totals: dict[str, int] = defaultdict(int)

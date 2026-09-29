@@ -12,6 +12,12 @@ fresh store per question, each producing one ranked list of units mapped to sess
 * ``D`` distilled — facts from the configured distiller per session, the ``recall`` tool path;
 * ``H`` hybrid  — rank fusion of V and D units.
 
+``--lme-shipped`` adds the shipped pipeline end to end — each session written as a Claude Code
+transcript and captured by ``capture_transcript_incremental`` (verbatim prompts, distilled facts,
+exchanges, the fact→episode link), then read back through the model's two surfaces at their
+default budgets: ``Vs`` = ``search_history`` exchanges, ``Ds`` = ``recall`` facts mapped to their
+session by ``episode`` only (an unlinked fact credits no session), ``Hs`` = both, fused.
+
 Engram's own axis rides alongside: characters in the top-5 units — the token cost of the
 model pulling them. Dataset: HF ``xiaowu0162/longmemeval-cleaned`` (MIT), fetched at runtime
 into the data dir, never committed. Abstention questions (``_abs``) have no evidence sessions,
@@ -36,7 +42,7 @@ from bench.backends import make_embedder, parse_spec
 from bench.report import print_rows
 from bench.stats import bootstrap_ci, mcnemar_exact, ndcg_at_k, recall_all_at_k, recall_any_at_k, wilson
 from core import service
-from core.domain.episodes import prepare_exchanges
+from core.domain.episodes import episode_key, prepare_exchanges
 from core.domain.fusion import Channel, fuse
 from core.domain.quantize import cosine
 from core.index.index_recall import search_index
@@ -51,6 +57,7 @@ LME_FILE = "longmemeval_s_cleaned.json"
 KS = (1, 3, 5, 10)
 POOL = 50  # units ranked per arm — deep enough for recall@10 over ~50 sessions
 ARMS = ("P", "V", "D", "H")
+SHIPPED_ARMS = ("Vs", "Ds", "Hs")
 
 Unit = tuple[str, str, str]  # (unit id, session id, text) — one ranked retrieval unit
 
@@ -81,11 +88,17 @@ class Question:
 
 
 def parse(entries: list[dict]) -> list[Question]:
-    """LongMemEval entries → Questions (turns reduced to ``(role, content)``)."""
+    """LongMemEval entries → Questions (turns reduced to ``(role, content)``).
+
+    Session ids are replaced by neutral per-question ordinals (``s00``, ``s01`` …, gold remapped):
+    LongMemEval's own ids label the answer — every evidence session is ``answer_…``, every
+    distractor ``sharegpt_…`` / ``ultrachat_…`` — and an id reaches the ranker wherever a unit
+    carries it (an exchange's title and episode key are embedded and FTS-indexed)."""
     questions = []
     for e in entries:
+        neutral = {str(sid): f"s{i:02d}" for i, sid in enumerate(e["haystack_session_ids"])}
         sessions = tuple(
-            Session(str(sid), str(date), tuple((t.get("role", ""), t.get("content") or "") for t in turns))
+            Session(neutral[str(sid)], str(date), tuple((t.get("role", ""), t.get("content") or "") for t in turns))
             for sid, date, turns in zip(e["haystack_session_ids"], e["haystack_dates"], e["haystack_sessions"])
         )
         questions.append(
@@ -94,7 +107,8 @@ def parse(entries: list[dict]) -> list[Question]:
                 qtype=str(e["question_type"]),
                 question=str(e["question"]),
                 sessions=sessions,
-                gold=frozenset(str(s) for s in e.get("answer_session_ids") or ()),
+                # a gold id absent from the haystack stays unretrievable, as before (never dropped)
+                gold=frozenset(neutral.get(str(s), f"absent:{s}") for s in e.get("answer_session_ids") or ()),
             )
         )
     return questions
@@ -197,6 +211,40 @@ def rank_hybrid(verbatim: list[Unit], distilled: list[Unit]) -> list[Unit]:
     return [by_id[f.fact_id] for f in fused]
 
 
+def session_transcript(session: Session) -> str:
+    """The session as a Claude Code transcript (JSONL) — what the capture hook reads."""
+    return "".join(
+        json.dumps({"type": role, "message": {"role": role, "content": [{"type": "text", "text": text}]}}) + "\n"
+        for role, text in session.turns
+        if text.strip()
+    )
+
+
+def rank_shipped(embedder: EmbeddingGateway, cfg, q: Question, root: Path) -> dict[str, list[Unit]]:
+    """The shipped path end to end: capture each session from its transcript, then rank through
+    ``search_history`` (exchanges) and ``recall`` (facts, mapped by their ``episode``) exactly as
+    the MCP tools call them — default ``k`` and character budget."""
+    store, project = Store(root / "shipped.db"), _project(root, "lme-s")
+    cfg = replace(cfg, episodic_enabled=True)  # the arm measures the layer, whatever the local config
+    sessions: dict[str, str] = {}
+    try:
+        for i, s in enumerate(q.sessions):
+            path = root / f"session-{i}.jsonl"
+            path.write_text(session_transcript(s), encoding="utf-8")
+            service.capture_transcript_incremental(store, embedder, cfg, project, s.sid, str(path))
+            sessions[episode_key(s.sid, 0)] = s.sid
+        facts = service.recall_structured(store, embedder, cfg, project, q.question)["facts"]
+        recalled = [(f["id"], sessions.get(f.get("episode"), f"unlinked:{f['id']}"), f["text"]) for f in facts]
+        found = search_index(store, embedder, cfg, project, q.question, kind="exchange")
+        history = [
+            (r["anchor"], sessions[r["source_path"]], store.get_chunk(project["key"], r["anchor"])["body"])
+            for r in found["results"]
+        ]
+    finally:
+        store.close()
+    return {"Vs": history, "Ds": recalled, "Hs": rank_hybrid(history, recalled)}
+
+
 def sessions_of(units: list[Unit]) -> list[str]:
     """Session ids in first-appearance order — a session ranks where its best unit ranks."""
     seen: dict[str, None] = {}
@@ -215,12 +263,14 @@ def score(units: list[Unit], gold: frozenset[str]) -> dict:
     return row
 
 
-def evaluate_question(embedder, cfg, distiller, q: Question) -> dict[str, dict]:
+def evaluate_question(embedder, cfg, distiller, q: Question, shipped: bool = False) -> dict[str, dict]:
     root = Path(tempfile.mkdtemp(prefix="engram-bench-lme-"))
     try:
         verbatim = rank_verbatim(embedder, cfg, q, root)
         distilled = rank_distilled(embedder, cfg, distiller, q, root)
         rankings = {"P": rank_parity(embedder, q), "V": verbatim, "D": distilled, "H": rank_hybrid(verbatim, distilled)}
+        if shipped:
+            rankings.update(rank_shipped(embedder, cfg, q, root))
     finally:
         shutil.rmtree(root, ignore_errors=True)
     return {arm: score(units, q.gold) for arm, units in rankings.items()}
@@ -247,6 +297,7 @@ def _summary_rows(per_arm: dict[str, list[dict]]) -> list[dict]:
 
 
 PAIRS = (("D", "V"), ("D", "H"), ("V", "H"), ("D", "P"), ("P", "V"))
+SHIPPED_PAIRS = (("V", "Vs"), ("D", "Ds"), ("H", "Hs"), ("Ds", "Hs"))  # direct arm -> its shipped path
 PAIRED_COLS = ["comparison", "dR_any@5 (primary)", "dR_all@5", "dR_any@1", "dNDCG@5 [95% CI]"]
 
 
@@ -263,7 +314,8 @@ def _paired_rows(per_arm: dict[str, list[dict]]) -> list[dict]:
     rows = []
     if not per_arm["D"]:
         return rows
-    for a, b in PAIRS:
+    pairs = PAIRS + (SHIPPED_PAIRS if "Vs" in per_arm else ())
+    for a, b in pairs:
         xs, ys = per_arm[a], per_arm[b]
         deltas = [y["ndcg@5"] - x["ndcg@5"] for x, y in zip(xs, ys)]
         lo, hi = bootstrap_ci(deltas)
@@ -281,30 +333,44 @@ def _paired_rows(per_arm: dict[str, list[dict]]) -> list[dict]:
 
 
 def evaluate_longmemeval(
-    spec: str, questions: list[Question], cfg, distiller, progress: Callable[[int, int], None] | None = None
+    spec: str,
+    questions: list[Question],
+    cfg,
+    progress: Callable[[int, int, dict], None] | None = None,
+    *,
+    shipped: bool = False,
 ) -> dict:
+    """Score every scoreable question on each arm. ``cfg.distiller`` is the one source of the
+    distiller for every arm — the D arm distils with it, and the shipped arms capture through
+    ``capture_text``, which resolves it from the same config (``distiller_runs`` pins it).
+    ``progress(done, total, record)`` receives each question's record as it completes, so a long
+    run can persist it immediately (an interrupted run keeps every finished question)."""
     name, model, truncate_dim, float_mode = parse_spec(spec)
     if float_mode:
         raise ValueError("+float ranks outside the store; LongMemEval needs the real ranking paths")
     embedder = make_embedder(name, model, truncate_dim, cfg)
+    distiller = get_distiller(cfg)
     scored = [q for q in questions if q.scoreable]
-    per_arm: dict[str, list[dict]] = {arm: [] for arm in ARMS}
+    arms = ARMS + SHIPPED_ARMS if shipped else ARMS
+    per_arm: dict[str, list[dict]] = {arm: [] for arm in arms}
     per_type: dict[str, dict[str, list[bool]]] = {}
     records: list[dict] = []
     for index, q in enumerate(scored, 1):
-        result = evaluate_question(embedder, cfg, distiller, q)
-        records.append({"qid": q.qid, "qtype": q.qtype, "arms": result})
-        for arm in ARMS:
+        result = evaluate_question(embedder, cfg, distiller, q, shipped)
+        record = {"qid": q.qid, "qtype": q.qtype, "arms": result}
+        records.append(record)
+        for arm in arms:
             per_arm[arm].append(result[arm])
-            per_type.setdefault(q.qtype, {a: [] for a in ARMS})[arm].append(result[arm]["any@5"])
+            per_type.setdefault(q.qtype, {a: [] for a in arms})[arm].append(result[arm]["any@5"])
         if progress:
-            progress(index, len(scored))
+            progress(index, len(scored), record)
     type_rows = [
-        {"question type": qtype, "n": len(arms["P"]), **{arm: sum(v) / len(v) for arm, v in arms.items()}}
-        for qtype, arms in sorted(per_type.items())
+        {"question type": qtype, "n": len(by_arm["P"]), **{arm: sum(v) / len(v) for arm, v in by_arm.items()}}
+        for qtype, by_arm in sorted(per_type.items())
     ]
     return {
         "backend": spec,
+        "arms": arms,
         "scored": len(scored),
         "abstention": len(questions) - len(scored),
         "summary": _summary_rows(per_arm),
@@ -347,7 +413,7 @@ def run_longmemeval(cfg, backends: list[str], args: argparse.Namespace) -> None:
     scoreable = [q for q in questions if q.scoreable]
     sample = stratified_sample(scoreable, args.lme_limit)  # sample only what can be scored
     for label, run_cfg, subset in distiller_runs(cfg, sample, args.lme_llm):
-        _report(backends, label, run_cfg, subset, args.lme_out)
+        _report(backends, label, run_cfg, subset, args.lme_out, args.lme_shipped)
     print(
         f"  dataset {path.name} sha256={digest}: {len(sample)} of {len(scoreable)} scoreable questions "
         f"(stratified; {len(questions) - len(scoreable)} abstention questions have no evidence to score)"
@@ -366,16 +432,18 @@ def distiller_runs(cfg, sample: list[Question], llm_limit: int) -> list[tuple[st
     return runs
 
 
-def _report(backends: list[str], label: str, run_cfg, subset: list[Question], out: Path | None) -> None:
-    distiller = get_distiller(run_cfg)
+def _report(backends: list[str], label: str, run_cfg, subset: list[Question], out: Path | None, shipped: bool) -> None:
     for spec in backends:
 
-        def progress(done: int, total: int, spec: str = spec) -> None:
+        def progress(done: int, total: int, record: dict, spec: str = spec) -> None:
+            if out is not None:  # appended as each question finishes — an interrupted run loses nothing done
+                with out.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"backend": spec, "distiller": label, **record}) + "\n")
             if done % 10 == 0 or done == total:
                 print(f"  … {spec}/{label}: {done}/{total} questions", flush=True)
 
         try:
-            result = evaluate_longmemeval(spec, subset, run_cfg, distiller, progress)
+            result = evaluate_longmemeval(spec, subset, run_cfg, progress, shipped=shipped)
         except Exception as exc:
             print(f"[longmemeval skipped {spec}/{label}] {exc}")
             continue
@@ -385,17 +453,14 @@ def _report(backends: list[str], label: str, run_cfg, subset: list[Question], ou
         )
         print_rows(result["summary"], SUMMARY_COLS)
         print("\nR_any@5 by question type:\n")
-        print_rows(result["types"], ["question type", "n", *ARMS])
+        print_rows(result["types"], ["question type", "n", *result["arms"]])
         print(
             "\nPaired comparisons (positive d favours the second arm; McNemar exact (a/b discordant) on the binary"
             " metrics, seeded bootstrap on NDCG; * = p<0.05 / CI excludes 0; R_any@5 is the pre-registered gate):\n"
         )
         print_rows(result["paired"], PAIRED_COLS)
-        if out is not None:
-            with out.open("a", encoding="utf-8") as fh:
-                for rec in result["records"]:
-                    fh.write(json.dumps({"backend": spec, "distiller": label, **rec}) + "\n")
         print(
-            "\n  P = mempalace-parity configuration (compare with its 96.6% R@5); V/D/H are engram's own."
+            "\n  P = mempalace-parity configuration (compare with its 96.6% R@5); V/D/H are engram's own;"
+            " Vs/Ds/Hs = the shipped capture → search_history / recall path at default budgets."
             " chars@5 = what the model would pull for the top-5 units (≈ chars/4 tokens)."
         )
