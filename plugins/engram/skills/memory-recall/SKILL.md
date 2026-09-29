@@ -44,6 +44,10 @@ The `verdict` decides whether you still need a wider search:
 - **`no_memory`** — Nothing is stored for this query. Do **not** assume prior
   context or claim the project "already does" something. Proceed with a normal
   search.
+- **`embedding_mismatch`** — Memory exists but was written by a different embedding
+  backend/model than the one serving recall, so nothing could be compared. This is a
+  configuration problem, not an empty store: search normally and tell the user (the
+  `guidance` field says what to align).
 
 ### Step 2b: Search the index for code & docs
 

@@ -151,7 +151,8 @@ namespace; assert exit code and stdout shape.
 
 ### MCP tool (`bin/mcp_server.py`)
 Call the underlying function with a fixture store; assert the returned payload
-shape and the calibrated verdict (`ok` / `low_confidence` / `no_memory`).
+shape, the confidence score, and the verdict (`ok` / `low_confidence` / `no_memory` /
+`embedding_mismatch`; the `hash` stub is never `ok`).
 
 ---
 

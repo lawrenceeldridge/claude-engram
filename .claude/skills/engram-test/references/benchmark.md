@@ -131,8 +131,10 @@ queries on a snapshot of the live store.
 
 ## Age-aware ranking (`--aged`)
 
-DESIGN.md's contract is that recency decay only *orders* non-conflicting facts (conflicts are
-removed by supersession), so an old relevant fact must not lose its rank for being old.
+DESIGN.md's contract is that recency decay *mostly orders* non-conflicting facts (conflicts are
+removed by supersession) — it breaks near-ties, so an old relevant fact must not lose its rank
+for being old. This benchmark is what set the hook's `w_recency` to 0.05 (DESIGN.md § Memory
+lifecycle has the numbers).
 `bench/age_eval.py` stamps each dataset fact old (90–240 d) or new (0–14 d) by a seeded coin,
 splits queries by the age of their gold, and scores **both** production rankers — `search`
 (the per-prompt hook's priority score) and `search_fused` (the `recall` tool's rank fusion) —

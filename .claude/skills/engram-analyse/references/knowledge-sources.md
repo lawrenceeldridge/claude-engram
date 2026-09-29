@@ -41,7 +41,7 @@ file scan. Consult them before Grep/Glob/Read (the memory-first stop rule).
 
 Never jump straight to reading whole files. Narrow first:
 
-1. **`recall`** — broad discovery of prior decisions/facts, with a calibrated verdict.
+1. **`recall`** — broad discovery of prior decisions/facts, with a confidence score and verdict.
 2. **`search_code` / `search_docs`** — ranked outlines for the affected area (cheap; no file bodies).
 3. **`get_symbol` / `get_doc_section`** — pull the one exact span the outline points at.
 

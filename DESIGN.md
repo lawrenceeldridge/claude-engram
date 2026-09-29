@@ -123,6 +123,60 @@ numbers on the larger mined set are in [README § Benchmarking](README.md)):
   but still significant (paired McNemar p=0.033). Hence bge-base is the default; bge-small remains
   available via `embedding_model` for constrained environments.
 
+Recall@k is one axis; the same harness measures the others a default rests on — `--confidence`
+(does the `recall` verdict mean what it says; § Recall confidence below), `--aged` (does age
+override relevance on either ranker), `--longmemeval` (verbatim vs distilled session retrieval;
+§ Token efficiency), plus `--stm` / `--antipatterns` / `--integrate`. `--distractors N` pads the
+store with real facts mined at runtime to reproduce density. Commands and output columns:
+[README § Benchmarking](README.md) and `.claude/skills/engram-test/references/benchmark.md`.
+
+## Recall confidence — measured
+
+The `recall` MCP tool returns a `confidence` score and a verdict; `ok` tells the model to trust the
+facts and skip a wider search, so it is only worth having if `ok` is usually right. It wasn't:
+
+- **Ordering defect (fixed first).** Confidence read the *fused* first hit, which fusion's recency
+  and frequency channels often make a newer, weaker fact — the gap to the "runner-up" (really the
+  best match) went to zero. On 120 replayed real queries, 28% collapsed that way and 42% had the
+  best cosine match demoted. Confidence now judges the best-matching hit (`best_match`), and the
+  recall ledger's `recall_events.top_sim` records that hit's cosine — **rows written before this
+  change hold the fused first hit's**, so compare old and new rows with care.
+- **Formula defect.** The old gap × strength × identity score barely separated right from wrong
+  recalls (AUROC 0.54 / 0.58 / 0.55 at 0 / 1,788 / 20,000 extra facts), so `ok` was right about
+  half the time (precision 0.49 / 0.57 / 0.42).
+
+**The score now** is the best match's **pool z-score** — how many standard deviations its cosine
+sits above the similarity of *every* comparable fact recall scanned — Platt-scaled to 0-1
+(`sigmoid(0.6341·z − 3.2706)`, `core/domain/confidence.py`, fitted in `core/recall`). Of the
+candidates measured it was the only one better than the old formula at every density, and its fit
+barely moves between embedding models. Measured on `engram eval --confidence` (fastembed bge-base,
+244 answerable + 89 unanswerable queries), `ok` at the shipped `recall_min_confidence` 0.40:
+
+| store (extra facts) | AUROC (old → new) | `ok` precision (old → new) | `ok` recall (old → new) |
+|---|---|---|---|
+| 0 | 0.54 → 0.71 | 0.49 → 0.73 | 0.42 → 0.12 |
+| 1,788 on-topic | 0.58 → 0.64 | 0.57 → 0.63 | 0.37 → 0.24 |
+| 20,000 off-topic | 0.55 → 0.68 | 0.42 → 0.55 | 0.31 → 0.49 |
+
+- **A ranked score, not a probability.** The best Platt fit drifts with store size (b = −2.27 at 0
+  extra facts, −3.27 at 20,000), so no fixed calibration holds a promised precision everywhere —
+  the old 0.90 target is unreachable with any single signal. The constants are fitted where real
+  stores live (tens of thousands of facts); on a small store the same match scores lower, so `ok`
+  is rarer there but more often right — the safe error, since a missed `ok` only costs a search.
+- **A store floor.** `ok` needs z ≥ 4.5, and one outlier among n values can sit at most √(n−1)
+  standard deviations out, so a project with fewer than ~22 facts can never say `ok`.
+- **The `hash` stub never says `ok`.** On its lexical vectors the same signal is near or below
+  chance (pool z-score AUROC 0.59 / 0.56 / 0.44 at the three densities; no candidate exceeds 0.61), so
+  a gateway that isn't `semantic` gets no calibration: `confidence` is `null`, the verdict is
+  `low_confidence`, and the guidance says why (the honest Special Case, not a made-up number).
+- **Ledger continuity.** `engram stats`' estimated savings count `ok` recalls; on real queries the
+  `ok` rate moved from 15% to 62% with this change, so the estimate steps up without any real
+  saving. It is excluded from the headline figure for exactly this kind of reason.
+
+Reproduce: `engram eval --backends hash,fastembed --confidence [--distractors N
+--distractor-project <key>] --confidence-out obs.jsonl` — the `platt (a, b)` column is where the
+shipped constants come from; `bench/replay_ledger.py` replays real ledger queries unlabelled.
+
 ## Distillation — heuristic vs LLM
 
 Retrieval quality is capped by *what is stored*, so the distiller is the largest

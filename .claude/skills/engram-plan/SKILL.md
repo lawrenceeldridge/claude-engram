@@ -82,7 +82,7 @@ investigate the affected code thoroughly — but the *cheap* way first.
 
 **Memory & index first** (the discipline `prefer_memory.py` enforces at runtime):
 1. **`recall`** — prior decisions, rationale, "did we already try this", with a
-   calibrated verdict (`ok` / `low_confidence` / `no_memory`).
+   confidence score and verdict (`ok` / `low_confidence` / `no_memory`).
 2. **`search_code`** / **`search_docs`** — ranked symbol/section outlines for the
    affected area (qualname + summary + freshness), not file bodies.
 3. **`get_symbol`** / **`get_doc_section`** — pull one exact span once search points at it.
