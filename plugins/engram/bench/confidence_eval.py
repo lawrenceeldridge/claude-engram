@@ -9,17 +9,20 @@ judged on:
 
 * **discrimination** — AUROC (rank-based, so invariant to rescaling), with a paired
   seeded-bootstrap delta against the shipped formula;
-* **calibration** — Brier and ECE of 2-fold cross-fitted Platt probabilities;
-* **the gate** — precision/recall of ``ok`` at calibrated ``p >= ok_precision`` (the verdict
-  as a calibrated score would ship), and for the shipped formula also at the configured
-  ``recall_min_confidence`` (the verdict as it ships today).
+* **calibration** — Brier and ECE of 2-fold cross-fitted Platt probabilities, plus each candidate's
+  full-sample Platt ``(a, b)`` — the fit a shipped ``Calibration`` takes its constants from;
+* **the gate** — precision/recall of ``ok`` at cross-fitted ``p >= ok_precision``, and for the
+  shipped score also at the configured ``recall_min_confidence`` through production's own
+  ``is_trusted`` rule (the verdict as it ships today).
 
 Candidates score a ``FusedResult`` — the exact object production recall computes — and
-``current`` *is* production's ``recall_confidence``, so what is measured is what ships.
+``current`` *is* production's ``recall_confidence`` with the backend's ``get_calibration``, so
+what is measured is what ships (a backend that can't judge scores ``NO_RECALL``: never ``ok``).
 """
 
 from __future__ import annotations
 
+import json
 import random
 import shutil
 import statistics
@@ -29,43 +32,50 @@ from pathlib import Path
 
 from bench.backends import make_embedder, parse_spec
 from bench.report import print_rows
-from bench.stats import auroc, bootstrap_stat_ci, brier, ece, platt_apply, platt_fit, wilson
+from bench.stats import auroc, bootstrap_stat_ci, brier, ece, platt_fit, wilson
 from bench.stores import build_store
-from core.domain.confidence import PoolStats
+from core.domain.confidence import Calibration, calibrate, pool_z
 from core.ports.embedding import EmbeddingGateway
-from core.recall import FusedResult, best_match, recall_confidence, search_fused_with_stats
+from core.recall import (
+    FusedResult,
+    best_match,
+    get_calibration,
+    is_trusted,
+    recall_confidence,
+    search_fused_with_stats,
+)
 from core.store import Store
 
-NO_RECALL = float("-inf")  # an empty result can never be `ok`; ranks below every real score
+NO_RECALL = float("-inf")  # can never be `ok` (nothing returned, or unjudged); ranks below every real score
 
-Candidate = Callable[[str, FusedResult], float]
-
-
-def _z(value: float, pool: PoolStats) -> float:
-    return (value - pool.mean) / pool.std if pool.std > 0 else 0.0
+Candidate = Callable[[FusedResult, Calibration | None], float]
 
 
 def _top1(result: FusedResult) -> float:
     return best_match(result.hits)[1]
 
 
+def _judged(confidence: float | None) -> float:
+    return NO_RECALL if confidence is None else confidence
+
+
 CANDIDATES: dict[str, Candidate] = {
-    # The shipped formula: gap x strength x identity over the returned sims.
-    "current": lambda query, result: recall_confidence(query, result)["confidence"],
+    # The shipped score: production's recall_confidence under the backend's calibration.
+    "current": lambda result, calibration: _judged(recall_confidence(result, calibration)),
     # Absolute strength of the best match, no context.
-    "top1": lambda _query, result: _top1(result),
-    # Best match against the whole scanned pool (plan candidate A).
-    "pool_z": lambda _query, result: _z(_top1(result), result.pool),
-    # Mean returned similarity against the pool — evidence mass (plan candidate C).
-    "topk_z": lambda _query, result: _z(statistics.fmean(sim for _s, sim, _r in result.hits), result.pool),
+    "top1": lambda result, _calibration: _top1(result),
+    # Best match against the whole scanned pool — the signal `current` calibrates.
+    "pool_z": lambda result, _calibration: pool_z(_top1(result), result.pool),
+    # Mean returned similarity against the pool — evidence mass.
+    "topk_z": lambda result, _calibration: pool_z(statistics.fmean(sim for _s, sim, _r in result.hits), result.pool),
 }
 
 
-def candidate_scores(query: str, result: FusedResult) -> dict[str, float]:
+def candidate_scores(result: FusedResult, calibration: Calibration | None) -> dict[str, float]:
     """Every candidate's raw score for one recall (``NO_RECALL`` when nothing came back)."""
     if not result.hits:
         return {name: NO_RECALL for name in CANDIDATES}
-    return {name: fn(query, result) for name, fn in CANDIDATES.items()}
+    return {name: fn(result, calibration) for name, fn in CANDIDATES.items()}
 
 
 def dataset_records(
@@ -84,12 +94,21 @@ def dataset_records(
 def observe(
     store: Store, embedder: EmbeddingGateway, project: dict, cfg, labelled: list[tuple[str, set[str]]]
 ) -> list[dict]:
-    """Run each ``(query, gold_texts)`` through production recall; label and score it."""
+    """Run each ``(query, gold_texts)`` through production recall; label and score it, keeping the
+    production confidence as returned (``None`` when unjudged) for the shipped gate."""
+    calibration = get_calibration(embedder)
     out = []
     for query, gold in labelled:
         result = search_fused_with_stats(store, embedder, project, query, cfg, k=cfg.activated_k)
         returned = {row["text"] for _s, _sim, row in result.hits}
-        out.append({"q": query, "label": bool(gold & returned), "scores": candidate_scores(query, result)})
+        out.append(
+            {
+                "q": query,
+                "label": bool(gold & returned),
+                "confidence": recall_confidence(result, calibration),
+                "scores": candidate_scores(result, calibration),
+            }
+        )
     return out
 
 
@@ -104,9 +123,9 @@ def cross_fit(scores: list[float], labels: list[bool], seed: int = 0) -> list[fl
     probs = [0.0] * len(scores)
     for held_out, train in ((folds[0], folds[1]), (folds[1], folds[0])):
         fit = [i for i in train if scores[i] != NO_RECALL]
-        params = platt_fit([scores[i] for i in fit], [labels[i] for i in fit])
+        calibration = Calibration(*platt_fit([scores[i] for i in fit], [labels[i] for i in fit]))
         for i in held_out:
-            probs[i] = platt_apply(scores[i], params)
+            probs[i] = 0.0 if scores[i] == NO_RECALL else calibrate(scores[i], calibration)
     return probs
 
 
@@ -159,6 +178,8 @@ def summarise(observations: list[dict], ok_precision: float, shipped_threshold: 
             d_cell = f"{area - auroc(current, labels):+.3f} {_ci(d_lo, d_hi)}"
         probs = cross_fit(scores, labels)
         at_target = gate([p >= ok_precision for p in probs], labels)
+        fitted = [i for i, sc in enumerate(scores) if sc != NO_RECALL]  # the full-sample fit a Calibration ships
+        a, b = platt_fit([scores[i] for i in fitted], [labels[i] for i in fitted])
         rows.append(
             {
                 "candidate": name,
@@ -170,9 +191,10 @@ def summarise(observations: list[dict], ok_precision: float, shipped_threshold: 
                 "ok_n": at_target["ok_n"],
                 "ok precision": _gate_cell(at_target["precision"], at_target["precision_ci"]),
                 "ok recall": _gate_cell(at_target["recall"], at_target["recall_ci"]),
+                "platt (a, b)": f"{a:.4f}, {b:.4f}",
             }
         )
-    shipped = gate([s >= shipped_threshold for s in current], labels)
+    shipped = gate([is_trusted(o["confidence"], shipped_threshold) for o in observations], labels)
     return {"n": n, "positives": sum(labels), "rows": rows, "shipped": shipped}
 
 
@@ -190,6 +212,7 @@ CONFIDENCE_COLS = [
     "ok_n",
     "ok precision",
     "ok recall",
+    "platt (a, b)",
 ]
 
 
@@ -211,12 +234,32 @@ def evaluate_confidence(spec: str, data: dict, cfg, distractors: list[tuple[str,
     finally:
         shutil.rmtree(root, ignore_errors=True)
     summary = summarise(observations, ok_precision, cfg.recall_min_confidence)
-    summary.update(backend=spec, answerable=len(data["queries"]), unanswerable=len(labelled) - len(data["queries"]))
+    summary.update(
+        backend=spec,
+        answerable=len(data["queries"]),
+        unanswerable=len(labelled) - len(data["queries"]),
+        observations=observations,
+    )
     return summary
 
 
+def write_observations(out: Path, spec: str, distractors: int, observations: list[dict]) -> None:
+    """Append one JSON line per query — label, production confidence, every candidate's raw score
+    (``None`` where ``NO_RECALL``) — so a calibration or threshold can be fitted offline."""
+    with out.open("a", encoding="utf-8") as fh:
+        for o in observations:
+            scores = {name: None if v == NO_RECALL else v for name, v in o["scores"].items()}
+            record = {"backend": spec, "distractors": distractors, "q": o["q"], "label": o["label"]}
+            fh.write(json.dumps({**record, "confidence": o["confidence"], "scores": scores}) + "\n")
+
+
 def run_confidence(
-    data: dict, cfg, backends: list[str], distractors: list[tuple[str, float]], ok_precision: float
+    data: dict,
+    cfg,
+    backends: list[str],
+    distractors: list[tuple[str, float]],
+    ok_precision: float,
+    out: Path | None = None,
 ) -> None:
     for spec in backends:
         try:
@@ -224,6 +267,8 @@ def run_confidence(
         except Exception as exc:
             print(f"[confidence skipped {spec}] {exc}")
             continue
+        if out is not None:
+            write_observations(out, spec, len(distractors), summary["observations"])
         print(
             f"\nRecall-verdict calibration — {spec}, k={cfg.activated_k}, {len(distractors)} distractors: "
             f"{summary['answerable']} answerable + {summary['unanswerable']} unanswerable queries, "
@@ -232,7 +277,8 @@ def run_confidence(
         print_rows(summary["rows"], CONFIDENCE_COLS)
         shipped = summary["shipped"]
         print(
-            f"\n  shipped gate (current >= recall_min_confidence {cfg.recall_min_confidence}): ok_n {shipped['ok_n']}, "
+            f"\n  shipped gate (production `ok`: current >= recall_min_confidence {cfg.recall_min_confidence}): "
+            f"ok_n {shipped['ok_n']}, "
             f"precision {_gate_cell(shipped['precision'], shipped['precision_ci'])}, "
             f"recall {_gate_cell(shipped['recall'], shipped['recall_ci'])}"
         )

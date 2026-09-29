@@ -1,7 +1,8 @@
 """Recall API + MCP server tests — stdlib unittest, no external deps.
 
-Covers the 0.4.0 memory-first surface: calibrated confidence, the confidence-gated
-structured recall verdict, and the pure JSON-RPC dispatch of the MCP stdio server.
+Covers the memory-first surface: the recall confidence score (calibrated pool_z, the hash
+Special Case), the confidence-gated structured recall verdict, and the pure JSON-RPC dispatch
+of the MCP stdio server.
 
 Run: python3 -m unittest discover -s plugins/engram/tests
 """
@@ -22,38 +23,99 @@ sys.path.insert(0, str(ROOT / "bin"))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.domain.confidence import PoolStats, compute_confidence, pool_stats  # noqa: E402
-from core.domain.lexical import has_overlap, tokenize  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.recall import FusedResult, search_fused, search_fused_with_stats  # noqa: E402
+from core.domain.confidence import (  # noqa: E402
+    Calibration,
+    PoolStats,
+    calibrate,
+    calibrated_confidence,
+    pool_stats,
+    pool_z,
+    sigmoid,
+)
+from core.domain.lexical import tokenize  # noqa: E402
+from core.ports.embedding import EmbeddingGateway, HashEmbedding  # noqa: E402
+from core.recall import (  # noqa: E402
+    SEMANTIC_CALIBRATION,
+    FusedResult,
+    get_calibration,
+    is_trusted,
+    recall_confidence,
+    search_fused,
+    search_fused_with_stats,
+)
 from core.store import Store  # noqa: E402
 
 
+class _SemanticStandIn(EmbeddingGateway):
+    """Hash vectors behind a non-stub gateway — stands in for a semantic embedder, which gets a
+    calibration (the stub itself never does)."""
+
+    def __init__(self, dim: int) -> None:
+        self.dim = dim
+        self._hash = HashEmbedding(dim=dim)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._hash.embed(texts)
+
+
 class ConfidenceTests(unittest.TestCase):
-    # Scores are cosine similarities in the range a real embedder (fastembed) produces.
-    def test_empty_scores_zero(self):
-        self.assertEqual(compute_confidence([])["confidence"], 0.0)
+    CAL = Calibration(a=1.0, b=0.0)
 
-    def test_dominant_top_with_identity_is_high(self):
-        strong = compute_confidence([0.85, 0.40], has_identity_match=True)["confidence"]
-        self.assertGreater(strong, 0.6)
+    def test_pool_z_known_values(self):
+        pool = PoolStats(n=4, mean=0.5, std=0.1)
+        self.assertAlmostEqual(pool_z(0.7, pool), 2.0)
+        self.assertAlmostEqual(pool_z(0.4, pool), -1.0)
+        self.assertEqual(pool_z(0.9, PoolStats(n=1, mean=0.9, std=0.0)), 0.0)  # flat pool: no evidence
 
-    def test_tied_top_lowers_confidence(self):
-        tied = compute_confidence([0.78, 0.77], has_identity_match=True)["confidence"]
-        clear = compute_confidence([0.78, 0.40], has_identity_match=True)["confidence"]
-        self.assertLess(tied, clear)
+    def test_sigmoid_is_stable_and_symmetric(self):
+        self.assertEqual(sigmoid(0.0), 0.5)
+        self.assertAlmostEqual(sigmoid(2.0) + sigmoid(-2.0), 1.0)
+        self.assertEqual((sigmoid(-1000.0), sigmoid(1000.0)), (0.0, 1.0))  # no overflow
 
-    def test_identity_miss_penalised(self):
-        hit = compute_confidence([0.80, 0.45], has_identity_match=True)["confidence"]
-        miss = compute_confidence([0.80, 0.45], has_identity_match=False)["confidence"]
-        self.assertLess(miss, hit)
+    def test_calibrated_confidence_is_platt_on_pool_z(self):
+        pool = PoolStats(n=10, mean=0.5, std=0.1)
+        self.assertEqual(calibrated_confidence(0.7, pool, self.CAL), round(sigmoid(2.0), 3))
+        self.assertEqual(calibrate(2.0, Calibration(a=0.5, b=-1.0)), 0.5)
 
-    def test_order_independent(self):
-        # Rank fusion returns hits in fused order, not similarity order. These are the live
-        # sims that scored 0.007 when the runner-up was read as top1 (gap clamped to 0).
-        fused_order = [0.698, 0.723, 0.760]
-        self.assertEqual(compute_confidence(fused_order), compute_confidence(sorted(fused_order, reverse=True)))
-        self.assertGreater(compute_confidence(fused_order)["components"]["gap"], 0.0)
+    def test_a_stronger_standout_scores_higher(self):
+        pool = PoolStats(n=100, mean=0.6, std=0.05)
+        weak, strong = (calibrated_confidence(s, pool, SEMANTIC_CALIBRATION) for s in (0.62, 0.80))
+        self.assertLess(weak, strong)
+
+    def test_recall_confidence_empty_unjudged_and_best_match(self):
+        self.assertEqual(recall_confidence(FusedResult([], pool_stats([])), self.CAL), 0.0)
+        pool = pool_stats([0.5, 0.6, 0.7])
+        hits = [(0.9, 0.5, None), (0.8, 0.7, None)]  # fused order; the best cosine is second
+        self.assertIsNone(recall_confidence(FusedResult(hits, pool), None))  # can't judge → no score
+        self.assertEqual(
+            recall_confidence(FusedResult(hits, pool), self.CAL), calibrated_confidence(0.7, pool, self.CAL)
+        )
+
+    def test_the_hash_stub_gets_no_calibration(self):
+        self.assertIsNone(get_calibration(HashEmbedding(dim=64)))
+        self.assertEqual(get_calibration(_SemanticStandIn(dim=64)), SEMANTIC_CALIBRATION)
+
+    def test_calibration_follows_the_declared_capability_not_the_type(self):
+        from core.adapters.fastembed_gw import FastEmbedGateway  # class only — fastembed loads lazily
+
+        self.assertTrue(FastEmbedGateway.semantic)
+        self.assertFalse(HashEmbedding.semantic)
+        lexical = _SemanticStandIn(dim=64)
+        lexical.semantic = False  # any gateway that declares itself lexical gets no calibration
+        self.assertIsNone(get_calibration(lexical))
+
+    def test_a_tiny_store_can_never_be_ok(self):
+        # One outlier among n values sits at most sqrt(n-1) population σ above the mean.
+        sims = [0.9] + [0.1] * 12  # n = 13 → z = sqrt(12) ≈ 3.46, short of the ~4.5 `ok` needs
+        pool = pool_stats(sims)
+        self.assertAlmostEqual(pool_z(0.9, pool), 12**0.5)
+        confidence = calibrated_confidence(0.9, pool, SEMANTIC_CALIBRATION)
+        self.assertFalse(is_trusted(confidence, get_config().recall_min_confidence))
+
+    def test_is_trusted(self):
+        self.assertTrue(is_trusted(0.6, 0.6))
+        self.assertFalse(is_trusted(0.59, 0.6))
+        self.assertFalse(is_trusted(None, 0.0))  # unjudged is never ok, whatever the threshold
 
 
 class PoolStatsTests(unittest.TestCase):
@@ -80,10 +142,6 @@ class LexicalTests(unittest.TestCase):
     def test_stopwords_and_short_tokens_dropped(self):
         self.assertNotIn("the", tokenize("the deployment is on it"))
         self.assertIn("deployment", tokenize("the deployment is on it"))
-
-    def test_overlap_detects_shared_content_token(self):
-        self.assertTrue(has_overlap("how does deployment work", "deployment runs on github actions"))
-        self.assertFalse(has_overlap("database schema", "frontend styling tokens"))
 
 
 class RecallStructuredTests(unittest.TestCase):
@@ -298,21 +356,36 @@ class RecallStructuredTests(unittest.TestCase):
         self.assertEqual(result["facts"], [])
         self.assertIn("configuration problem", result["guidance"])
 
-    def test_relevant_recall_is_ok(self):
-        service.add_facts(
-            self.store,
-            self.embedder,
-            self.cfg,
-            self.project,
-            "s1",
-            ["The deployment pipeline runs on github actions with a manual approval gate."],
-        )
+    def _standout_store(self, embedder) -> None:
+        # A realistic pool: `ok` needs the best match ~4.5 pool σ clear, and a lone outlier among n
+        # values can't exceed sqrt(n-1) σ, so a store under ~22 facts can never be `ok`.
+        facts = ["The deployment pipeline runs on github actions with a manual approval gate."]
+        topics = ["tailwind", "sqlite", "email", "viewer", "logging", "fonts", "billing", "search"]
+        facts += [f"unrelated note {i} about {topic} colours" for i, topic in enumerate(topics * 20)]
+        service.add_facts(self.store, embedder, self.cfg, self.project, "s1", facts)
+
+    def test_a_standout_match_is_ok_on_a_semantic_backend(self):
+        embedder = _SemanticStandIn(dim=self.cfg.dim)
+        self._standout_store(embedder)
         result = service.recall_structured(
-            self.store, self.embedder, self.cfg, self.project, "how does the deployment pipeline work"
+            self.store, embedder, self.cfg, self.project, "deployment pipeline github actions approval gate"
         )
         self.assertEqual(result["verdict"], "ok")
         self.assertGreaterEqual(result["confidence"], self.cfg.recall_min_confidence)
         self.assertTrue(any("github actions" in f["text"] for f in result["facts"]))
+
+    def test_the_hash_backend_is_never_ok_and_says_why(self):
+        self._standout_store(self.embedder)
+        result = service.recall_structured(
+            self.store, self.embedder, self.cfg, self.project, "deployment pipeline github actions approval gate"
+        )
+        self.assertTrue(result["facts"])  # facts still come back — as hints
+        self.assertEqual((result["verdict"], result["confidence"]), ("low_confidence", None))
+        self.assertIn("hash", result["guidance"])
+        logged = self.store.db.execute(
+            "SELECT confidence, verdict FROM recall_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(tuple(logged), (None, "low_confidence"))
 
     def test_confidence_judges_best_match_not_fused_first(self):
         # Fusion's recency/frequency channels can rank a newer, weaker fact above an older,
@@ -329,11 +402,11 @@ class RecallStructuredTests(unittest.TestCase):
         old_strong, new_weak = sorted(self.store.rows_for_project(self.project["key"]), key=lambda r: r["text"])
         fused = FusedResult([(0.9, 0.698, new_weak), (0.8, 0.760, old_strong)], pool_stats([0.698, 0.760]))
         query = "github actions approval gate"
+        semantic = _SemanticStandIn(dim=self.cfg.dim)
         with mock.patch.object(service, "search_fused_with_stats", return_value=fused):
-            result = service.recall_structured(self.store, self.embedder, self.cfg, self.project, query)
+            result = service.recall_structured(self.store, semantic, self.cfg, self.project, query)
 
-        expected = compute_confidence([0.760, 0.698], has_identity_match=has_overlap(query, old_strong["text"]))
-        self.assertEqual(result["confidence"], expected["confidence"])
+        self.assertEqual(result["confidence"], calibrated_confidence(0.760, fused.pool, SEMANTIC_CALIBRATION))
         self.assertEqual([f["id"] for f in result["facts"]], [new_weak["id"], old_strong["id"]])
         top_sim = self.store.db.execute("SELECT top_sim FROM recall_events ORDER BY id DESC LIMIT 1").fetchone()[0]
         self.assertAlmostEqual(top_sim, 0.760)

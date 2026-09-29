@@ -32,7 +32,16 @@ from core.ports.embedding import EmbeddingGateway
 from core.ports.scorer import VectorScorer, get_scorer
 from core.ports.workqueue import WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
-from core.recall import best_match, recall_confidence, render_block, render_scaffold, search, search_fused_with_stats
+from core.recall import (
+    best_match,
+    get_calibration,
+    is_trusted,
+    recall_confidence,
+    render_block,
+    render_scaffold,
+    search,
+    search_fused_with_stats,
+)
 from core.store import Store
 from core.transcript import TranscriptDelta, extract_incremental_parts, extract_text
 
@@ -917,6 +926,11 @@ def orientation_block(store: Store, project: Project, max_chars: int = 900) -> s
     return block[:max_chars]
 
 
+# The `hash` Special Case: hits, but no calibrated score to judge them by — never `ok`.
+_UNJUDGED_GUIDANCE = (
+    "Unscored recall — the lexical `hash` embedder can't judge relevance (set `embedding=fastembed`), "
+    "so treat these as hints only; widen to Grep/Glob if they don't answer the question."
+)
 _GUIDANCE = {
     "ok": "Strong recall — trust these facts; a broad code search is likely unnecessary.",
     "low_confidence": "Weak recall — treat these as hints only; widen to Grep/Glob if they don't answer the question.",
@@ -992,9 +1006,9 @@ def recall_structured(
     """Recall as a structured, confidence-gated result for on-demand callers.
 
     Unlike ``recall_prompt_block`` (which renders an injection string), this returns
-    a JSON-friendly dict carrying a calibrated ``confidence`` and a ``verdict``
-    (ok / low_confidence / no_memory) so the caller can decide whether to trust
-    memory or fall back to a wider, more expensive search. Ranking is rank-fusion
+    a JSON-friendly dict carrying a ``confidence`` score (0-1, ranked — ``None`` when the embedder
+    can't judge) and a ``verdict`` (ok / low_confidence / no_memory / embedding_mismatch) so the
+    caller can decide whether to trust memory or fall back to a wider, more expensive search. Ranking is rank-fusion
     (``search_fused_with_stats``) and decides the order facts are returned in;
     ``recall_confidence`` judges the best-*matching* hit, which fusion's recency/frequency
     channels can demote below a newer, weaker one.
@@ -1008,14 +1022,14 @@ def recall_structured(
     fused = search_fused_with_stats(store, embedder, project, query, cfg, k=k)
     hits = fused.hits
     best = best_match(hits)
-    confidence = recall_confidence(query, fused)["confidence"]
+    confidence = recall_confidence(fused, get_calibration(embedder))
 
     if not hits:
         verdict = "embedding_mismatch" if _embedding_mismatch(store, embedder, project["key"]) else "no_memory"
-    elif confidence < cfg.recall_min_confidence:
-        verdict = "low_confidence"
-    else:
+    elif is_trusted(confidence, cfg.recall_min_confidence):
         verdict = "ok"
+    else:
+        verdict = "low_confidence"
 
     facts, dropped, recalled_ids = _pack_facts(hits, max_chars)
     result = {
@@ -1023,7 +1037,7 @@ def recall_structured(
         "project": project["label"],
         "verdict": verdict,
         "confidence": confidence,
-        "guidance": _GUIDANCE[verdict],
+        "guidance": _UNJUDGED_GUIDANCE if hits and confidence is None else _GUIDANCE[verdict],
         "facts": facts,
         "returned": len(facts),
         "matched": len(hits),

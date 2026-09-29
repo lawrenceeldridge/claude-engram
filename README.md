@@ -157,7 +157,7 @@ index on demand (these are what the memory-first guard steers toward):
 
 | Tool | Returns |
 |---|---|
-| `recall` | Distilled facts for the current project with a calibrated verdict (`ok` / `low_confidence` / `no_memory`); a fact captured with its conversation carries its `episode`. |
+| `recall` | Distilled facts for the current project with a confidence score and verdict (`ok` / `low_confidence` / `no_memory`); a fact captured with its conversation carries its `episode`. |
 | `search_code` | Ranked code-symbol outlines (qualname + signature + anchor + freshness). |
 | `get_symbol` | One symbol's full source by anchor, with a symbol-precise freshness check. |
 | `code_outline` | Whole-file / project symbol outline. |
@@ -319,7 +319,7 @@ or `ENGRAM_*` env vars for standalone use:
 | `ttl_days` | `0` | archive facts unseen this long on capture (0 disables hard expiry) |
 | `ttl_keep_frequency` | `3` | facts reinforced this often are never expired |
 | `ingest_min_prompt_len` | `12` | drop trivial verbatim prompts below this length (bare confirmations, "Option C", pasted slash-commands) so LTM keeps real cues; 0 disables |
-| `recall_min_confidence` | `0.35` | confidence the `recall` tool needs to report verdict `ok` |
+| `recall_min_confidence` | `0.40` | confidence score the `recall` tool needs to report verdict `ok` (ranked, not a probability; `hash` never reaches it) |
 | `recall_max_chars` | `1200` | character budget for facts returned by the `recall` tool |
 | `viewer_autostart` | `true` | start the localhost viewer detached at session start |
 | `viewer_port` | `7801` | port for the always-on memory/index viewer |

@@ -24,13 +24,13 @@ from bench.stats import (  # noqa: E402
     ece,
     mcnemar_exact,
     ndcg_at_k,
-    platt_apply,
     platt_fit,
     recall_all_at_k,
     recall_any_at_k,
     reliability_bins,
     wilson,
 )
+from core.domain.confidence import Calibration, calibrate  # noqa: E402
 
 
 class McNemarTests(unittest.TestCase):
@@ -173,13 +173,14 @@ class PlattTests(unittest.TestCase):
     def test_separable_sample_stays_finite_and_monotone(self):
         params = platt_fit([0.1, 0.2, 0.8, 0.9], [False, False, True, True])
         self.assertTrue(all(math.isfinite(v) for v in params))
-        probs = [platt_apply(s, params) for s in (0.1, 0.5, 0.9)]
+        probs = [calibrate(s, Calibration(*params)) for s in (0.1, 0.5, 0.9)]
         self.assertEqual(probs, sorted(probs))
         self.assertLess(probs[0], 0.5)
         self.assertGreater(probs[2], 0.5)
 
-    def test_no_recall_maps_to_zero(self):
-        self.assertEqual(platt_apply(float("-inf"), (5.0, -1.0)), 0.0)
+    def test_the_fit_is_what_the_shipped_calibration_applies(self):
+        a, b = platt_fit([-1.0, -1.0, 1.0, 1.0], [False, False, True, True])
+        self.assertAlmostEqual(calibrate(1.0, Calibration(a, b)), 0.75, places=6)  # the smoothed target
 
 
 class RetrievalMetricTests(unittest.TestCase):

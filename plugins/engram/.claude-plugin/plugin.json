@@ -193,8 +193,8 @@
     "recall_min_confidence": {
       "type": "number",
       "title": "Recall confidence gate",
-      "description": "The `recall` MCP tool returns verdict=ok only when calibrated confidence reaches this; below it the verdict is low_confidence (treat facts as hints, widen the search). Higher = stricter.",
-      "default": 0.35,
+      "description": "The `recall` MCP tool returns verdict=ok only when its confidence score reaches this; below it the verdict is low_confidence (treat facts as hints, widen the search). The score is ranked, not a probability (fitted on a 20k-fact store). Higher = stricter. The hash embedder never reaches ok.",
+      "default": 0.40,
       "min": 0,
       "max": 1
     },

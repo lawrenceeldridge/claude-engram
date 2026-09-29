@@ -12,18 +12,20 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from bench.age_eval import (  # noqa: E402
     DAY,
-    FUSED_VARIANTS,
-    HOOK_VARIANTS,
     NEW_DAYS,
     OLD_DAYS,
     evaluate_aged,
+    fused_variants,
+    hook_variants,
     split_by_age,
     stamp_ages,
 )
@@ -102,17 +104,28 @@ class RankerAndEvalTests(unittest.TestCase):
         }
         result = evaluate_aged("hash", data, self.cfg, distractors=[])
         self.assertEqual(fusion.DEFAULT_WEIGHTS, before)  # the scoped override never leaks
-        self.assertEqual(len(result["rows"]), len(HOOK_VARIANTS) + len(FUSED_VARIANTS))
+        hook, fused = hook_variants(self.cfg), fused_variants()
+        self.assertEqual(len(result["rows"]), len(hook) + len(fused))
         self.assertEqual(result["old_n"] + result["new_n"], 2)
         shipped = [r for r in result["rows"] if r["new dR@3 vs shipped"] == "—"]
         blind = [r for r in result["rows"] if r["old dR@3 vs age-blind"] == "—"]
-        self.assertEqual([r["variant"] for r in shipped], [HOOK_VARIANTS[0][0], FUSED_VARIANTS[0][0]])
-        self.assertEqual([r["variant"] for r in blind], [HOOK_VARIANTS[-1][0], FUSED_VARIANTS[-1][0]])
+        self.assertEqual([r["variant"] for r in shipped], [hook[0][0], fused[0][0]])
+        self.assertEqual([r["variant"] for r in blind], [hook[-1][0], fused[-1][0]])
 
     def test_age_blind_variants_switch_recency_off(self):
-        self.assertEqual(HOOK_VARIANTS[-1][1], {"w_recency": 0.0})
-        self.assertEqual(FUSED_VARIANTS[-1][1], {"recency": 0.0})
-        self.assertEqual((HOOK_VARIANTS[0][1], FUSED_VARIANTS[0][1]), ({}, {}))  # shipped = no overrides
+        hook, fused = hook_variants(self.cfg), fused_variants()
+        self.assertEqual(hook[-1][1], {"w_recency": 0.0})
+        self.assertEqual(fused[-1][1], {"recency": 0.0})
+        self.assertEqual((hook[0][1], fused[0][1]), ({}, {}))  # shipped = no overrides
+
+    def test_shipped_label_follows_the_live_defaults_and_no_row_repeats_it(self):
+        hook = hook_variants(replace(self.cfg, w_recency=0.05, half_life_days=30.0))
+        self.assertEqual(hook[0][0], "shipped (w_recency 0.05, half-life 30d)")
+        self.assertNotIn({"w_recency": 0.05}, [o for _label, o in hook])  # equal to shipped → dropped
+        self.assertIn(("w_recency 0.3", {"w_recency": 0.3}), hook)  # the previous default stays comparable
+        with mock.patch.dict(fusion.DEFAULT_WEIGHTS, {"recency": 0.2}):
+            fused = fused_variants()
+        self.assertEqual([label for label, _o in fused], ["shipped (recency 0.2)", "age-blind (recency 0)"])
 
     def test_plus_float_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -127,6 +140,11 @@ class LoadDistractorsTests(unittest.TestCase):
     def test_padding_without_a_source_project_is_refused(self):
         args = argparse.Namespace(distractors=10, distractor_project=None, distractor_db=None)
         self.assertIsNone(load_distractors(args, get_config(), exclude=[]))
+
+    def test_a_missing_source_db_is_refused_not_a_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(distractors=10, distractor_project="p", distractor_db=str(Path(tmp) / "none.db"))
+            self.assertIsNone(load_distractors(args, get_config(), exclude=[]))
 
 
 if __name__ == "__main__":

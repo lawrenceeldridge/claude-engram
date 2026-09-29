@@ -14,9 +14,9 @@ import time
 from dataclasses import dataclass
 
 from core.config import Config
-from core.domain.confidence import PoolStats, compute_confidence, pool_stats
+from core.domain.confidence import Calibration, PoolStats, calibrated_confidence, pool_stats
 from core.domain.fusion import Channel, fuse
-from core.domain.lexical import has_overlap, token_set
+from core.domain.lexical import token_set
 from core.domain.scoring import frequency_boost, priority, recency_decay
 from core.domain.spreading import spread
 from core.ports.embedding import EmbeddingGateway
@@ -202,15 +202,43 @@ def best_match(hits: list[FusedHit]) -> FusedHit | None:
     return max(hits, key=lambda hit: hit[1]) if hits else None
 
 
-def recall_confidence(query: str, result: FusedResult) -> dict:
-    """The recall tool's confidence for a fused result (``compute_confidence`` output).
+# Platt fit of ``pool_z`` for semantic embedders at realistic density — the full-sample fit of
+# `engram eval --backends fastembed --confidence --distractors 20000 --distractor-project <a large
+# off-topic project>` (the `platt (a, b)` column, bge-base, 333 labelled queries, 2026-09-29).
+# Fitted where real stores live (tens of thousands of facts): on a small store the same score reads
+# lower, so `ok` is rarer there but more often right. See ``core.domain.confidence``.
+SEMANTIC_CALIBRATION = Calibration(a=0.6341, b=-3.2706)
 
-    The single composition of the confidence inputs — shared by ``recall_structured`` and
-    the calibration benchmark, so what is measured is exactly what ships.
+
+def get_calibration(embedder: EmbeddingGateway) -> Calibration | None:
+    """Plugin selection of the confidence calibration for the embedder actually in use.
+
+    ``None`` for a gateway whose vectors aren't ``semantic`` (the lexical ``hash`` stub) — the
+    honest Special Case: its best confidence signal is near chance, so it reports no score and
+    never an ``ok`` verdict. Keyed on the gateway's declared capability, not on ``cfg.embedding``
+    (``get_embedder`` falls back to the stub when fastembed can't load) nor on a concrete type.
+    """
+    return SEMANTIC_CALIBRATION if embedder.semantic else None
+
+
+def recall_confidence(result: FusedResult, calibration: Calibration | None) -> float | None:
+    """The recall tool's confidence for a fused result: 0 when nothing came back, ``None`` when
+    the backend can't judge, else the best match's calibrated ``pool_z``.
+
+    The single composition of the confidence inputs — shared by ``recall_structured`` and the
+    calibration benchmark, so what is measured is exactly what ships.
     """
     best = best_match(result.hits)
-    identity = has_overlap(query, best[2]["text"]) if best else None
-    return compute_confidence([sim for _score, sim, _row in result.hits], has_identity_match=identity)
+    if best is None:
+        return 0.0
+    if calibration is None:
+        return None
+    return calibrated_confidence(best[1], result.pool, calibration)
+
+
+def is_trusted(confidence: float | None, min_confidence: float) -> bool:
+    """The ``ok`` rule: a judged confidence at or above the configured threshold."""
+    return confidence is not None and confidence >= min_confidence
 
 
 def render_block(header: str, hits: list[Hit], max_chars: int) -> tuple[str, list[str]]:

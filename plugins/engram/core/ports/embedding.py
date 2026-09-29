@@ -20,6 +20,9 @@ _TOKEN = re.compile(r"[a-z0-9]+")
 
 class EmbeddingGateway(ABC):
     dim: int
+    # Whether cosine over this gateway's vectors measures meaning (a real embedding model) rather
+    # than token overlap. Recall confidence is calibrated only for semantic vectors.
+    semantic: bool = True
 
     @abstractmethod
     def embed(self, texts: list[str]) -> list[list[float]]: ...
@@ -35,6 +38,8 @@ class EmbeddingGateway(ABC):
 
 class HashEmbedding(EmbeddingGateway):
     """Deterministic, dependency-free feature-hashing stub (lexical, not semantic)."""
+
+    semantic = False
 
     def __init__(self, dim: int = 256, hashes: int = 2) -> None:
         self.dim = dim

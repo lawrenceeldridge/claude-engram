@@ -9,7 +9,7 @@ formats the result.
 
 The point is the *pull* path: passive hooks push memory at the model; this lets
 the model deliberately consult memory before an expensive Grep/Glob/Task search,
-and read a calibrated confidence + verdict to decide whether to trust it.
+and read a confidence score + verdict to decide whether to trust it.
 
 Mostly read (recall / search / outline). The one write tier is **curation**:
 ``invalidate_memory`` retires a stale fact the model has spotted (e.g. a now-false
@@ -50,8 +50,8 @@ TOOLS = [
         "description": (
             "Search this project's long-term memory for distilled facts relevant to a query. "
             "Call this BEFORE a broad Grep/Glob/Task code search: it is a cheap vector lookup "
-            "over a compact store, not a file scan. Returns facts plus a calibrated `confidence` "
-            "(0-1) and a `verdict`: `ok` (trust the facts, skip the wider search), "
+            "over a compact store, not a file scan. Returns facts plus a `confidence` score "
+            "(0-1, ranked; null when the embedder can't judge) and a `verdict`: `ok` (trust the facts, skip the wider search), "
             "`low_confidence` (hints only — widen if they don't answer), or `no_memory` "
             "(nothing stored — do not assume prior context)."
         ),

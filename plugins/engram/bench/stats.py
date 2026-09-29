@@ -12,6 +12,8 @@ import math
 import random
 from collections.abc import Callable, Sequence
 
+from core.domain.confidence import sigmoid
+
 
 def wilson(k: float, n: int, z: float = 1.96) -> tuple[float, float]:
     """Wilson score 95% interval for a proportion ``k/n``. Honest at small n and near 0/1.
@@ -127,18 +129,12 @@ def ece(probs: Sequence[float], labels: Sequence[bool], bins: int = 10) -> float
     return sum(r["n"] * abs(r["mean_p"] - r["rate"]) for r in reliability_bins(probs, labels, bins)) / len(probs)
 
 
-def _sigmoid(z: float) -> float:
-    if z >= 0:
-        return 1.0 / (1.0 + math.exp(-z))
-    e = math.exp(z)
-    return e / (1.0 + e)
-
-
 def platt_fit(scores: Sequence[float], labels: Sequence[bool], iters: int = 100) -> tuple[float, float]:
     """Fit ``P(y=1 | s) = sigmoid(a*s + b)`` by Newton's method (Platt scaling).
 
     Uses Platt's smoothed targets ``(N+ + 1)/(N+ + 2)`` and ``1/(N- + 2)`` so a separable
-    sample doesn't drive the slope to infinity. Returns ``(a, b)`` on the raw score scale.
+    sample doesn't drive the slope to infinity. Returns ``(a, b)`` on the raw score scale — the
+    fit a shipped ``core.domain.confidence.Calibration`` takes; ``calibrate`` applies it.
     """
     pos = sum(1 for y in labels if y)
     neg = len(labels) - pos
@@ -148,7 +144,7 @@ def platt_fit(scores: Sequence[float], labels: Sequence[bool], iters: int = 100)
     for _ in range(iters):
         g_a = g_b = h_aa = h_ab = h_bb = 0.0
         for s, t in zip(scores, targets):
-            p = _sigmoid(a * s + b)
+            p = sigmoid(a * s + b)
             w = max(p * (1 - p), 1e-12)
             g_a += (p - t) * s
             g_b += p - t
@@ -164,14 +160,6 @@ def platt_fit(scores: Sequence[float], labels: Sequence[bool], iters: int = 100)
         if abs(step_a) < 1e-10 and abs(step_b) < 1e-10:
             break
     return a, b
-
-
-def platt_apply(score: float, params: tuple[float, float]) -> float:
-    """Calibrated probability for one raw score (``-inf`` — no recall at all — maps to 0)."""
-    if score == float("-inf"):
-        return 0.0
-    a, b = params
-    return _sigmoid(a * score + b)
 
 
 def recall_any_at_k(ranked: Sequence[str], gold: set[str], k: int) -> bool:

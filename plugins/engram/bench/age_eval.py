@@ -42,21 +42,37 @@ DAY = 86400.0
 OLD_DAYS = (90.0, 240.0)
 NEW_DAYS = (0.0, 14.0)
 
-# (label, overrides): Config fields for the hook path, fusion channel weights for the recall tool.
-# The first entry is the shipped configuration; the last is age-blind (recency off).
-HOOK_VARIANTS: list[tuple[str, dict]] = [
-    ("shipped (w_recency 0.3, half-life 30d)", {}),
+Variant = tuple[str, dict]  # (label, overrides): Config fields (hook) or fusion channel weights (recall tool)
+
+# Alternatives to the shipped weights. The shipped row is built from the live values, so its label
+# can't go stale when a default changes, and an alternative equal to the shipped value is dropped.
+_HOOK_ALTERNATIVES: list[Variant] = [
     ("half-life 180d", {"half_life_days": 180.0}),
+    ("w_recency 0.3", {"w_recency": 0.3}),
     ("w_recency 0.1", {"w_recency": 0.1}),
     ("w_recency 0.05", {"w_recency": 0.05}),
     ("w_recency 0.02", {"w_recency": 0.02}),
-    ("age-blind (w_recency 0)", {"w_recency": 0.0}),
 ]
-FUSED_VARIANTS: list[tuple[str, dict]] = [
-    ("shipped (recency 0.4)", {}),
-    ("recency 0.2", {"recency": 0.2}),
-    ("age-blind (recency 0)", {"recency": 0.0}),
-]
+_FUSED_ALTERNATIVES: list[Variant] = [("recency 0.2", {"recency": 0.2})]
+
+
+def _variants(label: str, shipped: dict, alternatives: list[Variant], blind: Variant) -> list[Variant]:
+    """Shipped first (no overrides), then the alternatives that differ from it, then age-blind last."""
+    differing = [(name, o) for name, o in alternatives if any(shipped[key] != value for key, value in o.items())]
+    return [(label, {}), *differing, blind]
+
+
+def hook_variants(cfg) -> list[Variant]:
+    shipped = {"w_recency": cfg.w_recency, "half_life_days": cfg.half_life_days}
+    label = f"shipped (w_recency {cfg.w_recency:g}, half-life {cfg.half_life_days:g}d)"
+    return _variants(label, shipped, _HOOK_ALTERNATIVES, ("age-blind (w_recency 0)", {"w_recency": 0.0}))
+
+
+def fused_variants() -> list[Variant]:
+    recency = fusion.DEFAULT_WEIGHTS["recency"]
+    label = f"shipped (recency {recency:g})"
+    return _variants(label, {"recency": recency}, _FUSED_ALTERNATIVES, ("age-blind (recency 0)", {"recency": 0.0}))
+
 
 AGED_COLS = [
     "path",
@@ -107,7 +123,7 @@ def _paired_delta(base: list[bool], other: list[bool]) -> str:
 
 def _measure(
     path: str,
-    variants: list[tuple[str, dict]],
+    variants: list[Variant],
     rank_for: Callable[[dict], RankFn],
     patch_fusion: bool,
     facts: list[str],
@@ -158,7 +174,7 @@ def evaluate_aged(spec: str, data: dict, cfg, distractors: list[tuple[str, float
         try:
             rows = _measure(
                 "hook (search)",
-                HOOK_VARIANTS,
+                hook_variants(cfg),
                 lambda o: search_ranker(store, embedder, project, replace(cfg, **o)),
                 False,
                 facts,
@@ -167,7 +183,7 @@ def evaluate_aged(spec: str, data: dict, cfg, distractors: list[tuple[str, float
             )
             rows += _measure(
                 "recall tool (search_fused)",
-                FUSED_VARIANTS,
+                fused_variants(),
                 lambda _o: fused_ranker(store, embedder, project, cfg),
                 True,
                 facts,

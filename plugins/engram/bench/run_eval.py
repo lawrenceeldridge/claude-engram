@@ -313,7 +313,7 @@ def main(args: argparse.Namespace) -> int:
         if distractors is None:
             return 1
         if args.confidence:
-            run_confidence(data, cfg, backends, distractors, args.ok_precision)
+            run_confidence(data, cfg, backends, distractors, args.ok_precision, args.confidence_out)
         if args.aged:
             run_aged(data, cfg, backends, distractors)
     if args.longmemeval:

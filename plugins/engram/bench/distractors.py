@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from pathlib import Path
 
 from bench.mine_corpus import contamination_hit
 from bench.snapshot import snapshot_db
@@ -75,6 +76,9 @@ def load_distractors(args: argparse.Namespace, cfg, exclude: list[str]) -> list[
         print("[distractors] --distractors needs --distractor-project (a project key or label)")
         return None
     source = args.distractor_db or cfg.db_path
+    if not Path(source).is_file():
+        print(f"[distractors] no engram DB at {source} (pass --distractor-db)")
+        return None
     with snapshot_db(source) as snapshot:
         store = Store(snapshot)
         try:

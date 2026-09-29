@@ -1,6 +1,6 @@
 ---
 name: memory-recall
-description: Consult the project's long-term memory AND its code/docs index before an expensive search or when resuming work. Fetches distilled facts via the engram-memory `recall` tool (calibrated confidence verdict) and ranked symbol/section outlines via `search_code` / `search_docs`, then applies a memory-first stop rule — trust strong recall/search and skip the wider Grep/Glob/Task, widen only when they are weak or empty. Use when starting or resuming a task, when the user asks "what do we know / what did we decide / where is X / how does Y work / did we already do this", before a broad Grep/Glob/Task sweep of unfamiliar code or docs, or when a search keeps missing. Do NOT use for trivial single-file lookups you can answer directly.
+description: Consult the project's long-term memory AND its code/docs index before an expensive search or when resuming work. Fetches distilled facts via the engram-memory `recall` tool (confidence verdict) and ranked symbol/section outlines via `search_code` / `search_docs`, then applies a memory-first stop rule — trust strong recall/search and skip the wider Grep/Glob/Task, widen only when they are weak or empty. Use when starting or resuming a task, when the user asks "what do we know / what did we decide / where is X / how does Y work / did we already do this", before a broad Grep/Glob/Task sweep of unfamiliar code or docs, or when a search keeps missing. Do NOT use for trivial single-file lookups you can answer directly.
 license: MIT
 metadata:
   author: Lawrence Eldridge
@@ -28,8 +28,9 @@ labels.
 recall(query="how is auth handled between the two zones")
 ```
 
-The result is JSON: `facts` (highest-scoring first), a `confidence` (0–1), a
-`verdict`, and a one-line `guidance`.
+The result is JSON: `facts` (highest-scoring first), a `confidence` score (0–1 —
+higher means the facts more likely hold the answer; a ranked score, not a probability;
+`null` on the `hash` embedder, which can't judge), a `verdict`, and a one-line `guidance`.
 
 ### Step 2: Follow the verdict — the stop rule
 
@@ -107,4 +108,4 @@ none) — or you're querying the wrong project. Run `list_projects` to check
 labels and fact counts, and pass the right `project`.
 
 **Recall confidence feels too strict or too loose.** The `ok` threshold is the
-`recall_min_confidence` plugin option (default 0.35). It is not a per-call knob.
+`recall_min_confidence` plugin option (default 0.40). It is not a per-call knob.

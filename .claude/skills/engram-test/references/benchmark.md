@@ -110,14 +110,16 @@ Measures whether the `recall` tool's `ok` verdict means "the returned facts cont
 answer" (`bench/confidence_eval.py`). Answerable `queries` + `confidence_scenario.unanswerable`
 run through the production on-demand path (`search_fused_with_stats` at `activated_k`); a
 query is positive only if a gold fact is **returned**. Per candidate score (`current` is
-production's `recall_confidence`; the others are alternatives under evaluation) it reports:
+production's `recall_confidence` under the backend's `get_calibration` — the calibrated `pool_z`,
+or never-`ok` for the `hash` stub; `top1` / `pool_z` / `topk_z` are the raw signals) it reports:
 
 | Output | Meaning |
 |---|---|
 | AUROC [CI], ΔAUROC vs current [paired CI] | discrimination — rank-based, invariant to rescaling |
 | Brier, ECE | calibration of 2-fold cross-fitted Platt probabilities |
-| ok precision / recall at p ≥ `--ok-precision` | the gate as a calibrated score would ship (default 0.90) |
-| shipped gate | `current ≥ recall_min_confidence` — the verdict as it ships today |
+| ok precision / recall at p ≥ `--ok-precision` | the gate at a cross-fitted Platt probability (default 0.90) |
+| platt (a, b) | the full-sample Platt fit — where a shipped `Calibration`'s constants come from |
+| shipped gate | production's `is_trusted(current, recall_min_confidence)` — the verdict as it ships |
 
 Density matters (the failure mode is many near-neighbours), so `--distractors N
 --distractor-project <key|label>` pads the store with facts mined **at runtime** from a

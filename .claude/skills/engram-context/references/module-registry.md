@@ -39,7 +39,7 @@ core to Claude Code.
 | `service.py` | Capture Command/Handler — `add_facts`, consolidation, `_find_superseded`; idempotent per fact. |
 | `recall.py` | Read side — Query Object `search`, hybrid re-rank, `render_block` DTO (Null Object on empty). |
 | `scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`. |
-| `domain/confidence.py` | Pure score behind the `recall` verdict (`ok` / `low_confidence`): gap × strength × identity over cosine sims (order-independent). |
+| `domain/confidence.py` | Pure score behind the `recall` verdict: `pool_stats` / `pool_z` (the best match against every fact scanned), `Calibration` VO + `calibrate` / `calibrated_confidence` (Platt), `sigmoid` (the one logistic — bench `platt_fit` uses it). A ranked score, not a probability; `core.recall.get_calibration` selects the calibration (`None` for the `hash` stub). |
 | `distill.py` | Distiller Strategy — heuristic (default) + Claude-CLI + HTTP/Ollama; atomic facts + `supersedes` links; heuristic fallback. |
 | `transcript.py` | Parse Claude Code transcripts into capturable text. |
 
@@ -51,7 +51,7 @@ core to Claude Code.
 | `adapters/__init__.py` | Adapter package init. |
 | `domain/episodes.py` | Pure episodic pipeline: `exchange_units` (user turn + the assistant turns answering it, verbatim, ~800-char split), `should_keep_exchange` (length gate), `prepare_exchanges` (redact → gate; shared by capture and the LongMemEval bench), `episode_key` (the `<session>:<delta start>` key shared by a delta's exchanges and the `facts.episode` provenance link). |
 | `domain/privacy.py` | Pure `redact` (credentials, emails, non-project paths → `«redacted»`) for verbatim storage, and `privacy_flags` (the bench's human-gate detector). |
-| `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`, `has_overlap`) for the confidence identity cue and the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
+| `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`) for the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
 | `quantize.py` | int8 (primary search rep) + binary sign-bit quantisation. |
 | `provision.py` | Self-provisions the private fastembed venv (no manual pip). |
 | `daemon_client.py` | Thin client to the resident daemon; falls back in-process (fail-open). |

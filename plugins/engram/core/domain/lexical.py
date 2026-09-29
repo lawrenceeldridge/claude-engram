@@ -1,7 +1,6 @@
 """Lexical primitives (Functional Core — pure).
 
-Shared tokenisation used by the confidence identity signal and (from 0.5.0) the
-lexical channel of rank fusion. Deliberately tiny and dependency-free: lower-case
+Shared tokenisation for the lexical channel of rank fusion. Deliberately tiny and dependency-free: lower-case
 alphanumeric tokens, common stop-words dropped, single/double-char noise removed.
 """
 
@@ -25,8 +24,3 @@ def tokenize(text: str) -> list[str]:
 
 def token_set(text: str) -> set[str]:
     return set(tokenize(text))
-
-
-def has_overlap(query: str, text: str) -> bool:
-    """True when the query and text share at least one content token (identity cue)."""
-    return bool(token_set(query) & token_set(text))

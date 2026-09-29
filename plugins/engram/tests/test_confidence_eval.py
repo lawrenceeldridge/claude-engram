@@ -8,6 +8,8 @@ leak benchmark labels or private text, and the live store is only ever read via 
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import sqlite3
 import sys
@@ -28,6 +30,7 @@ from bench.confidence_eval import (  # noqa: E402
     gate,
     observe,
     summarise,
+    write_observations,
 )
 from bench.distractors import find_project, mine_distractors  # noqa: E402
 from bench.replay_ledger import replay  # noqa: E402
@@ -37,7 +40,7 @@ from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.domain.confidence import PoolStats  # noqa: E402
 from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.recall import FusedResult, recall_confidence  # noqa: E402
+from core.recall import SEMANTIC_CALIBRATION, FusedResult, recall_confidence  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
@@ -54,25 +57,47 @@ class CandidateTests(unittest.TestCase):
         self.result = FusedResult(hits, PoolStats(n=100, mean=0.60, std=0.05))
 
     def test_current_is_production_recall_confidence(self):
-        query = "github actions deployment"
         self.assertEqual(
-            candidate_scores(query, self.result)["current"], recall_confidence(query, self.result)["confidence"]
+            candidate_scores(self.result, SEMANTIC_CALIBRATION)["current"],
+            recall_confidence(self.result, SEMANTIC_CALIBRATION),
         )
 
+    def test_an_unjudged_backend_scores_current_as_never_ok(self):
+        self.assertEqual(candidate_scores(self.result, None)["current"], NO_RECALL)
+
     def test_pool_candidates_judge_the_best_match(self):
-        scores = candidate_scores("anything", self.result)
+        scores = candidate_scores(self.result, SEMANTIC_CALIBRATION)
         self.assertAlmostEqual(scores["top1"], 0.80)
         self.assertAlmostEqual(scores["pool_z"], (0.80 - 0.60) / 0.05)
         self.assertAlmostEqual(scores["topk_z"], (0.75 - 0.60) / 0.05)
 
     def test_zero_spread_pool_scores_zero_not_divide(self):
         flat = FusedResult(self.result.hits, PoolStats(n=2, mean=0.75, std=0.0))
-        self.assertEqual(candidate_scores("q", flat)["pool_z"], 0.0)
+        self.assertEqual(candidate_scores(flat, SEMANTIC_CALIBRATION)["pool_z"], 0.0)
 
     def test_empty_recall_is_no_recall_for_every_candidate(self):
         self.assertEqual(
-            candidate_scores("q", FusedResult([], PoolStats(0, 0.0, 0.0))), dict.fromkeys(CANDIDATES, NO_RECALL)
+            candidate_scores(FusedResult([], PoolStats(0, 0.0, 0.0)), SEMANTIC_CALIBRATION),
+            dict.fromkeys(CANDIDATES, NO_RECALL),
         )
+
+
+class ObservationRecordTests(unittest.TestCase):
+    def test_records_round_trip_with_no_recall_as_null(self):
+        observations = [
+            {"q": "a", "label": True, "confidence": 0.62, "scores": dict.fromkeys(CANDIDATES, 1.5)},
+            {"q": "b", "label": False, "confidence": None, "scores": dict.fromkeys(CANDIDATES, NO_RECALL)},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "obs.jsonl"
+            write_observations(out, "fastembed", 20000, observations)
+            rows = [json.loads(line) for line in out.read_text().splitlines()]
+        self.assertEqual(
+            [(r["backend"], r["distractors"], r["q"], r["label"]) for r in rows],
+            [("fastembed", 20000, "a", True), ("fastembed", 20000, "b", False)],
+        )
+        self.assertEqual((rows[0]["confidence"], rows[1]["confidence"]), (0.62, None))
+        self.assertEqual(rows[1]["scores"], dict.fromkeys(CANDIDATES))  # NO_RECALL → null, not -Infinity
 
 
 class GateAndFitTests(unittest.TestCase):
@@ -133,6 +158,9 @@ class EvaluateTests(unittest.TestCase):
         summary = summarise(observations, ok_precision=0.9, shipped_threshold=self.cfg.recall_min_confidence)
         self.assertEqual((summary["n"], summary["positives"]), (2, 1))
         self.assertEqual([r["candidate"] for r in summary["rows"]], list(CANDIDATES))
+        for row in summary["rows"]:  # the full-sample fit a shipped Calibration is taken from
+            a, b = (float(v) for v in row["platt (a, b)"].split(","))
+            self.assertTrue(all(map(math.isfinite, (a, b))))
 
 
 class DistractorTests(unittest.TestCase):

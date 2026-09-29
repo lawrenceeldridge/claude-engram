@@ -43,6 +43,9 @@ def add_eval_arguments(parser: argparse.ArgumentParser) -> None:
         "--ok-precision", type=float, default=0.90, help="--confidence: how often an `ok` verdict must be right"
     )
     parser.add_argument(
+        "--confidence-out", type=Path, help="--confidence: append per-query labels + scores (JSONL) here"
+    )
+    parser.add_argument(
         "--longmemeval",
         action="store_true",
         help="also run LongMemEval session retrieval: parity / verbatim / distilled / hybrid arms",
