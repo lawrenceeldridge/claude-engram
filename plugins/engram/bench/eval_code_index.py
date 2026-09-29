@@ -26,8 +26,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
-from run_eval import make_embedder, parse_spec, wilson  # noqa: E402
-
+from bench.backends import make_embedder, parse_spec  # noqa: E402
+from bench.stats import wilson  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.index.index_recall import search_index  # noqa: E402
 from core.index.indexer import index_project  # noqa: E402

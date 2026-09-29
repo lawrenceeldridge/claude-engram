@@ -98,8 +98,9 @@ serves ranked outlines:
   drifts from disk.
 - **Snapshots too** — a third kind alongside doc sections and code symbols: page
   accessibility snapshots the browser tools produce, promoted from the sensory register
-  and searchable like the rest (freshness is age-based — a URL isn't a file on disk). Scope
-  a search by kind (`docs` / `code` / `snapshots`).
+  and searchable like the rest (freshness is age-based — a URL isn't a file on disk) through
+  `search_history` (`kind: "snapshots"`); the viewer scopes by kind (docs / code / snapshots /
+  history).
 
 ## Memory-first enforcement (`ENGRAM_ENFORCE`)
 
@@ -156,12 +157,13 @@ index on demand (these are what the memory-first guard steers toward):
 
 | Tool | Returns |
 |---|---|
-| `recall` | Distilled facts for the current project with a calibrated verdict (`ok` / `low_confidence` / `no_memory`). |
+| `recall` | Distilled facts for the current project with a confidence score and verdict (`ok` / `low_confidence` / `no_memory`); a fact captured with its conversation carries its `episode`. |
 | `search_code` | Ranked code-symbol outlines (qualname + signature + anchor + freshness). |
 | `get_symbol` | One symbol's full source by anchor, with a symbol-precise freshness check. |
 | `code_outline` | Whole-file / project symbol outline. |
 | `search_docs` | Ranked doc-section outlines. |
-| `get_doc_section` | One doc section's body by anchor. |
+| `get_doc_section` | One doc section's body by anchor — or one past exchange / page snapshot from `search_history`. |
+| `search_history` | Ranked outlines of past sessions kept verbatim — conversation `exchanges` (default) or page `snapshots`; pass a fact's `episode` to search just that conversation. |
 | `doc_outline` | Document/heading outline. |
 | `index_docs` | (Re)index the current project's code + docs. |
 | `list_projects` | Every project in the global store with its active-fact count. |
@@ -317,7 +319,7 @@ or `ENGRAM_*` env vars for standalone use:
 | `ttl_days` | `0` | archive facts unseen this long on capture (0 disables hard expiry) |
 | `ttl_keep_frequency` | `3` | facts reinforced this often are never expired |
 | `ingest_min_prompt_len` | `12` | drop trivial verbatim prompts below this length (bare confirmations, "Option C", pasted slash-commands) so LTM keeps real cues; 0 disables |
-| `recall_min_confidence` | `0.35` | confidence the `recall` tool needs to report verdict `ok` |
+| `recall_min_confidence` | `0.40` | confidence score the `recall` tool needs to report verdict `ok` (ranked, not a probability; `hash` never reaches it) |
 | `recall_max_chars` | `1200` | character budget for facts returned by the `recall` tool |
 | `viewer_autostart` | `true` | start the localhost viewer detached at session start |
 | `viewer_port` | `7801` | port for the always-on memory/index viewer |
@@ -358,7 +360,8 @@ pruning is off by default** — turn the forgetting curve on deliberately. Set v
 ### Sensory register — intake
 
 The fleeting first stage all perception enters (page snapshots + conversation), before
-attention transfers the worthy parts onward (snapshots → index, conversation → facts). A
+attention transfers the worthy parts onward (snapshots → index, conversation → distilled facts
+and, verbatim, episodic exchanges — see below). A
 separate, capacity- and TTL-bounded table that never touches recall. Set via `userConfig`
 (or `ENGRAM_*` env):
 
@@ -368,6 +371,27 @@ separate, capacity- and TTL-bounded table that never touches recall. Set via `us
 | `attention_window_seconds` | `300` | window within which re-perceiving the same page counts as *attention* (which promotes it) — the A-S selective read-out, not rehearsal |
 | `sensory_capacity` | `64` | max live perceptions per project before the oldest unattended ones decay (0 = unbounded) |
 | `sensory_ttl_seconds` | `900` | how long an unattended perception lives before it decays; decayed tombstones are purged past this age (0 = no TTL decay) |
+
+### Episodic memory — verbatim exchanges
+
+Distilled facts are the compact layer injected into prompts; alongside them engram can keep
+each conversation **exchange** (a user turn plus the assistant turns answering it) verbatim, so
+detail a fact dropped can be fetched on demand — never injected per prompt. Exchanges are
+redacted (credentials, emails, non-project paths) before they are stored, written in the
+detached capture worker, and forgotten by the consolidation pass past the retention limits.
+Find them with the `search_history` MCP tool, then read one with `get_doc_section`. Each fact
+captured from a conversation records its `episode` (returned by `recall`), so
+`search_history(episode=…)` searches just the conversation the fact came from; the link is
+cleared once that conversation has been forgotten. Measured on LongMemEval session retrieval (470 questions, fastembed): facts alone R@5 0.891,
+verbatim exchanges 0.983; through the shipped tools end to end (hash): `recall` alone 0.864,
+`recall` + `search_history` 0.913.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `episodic_enabled` | `true` | keep redacted verbatim exchanges in the index (kind `exchange`) |
+| `episodic_min_chars` | `24` | shorter exchanges, role labels included (one-line trivia like a lone "thanks"), are not kept |
+| `episodic_ttl_days` | `180` | exchanges older than this are forgotten (0 = no age limit) |
+| `episodic_max_chunks` | `20000` | per-project cap; the oldest beyond it are forgotten (0 = no cap) |
 
 ### Durable work queue — WorkQueue
 
@@ -430,19 +454,36 @@ ollama pull qwen2.5:3b        # or llama3.2:3b
 
 `engram eval` runs a labelled paraphrase set through the real quantised search path
 and reports Recall@1/@3, MRR@10, and operational cost. Backend spec is
-`name[@model][+float]`:
+`name[@model][%dim][+float]`:
 
 ```bash
 python3 bin/engram eval --backends "hash,fastembed,fastembed@BAAI/bge-small-en-v1.5,fastembed+float"
 python3 bin/engram eval --backends hash --stm    # add the STM-tier lever scenario
+python3 bin/engram eval --backends "hash,fastembed" --confidence   # recall-verdict calibration
 ```
 
 The `--stm` scenario reports how `stm_recall_weight` trades off recall of fresh
 short-term facts against their older long-term competitors — the measurable check
 before changing any STM-ranking default (short-term is a *state*, not a faster clock).
+`--antipatterns` and `--integrate` run the global anti-pattern and gist-chunking scenarios;
+`--aged` checks that old relevant facts keep their rank on both recall paths (recency should
+only order facts, never override relevance). `--longmemeval` (with `--lme-download` once — the
+MIT-licensed dataset is fetched at runtime, never bundled) compares distilled facts, verbatim
+exchanges and both on LongMemEval session retrieval, including a configuration comparable with
+mempalace's published number; `--lme-shipped` adds the shipped path end to end (transcript →
+capture → `recall` / `search_history` at their default budgets).
+
+`--confidence` measures whether the `recall` tool's `ok` verdict means "the returned
+facts contain the answer": the answerable queries plus 89 unanswerable, near-topic ones
+run through the real on-demand recall path, and each candidate confidence score is
+reported for discrimination (AUROC), calibration (Brier/ECE) and `ok` precision/recall.
+`--distractors N --distractor-project <key|label>` pads the store with facts mined at
+runtime from a snapshot of a real store (filtered, never written to the repo) to
+reproduce real density; `bench/replay_ledger.py` replays real recall-ledger queries on a
+snapshot of the live store.
 
 Measured on the bundled set (297 facts, 244 paraphrased queries — mined from real
-sessions, with 50 hard negatives; the earlier 64/77 set is frozen as
+sessions, with 58 untargeted hard-negative facts; the earlier 64/77 set is frozen as
 `bench/dataset-v1.json` for reproducibility of published figures):
 
 | backend | Recall@1 | Recall@3 | MRR@10 | bytes/fact |
@@ -490,8 +531,9 @@ zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for
 zero-token local). The memory lifecycle adds explicit STM/LTM tiers with
-rehearsal- and retrieval-based promotion and a consolidation ("sleep") pass (replay →
-displace → integrate near-duplicates → refine/forget → purge); capture and recovery
+rehearsal-, retrieval- and age-based promotion and a consolidation ("sleep") pass (replay →
+mature → displace → integrate near-duplicates → refine → invalidate → purge → forget verbatim
+exchanges past retention); capture and recovery
 run through a durable, zero-dependency SQLite **Command** queue (retry + dead-letter +
 crash recovery), off the recall hot path. See
 [DESIGN.md](DESIGN.md) for the full architecture, POEAA pattern choices, caching

@@ -31,7 +31,7 @@ the top-level architectural decision every pattern below serves.
 | `core/service.py` | **Command / Handler** — the capture pipeline, idempotent per fact |
 | `core/recall/` (`__init__.py`) | **Query Object** (`search`, `search_fused`) + **DTO / Null Object** (`render_block`) |
 | `core/ports/distill.py` | **Functional Core** (pure `heuristic_facts`, parsers) + **Strategy behind Separated Interface** (`Distiller` ABC) |
-| `core/domain/` (`scoring.py`, `quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`) | **Functional Core** — pure ranking / quantisation / fusion |
+| `core/domain/*` — every module (e.g. `scoring.py`, `quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`, `episodes.py`, `privacy.py`) | **Functional Core** — pure ranking / quantisation / fusion |
 | `core/ports/embedding.py` | **Gateway + Separated Interface** (`EmbeddingGateway` ABC, `get_embedder`) |
 | `core/adapters/fastembed_gw.py` | **Secondary (driven) adapter** — the only place heavy deps import |
 | `core/daemon_client.py` | thin client → resident daemon, **fail-open in-process fallback** |

@@ -35,12 +35,13 @@ file scan. Consult them before Grep/Glob/Read (the memory-first stop rule).
 | 6 | `get_doc_section` | One doc section's body by anchor | Pull an exact DESIGN.md section |
 | 7 | `index_docs` | (Re)index the project's code + docs | When freshness says a symbol is `edited`/`stale`/`gone` |
 | 8 | `list_projects` | Every project in the global store + active-fact count | Confirm this project has memory at all |
+| 9 | `search_history` | Ranked outlines of verbatim past exchanges / page snapshots (scope to a fact's `episode`) | The exact wording or reasoning behind a terse recalled decision |
 
 ### The 3-step access pattern
 
 Never jump straight to reading whole files. Narrow first:
 
-1. **`recall`** — broad discovery of prior decisions/facts, with a calibrated verdict.
+1. **`recall`** — broad discovery of prior decisions/facts, with a confidence score and verdict.
 2. **`search_code` / `search_docs`** — ranked outlines for the affected area (cheap; no file bodies).
 3. **`get_symbol` / `get_doc_section`** — pull the one exact span the outline points at.
 

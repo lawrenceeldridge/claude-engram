@@ -9,7 +9,7 @@ formats the result.
 
 The point is the *pull* path: passive hooks push memory at the model; this lets
 the model deliberately consult memory before an expensive Grep/Glob/Task search,
-and read a calibrated confidence + verdict to decide whether to trust it.
+and read a confidence score + verdict to decide whether to trust it.
 
 Mostly read (recall / search / outline). The one write tier is **curation**:
 ``invalidate_memory`` retires a stale fact the model has spotted (e.g. a now-false
@@ -50,8 +50,8 @@ TOOLS = [
         "description": (
             "Search this project's long-term memory for distilled facts relevant to a query. "
             "Call this BEFORE a broad Grep/Glob/Task code search: it is a cheap vector lookup "
-            "over a compact store, not a file scan. Returns facts plus a calibrated `confidence` "
-            "(0-1) and a `verdict`: `ok` (trust the facts, skip the wider search), "
+            "over a compact store, not a file scan. Returns facts plus a `confidence` score "
+            "(0-1, ranked; null when the embedder can't judge) and a `verdict`: `ok` (trust the facts, skip the wider search), "
             "`low_confidence` (hints only — widen if they don't answer), or `no_memory` "
             "(nothing stored — do not assume prior context)."
         ),
@@ -93,12 +93,40 @@ TOOLS = [
         },
     },
     {
+        "name": "search_history",
+        "description": (
+            "Search what happened in past sessions, kept VERBATIM: conversation `exchanges` (a user "
+            "turn + the answer, redacted) or browser page `snapshots`. Use when a `recall` fact is too "
+            "terse and you need the exact wording, numbers or reasoning behind it. Returns ranked "
+            "outlines (date + first line + anchor), not bodies; then `get_doc_section` on an anchor. "
+            "Pass a fact's `episode` (from `recall`) to search only the conversation it came from."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What you want to find in past sessions."},
+                "kind": {
+                    "type": "string",
+                    "enum": ["exchanges", "snapshots"],
+                    "description": "`exchanges` (conversation, default) or `snapshots` (browser pages).",
+                },
+                "episode": {
+                    "type": "string",
+                    "description": "Optional `episode` from a recall fact — scope to that conversation.",
+                },
+                "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
+                "k": {"type": "integer", "description": "Max results to return (default 10)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "get_doc_section",
         "description": (
             "Fetch one documentation section's full text by its `anchor` (or id) from `search_docs` "
-            "/ `doc_outline`. Returns the section body plus a section-precise `freshness` "
-            "(fresh|edited|stale|gone) verified against the live file. Cheaper than Read — one "
-            "section, not the whole document."
+            "/ `doc_outline` — or one past exchange / page snapshot from `search_history`. Returns the "
+            "body plus a section-precise `freshness` (fresh|edited|stale|gone) verified against the "
+            "live file. Cheaper than Read — one section, not the whole document."
         ),
         "inputSchema": {
             "type": "object",
@@ -271,6 +299,9 @@ TOOLS = [
 
 _CACHE_MAX = 128
 
+# search_history's `kind` argument → the index chunk kind it searches.
+_HISTORY_KINDS = {"exchanges": "exchange", "snapshots": "snapshot"}
+
 
 class _Engine:
     """Lazily-initialised, process-lifetime store + embedder (warm across calls).
@@ -403,6 +434,25 @@ class _Engine:
             kind="code_symbol",
         )
 
+    def search_history(self, args: dict) -> dict:
+        self._init()
+        from core.index.index_recall import search_index
+
+        kind = _HISTORY_KINDS.get(args.get("kind") or "exchanges")
+        if kind is None:
+            return {"error": f"unknown kind {args.get('kind')!r}; use one of {sorted(_HISTORY_KINDS)}", "results": []}
+        project = self._project(args.get("project"))
+        return search_index(
+            self.store,
+            self.embedder,
+            self.cfg,
+            project,
+            args.get("query") or "",
+            k=args.get("k"),
+            kind=kind,
+            source_path=args.get("episode") or None,
+        )
+
     def get_doc_section(self, args: dict) -> dict:
         self._init()
         from core.index.index_recall import get_chunk
@@ -423,8 +473,11 @@ class _Engine:
 
     def _record_pull(self, project: dict, res: dict, kind: str) -> None:
         """Ledger: measured saving — reading one symbol/section instead of the whole file.
-        bytes_saved = file size - returned body. Best-effort; never breaks the pull."""
-        if not res.get("found"):
+        bytes_saved = file size - returned body. Best-effort; never breaks the pull. A non-file
+        chunk (exchange / snapshot) has no file it saved reading, so it books nothing."""
+        from core.index.index_recall import NONFILE_KINDS
+
+        if not res.get("found") or res.get("kind") in NONFILE_KINDS:
             return
         try:
             import os
@@ -492,31 +545,15 @@ class _Engine:
 ENGINE = _Engine()
 
 
+_TOOL_NAMES = frozenset(tool["name"] for tool in TOOLS)
+
+
 def _tool_call(name: str, args: dict) -> dict:
-    if name == "recall":
-        payload = ENGINE.recall(args)
-    elif name == "list_projects":
-        payload = ENGINE.list_projects(args)
-    elif name == "search_docs":
-        payload = ENGINE.search_docs(args)
-    elif name == "search_code":
-        payload = ENGINE.search_code(args)
-    elif name == "get_doc_section":
-        payload = ENGINE.get_doc_section(args)
-    elif name == "get_symbol":
-        payload = ENGINE.get_symbol(args)
-    elif name == "doc_outline":
-        payload = ENGINE.doc_outline(args)
-    elif name == "code_outline":
-        payload = ENGINE.code_outline(args)
-    elif name == "index_docs":
-        payload = ENGINE.index_docs(args)
-    elif name == "invalidate_memory":
-        payload = ENGINE.invalidate_memory(args)
-    elif name == "review_memory":
-        payload = ENGINE.review_memory(args)
-    else:
+    """Dispatch an advertised tool to the ``_Engine`` method of the same name — TOOLS is the one
+    registry, so a tool can't be listed without a handler or reachable without being listed."""
+    if name not in _TOOL_NAMES:
         raise ValueError(f"unknown tool {name!r}")
+    payload = getattr(ENGINE, name)(args)
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
 
 

@@ -132,6 +132,7 @@ PAGE = """<!doctype html>
   .vtoggle.active { color:var(--title); border-color:#58a6ff; background:#0f1b2d; }
   #views { display:flex; gap:4px; }
   .badge[data-type=code_symbol]{background:#1f6feb} .badge[data-type=doc_section]{background:#238636}
+  .badge[data-type=snapshot]{background:#9e6a03} .badge[data-type=exchange]{background:#8250df}
   .fresh-pill { font:600 10px/1 ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.04em;
                 padding:3px 6px; border-radius:5px; margin-inline-start:6px; }
   .fresh-pill[data-f=fresh]{color:#3fb950;border:1px solid #238636} .fresh-pill[data-f=edited]{color:#e3b341;border:1px solid #9e6a03}
@@ -186,6 +187,7 @@ PAGE = """<!doctype html>
     <option value="doc_section">docs</option>
     <option value="code_symbol">code</option>
     <option value="snapshot">snapshots</option>
+    <option value="exchange">history</option>
   </select>
   <input id="q" placeholder="semantic search within project… (blank = list all)">
   <div id="status">
@@ -298,13 +300,20 @@ async function fetchFacts(extra='') {
   const url = `/api/facts?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}${tier}${extra}`;
   return await (await fetch(url)).json();
 }
+// Index chunk kind → [badge label, plural noun, how that kind gets filled]. One map for every kind.
+const INDEX_HINT = 'Run the index_docs tool for this project.';
+const INDEX_KINDS = {
+  doc_section: ['doc', 'doc sections', INDEX_HINT], code_symbol: ['code', 'code symbols', INDEX_HINT],
+  snapshot: ['snapshot', 'page snapshots', 'They are recorded as the browser tools take page snapshots.'],
+  exchange: ['history', 'past exchanges', 'They are kept as conversations are captured (episodic_enabled).'],
+};
 // One indexed chunk: kind badge + freshness pill, heading/qualname title, summary,
 // source path. The card is click-to-expand — the body is fetched lazily from /api/chunk.
 function indexCardHTML(c) {
   const kind = c.kind || 'doc_section';
   const fresh = c.freshness ? `<span class="fresh-pill" data-f="${esc(c.freshness)}">${esc(c.freshness)}</span>` : '';
   const score = c.score==null ? '' : `<span class="score">${c.score}</span> · `;
-  const badge = `<span class="badge" data-type="${esc(kind)}">${kind==='code_symbol'?'code':'doc'}</span>`;
+  const badge = `<span class="badge" data-type="${esc(kind)}">${esc((INDEX_KINDS[kind] || [kind])[0])}</span>`;
   const title = `<div class="title">${esc(c.heading_path || c.title || c.anchor)}</div>`;
   const summary = c.summary ? `<div class="subtitle">${esc(c.summary)}</div>` : '';
   const meta = `<div class="path">${score}${esc(c.source_path||'')} · ${esc(c.anchor||'')}</div>`;
@@ -317,9 +326,9 @@ async function reloadIndex() {
   const url = `/api/index?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}&kind=${encodeURIComponent(kind)}`;
   const rows = await (await fetch(url)).json();
   seen = new Set();
-  const what = kind==='code_symbol' ? 'code symbols' : kind==='doc_section' ? 'doc sections' : 'indexed chunks';
+  const [, what, hint] = INDEX_KINDS[kind] || [null, 'indexed chunks', INDEX_HINT];
   $('#list').innerHTML = rows.length ? rows.map(indexCardHTML).join('')
-    : `<div class="empty">No ${what}. Run the index_docs tool for this project.</div>`;
+    : `<div class="empty">No ${what}. ${hint}</div>`;
 }
 // One durable work-queue item (rescue re-distill backlog / dead-letter).
 function qItemHTML(q) {

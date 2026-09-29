@@ -20,7 +20,7 @@ from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.store import Store  # noqa: E402
-from core.transcript import extract_incremental  # noqa: E402
+from core.transcript import extract_incremental_parts  # noqa: E402
 
 
 def _turn(role: str, text: str) -> str:
@@ -37,29 +37,31 @@ class ExtractIncrementalTests(unittest.TestCase):
     def test_reads_only_appended_content(self):
         self.f.write(_turn("assistant", "The project uses Postgres for storage."))
         self.f.flush()
-        text1, off1 = extract_incremental(self.f.name, 0)
-        self.assertIn("Postgres", text1)
+        first = extract_incremental_parts(self.f.name, 0)
+        self.assertIn("Postgres", first.text)
+        self.assertEqual((first.start, first.turns), (0, [("assistant", "The project uses Postgres for storage.")]))
 
         # Nothing new yet.
-        text2, off2 = extract_incremental(self.f.name, off1)
-        self.assertEqual(text2, "")
-        self.assertEqual(off2, off1)
+        idle = extract_incremental_parts(self.f.name, first.end)
+        self.assertEqual((idle.text, idle.turns, idle.end), ("", [], first.end))
 
-        # Append a turn; only the new turn comes back.
+        # Append a turn; only the new turn comes back, and the span starts where the last ended.
         with open(self.f.name, "a", encoding="utf-8") as fh:
             fh.write(_turn("assistant", "Switched the cache to Redis."))
-        text3, off3 = extract_incremental(self.f.name, off1)
-        self.assertIn("Redis", text3)
-        self.assertNotIn("Postgres", text3)
-        self.assertGreater(off3, off1)
+        later = extract_incremental_parts(self.f.name, first.end)
+        self.assertIn("Redis", later.text)
+        self.assertNotIn("Postgres", later.text)
+        self.assertEqual(later.start, first.end)
+        self.assertGreater(later.end, first.end)
 
     def test_truncation_resets_offset(self):
         self.f.write(_turn("assistant", "some content"))
         self.f.flush()
-        _text, off = extract_incremental(self.f.name, 0)
-        text, new_off = extract_incremental(self.f.name, off + 10_000)  # offset past EOF
-        self.assertIn("some content", text)
-        self.assertLessEqual(new_off, off)
+        off = extract_incremental_parts(self.f.name, 0).end
+        reread = extract_incremental_parts(self.f.name, off + 10_000)  # offset past EOF
+        self.assertIn("some content", reread.text)
+        self.assertEqual(reread.start, 0)  # a shrunk file resets to the start
+        self.assertLessEqual(reread.end, off)
 
 
 class CursorTests(unittest.TestCase):

@@ -15,6 +15,7 @@ Backend spec: ``name[@model][+float]``. Examples:
 Run:
     python3 bench/run_eval.py --backends hash,fastembed,fastembed+float
     python3 bin/engram eval --backends hash,fastembed
+    python3 bin/engram eval --backends hash,fastembed --confidence   # recall-verdict calibration
 """
 
 from __future__ import annotations
@@ -22,10 +23,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
-import math
 import os
-import random
-import statistics
 import sys
 import tempfile
 import time
@@ -35,63 +33,25 @@ from pathlib import Path
 ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(ROOT))
 
+from bench.age_eval import run_aged  # noqa: E402
+from bench.backends import make_embedder, parse_spec  # noqa: E402
+from bench.cli_args import add_eval_arguments  # noqa: E402
+from bench.confidence_eval import run_confidence  # noqa: E402
+from bench.distractors import load_distractors  # noqa: E402
+from bench.longmemeval import run_longmemeval  # noqa: E402
+from bench.report import print_rows  # noqa: E402
+from bench.retrieval import score_queries, search_ranker  # noqa: E402
+from bench.stats import bootstrap_ci, mcnemar_exact, wilson  # noqa: E402
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.consolidation.integrate import integrate  # noqa: E402
 from core.domain.quantize import cosine  # noqa: E402
 from core.ports.distill import DistilledFact  # noqa: E402
-from core.ports.embedding import EmbeddingGateway, HashEmbedding  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.project import global_project  # noqa: E402
-from core.recall import search  # noqa: E402
 from core.store import Store  # noqa: E402
 
 DATASET = Path(__file__).resolve().parent / "dataset.json"
-
-
-def parse_spec(spec: str) -> tuple[str, str | None, int, bool]:
-    """``name[@model][%truncate_dim][+float]`` — %N truncates Matryoshka vectors to N dims."""
-    float_mode = spec.endswith("+float")
-    core = spec[: -len("+float")] if float_mode else spec
-    core, _, trunc = core.partition("%")
-    name, _, model = core.partition("@")
-    return name, (model or None), int(trunc) if trunc else 0, float_mode
-
-
-def make_embedder(name: str, model: str | None, truncate_dim: int, cfg) -> EmbeddingGateway:
-    if name == "hash":
-        return HashEmbedding(dim=cfg.dim)
-    if name == "fastembed":
-        from core.adapters.fastembed_gw import FastEmbedGateway
-
-        return FastEmbedGateway(model, truncate_dim=truncate_dim)
-    raise ValueError(f"unknown backend {name!r}")
-
-
-def _score_queries(queries: list[dict], facts: list[str], rank_fn) -> tuple[float, float, float, float, list[dict]]:
-    """Aggregate metrics plus per-query records, so backends evaluated on the same
-    queries can be compared with paired tests (`_print_pairwise`) rather than only
-    independent intervals."""
-    hit1 = hit3 = mrr = 0.0
-    latencies = []
-    per_query: list[dict] = []
-    for item in queries:
-        gold = {facts[i] for i in item["relevant"]}
-        start = time.perf_counter()
-        ranked = rank_fn(item["q"])
-        latencies.append((time.perf_counter() - start) * 1000)
-        q_hit1 = bool(ranked[:1] and ranked[0] in gold)
-        q_hit3 = any(text in gold for text in ranked[:3])
-        q_rr = 0.0
-        for rank, text in enumerate(ranked[:10], start=1):
-            if text in gold:
-                q_rr = 1.0 / rank
-                break
-        hit1 += q_hit1
-        hit3 += q_hit3
-        mrr += q_rr
-        per_query.append({"q": item["q"], "hit1": q_hit1, "hit3": q_hit3, "rr": q_rr})
-    n = len(queries)
-    return hit1 / n, hit3 / n, mrr / n, statistics.mean(latencies), per_query
 
 
 def evaluate(spec: str, data: dict, base_cfg) -> dict:
@@ -130,11 +90,9 @@ def evaluate(spec: str, data: dict, base_cfg) -> dict:
             if rows
             else 0
         )
+        rank_fn = search_ranker(store, embedder, project, cfg)
 
-        def rank_fn(query: str) -> list[str]:
-            return [row["text"] for _score, row in search(store, embedder, project, query, cfg, k=10, min_sim=-1.0)]
-
-    r1, r3, mrr, query_ms, per_query = _score_queries(queries, facts, rank_fn)
+    r1, r3, mrr, query_ms, per_query = score_queries(queries, facts, rank_fn)
     if store is not None:
         store.close()
     return {
@@ -151,67 +109,18 @@ def evaluate(spec: str, data: dict, base_cfg) -> dict:
     }
 
 
-def wilson(k: float, n: int, z: float = 1.96) -> tuple[float, float]:
-    """Wilson score 95% interval for a proportion ``k/n``. Honest at small n and near 0/1.
-
-    ``k`` is passed as a float (rate*n rounded) since the caller carries rates, not counts.
-    Returns ``(lo, hi)``; a zero-width span for ``n == 0``.
-    """
-    if n <= 0:
-        return 0.0, 0.0
-    k = max(0.0, min(float(n), round(k)))
-    p = k / n
-    denom = 1 + z * z / n
-    centre = (p + z * z / (2 * n)) / denom
-    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
-    return max(0.0, centre - half), min(1.0, centre + half)
-
-
-def mcnemar_exact(b: int, c: int) -> float:
-    """Exact two-sided McNemar p-value from discordant pair counts.
-
-    ``b`` = queries backend A got right and B wrong; ``c`` = the reverse.
-    Concordant pairs carry no information, so this is an exact sign test on
-    the discordant pairs — honest at the small counts this bench produces.
-    Returns 1.0 when there are no discordant pairs.
-    """
-    n = b + c
-    if n == 0:
-        return 1.0
-    tail = sum(math.comb(n, i) for i in range(min(b, c) + 1)) / 2.0**n
-    return min(1.0, 2.0 * tail)
-
-
-def bootstrap_ci(deltas: list[float], iters: int = 10_000, seed: int = 0) -> tuple[float, float]:
-    """Seeded percentile-bootstrap 95% CI for the mean of per-query deltas.
-
-    The seed is fixed so every run of the bench prints the same interval —
-    reproducibility over randomness, as with everything else in this harness.
-    """
-    if not deltas:
-        return 0.0, 0.0
-    rng = random.Random(seed)
-    n = len(deltas)
-    means = sorted(sum(deltas[rng.randrange(n)] for _ in range(n)) / n for _ in range(iters))
-    return means[int(0.025 * iters)], means[int(0.975 * iters)]
-
-
-def _fmt(value) -> str:
-    if isinstance(value, float):
-        return f"{value:.3f}" if value < 100 else f"{value:.1f}"
-    return str(value)
-
-
-def _print_table(results: list[dict]) -> None:
-    if not results:
-        print("no backends ran")
-        return
-    cols = ["backend", "dim", "recall@1", "recall@3", "mrr@10", "embed_ms/fact", "query_ms", "bytes/fact"]
-    widths = {c: max(len(c), *(len(_fmt(r[c])) for r in results)) for c in cols}
-    print("  ".join(c.ljust(widths[c]) for c in cols))
-    print("  ".join("-" * widths[c] for c in cols))
-    for r in results:
-        print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
+BACKEND_COLS = ["backend", "dim", "recall@1", "recall@3", "mrr@10", "embed_ms/fact", "query_ms", "bytes/fact"]
+STM_COLS = ["stm_recall_weight", "stm_recall@1", "stm_recall@3", "stm_mrr@10"]
+ANTIPATTERN_COLS = ["scope", "recall@1", "recall@3", "mrr@10"]
+INTEGRATE_COLS = [
+    "threshold",
+    "facts_before",
+    "facts_after",
+    "merged",
+    "recall@3_before",
+    "recall@3_after",
+    "recall_preserved",
+]
 
 
 def _print_ci(results: list[dict]) -> None:
@@ -282,22 +191,10 @@ def evaluate_stm(data: dict, base_cfg, weights: tuple[float, ...] = (1.0, 0.5, 0
                 store.db.execute("UPDATE facts SET tier='ltm' WHERE id=?", (store.fact_id(project["key"], text),))
         store.db.commit()
 
-        def rank_fn(query: str, _cfg=cfg, _store=store, _emb=embedder, _proj=project) -> list[str]:
-            return [row["text"] for _score, row in search(_store, _emb, _proj, query, _cfg, k=10, min_sim=-1.0)]
-
-        r1, r3, mrr, _, _ = _score_queries(queries, facts, rank_fn)
+        r1, r3, mrr, _, _ = score_queries(queries, facts, search_ranker(store, embedder, project, cfg))
         store.close()
         rows_out.append({"stm_recall_weight": weight, "stm_recall@1": r1, "stm_recall@3": r3, "stm_mrr@10": mrr})
     return rows_out
-
-
-def _print_stm_table(rows: list[dict]) -> None:
-    cols = ["stm_recall_weight", "stm_recall@1", "stm_recall@3", "stm_mrr@10"]
-    widths = {c: max(len(c), *(len(_fmt(r[c])) for r in rows)) for c in cols}
-    print("  ".join(c.ljust(widths[c]) for c in cols))
-    print("  ".join("-" * widths[c] for c in cols))
-    for r in rows:
-        print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
 
 
 def evaluate_antipatterns(data: dict, base_cfg) -> list[dict]:
@@ -330,21 +227,9 @@ def evaluate_antipatterns(data: dict, base_cfg) -> list[dict]:
         tier="ltm",
     )
 
-    def rank_fn(query: str, _cfg=cfg, _store=store, _emb=embedder, _proj=project) -> list[str]:
-        return [row["text"] for _score, row in search(_store, _emb, _proj, query, _cfg, k=10, min_sim=-1.0)]
-
-    r1, r3, mrr, _, _ = _score_queries(queries, antipatterns, rank_fn)
+    r1, r3, mrr, _, _ = score_queries(queries, antipatterns, search_ranker(store, embedder, project, cfg))
     store.close()
     return [{"scope": "global", "recall@1": r1, "recall@3": r3, "mrr@10": mrr}]
-
-
-def _print_antipattern_table(rows: list[dict]) -> None:
-    cols = ["scope", "recall@1", "recall@3", "mrr@10"]
-    widths = {c: max(len(c), *(len(_fmt(r[c])) for r in rows)) for c in cols}
-    print("  ".join(c.ljust(widths[c]) for c in cols))
-    print("  ".join("-" * widths[c] for c in cols))
-    for r in rows:
-        print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
 
 
 def evaluate_integrate(data: dict, base_cfg) -> list[dict]:
@@ -369,15 +254,13 @@ def evaluate_integrate(data: dict, base_cfg) -> list[dict]:
     store = Store(Path(tmp) / "int.db")
     project = {"key": "eval-integrate", "path": tmp, "label": "eval"}
     service.add_facts(store, embedder, cfg, project, "eval", facts)
-
-    def rank_fn(query: str) -> list[str]:
-        return [row["text"] for _s, row in search(store, embedder, project, query, cfg, k=10, min_sim=-1.0)]
+    rank_fn = search_ranker(store, embedder, project, cfg)
 
     before = len(store.active_rows_for_project(project["key"]))
-    r1_before, r3_before, _, _, _ = _score_queries(queries, facts, rank_fn)
+    r1_before, r3_before, _, _, _ = score_queries(queries, facts, rank_fn)
     merged = integrate(store, cfg, project, embedder=embedder)
     after = len(store.active_rows_for_project(project["key"]))
-    r1_after, r3_after, _, _, _ = _score_queries(queries, facts, rank_fn)
+    r1_after, r3_after, _, _, _ = score_queries(queries, facts, rank_fn)
     store.close()
     return [
         {
@@ -392,26 +275,10 @@ def evaluate_integrate(data: dict, base_cfg) -> list[dict]:
     ]
 
 
-def _print_integrate_table(rows: list[dict]) -> None:
-    cols = [
-        "threshold",
-        "facts_before",
-        "facts_after",
-        "merged",
-        "recall@3_before",
-        "recall@3_after",
-        "recall_preserved",
-    ]
-    widths = {c: max(len(c), *(len(_fmt(r[c])) for r in rows)) for c in cols}
-    print("  ".join(c.ljust(widths[c]) for c in cols))
-    print("  ".join("-" * widths[c] for c in cols))
-    for r in rows:
-        print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
-
-
-def main(backends: list[str], stm: bool = False, antipatterns: bool = False, integrate_stage: bool = False) -> int:
+def main(args: argparse.Namespace) -> int:
     data = json.loads(DATASET.read_text(encoding="utf-8"))
     cfg = get_config()
+    backends = [b.strip() for b in args.backends.split(",") if b.strip()]
     print(f"dataset: {len(data['facts'])} facts, {len(data['queries'])} paraphrased queries\n")
     results = []
     for spec in backends:
@@ -420,41 +287,41 @@ def main(backends: list[str], stm: bool = False, antipatterns: bool = False, int
         except Exception as exc:
             print(f"[skipped {spec}] {exc}")
     print()
-    _print_table(results)
+    if results:
+        print_rows(results, BACKEND_COLS)
+    else:
+        print("no backends ran")
     _print_ci(results)
     _print_pairwise(results)
-    if stm:
+    if args.stm:
         stm_rows = evaluate_stm(data, cfg)
         if stm_rows:
             print("\nSTM lever (stm_recall_weight) — recall of fresh STM gold vs older LTM competitors:\n")
-            _print_stm_table(stm_rows)
-    if antipatterns:
+            print_rows(stm_rows, STM_COLS)
+    if args.antipatterns:
         ap_rows = evaluate_antipatterns(data, cfg)
         if ap_rows:
             print("\nAnti-pattern union — recall of global anti-patterns from a different project:\n")
-            _print_antipattern_table(ap_rows)
-    if integrate_stage:
+            print_rows(ap_rows, ANTIPATTERN_COLS)
+    if args.integrate:
         int_rows = evaluate_integrate(data, cfg)
         if int_rows:
             print("\nIntegrate (gist chunking) — cluster collapses to one survivor, recall preserved:\n")
-            _print_integrate_table(int_rows)
+            print_rows(int_rows, INTEGRATE_COLS)
+    if args.confidence or args.aged:
+        distractors = load_distractors(args, cfg, data["facts"])
+        if distractors is None:
+            return 1
+        if args.confidence:
+            run_confidence(data, cfg, backends, distractors, args.ok_precision, args.confidence_out)
+        if args.aged:
+            run_aged(data, cfg, backends, distractors)
+    if args.longmemeval:
+        run_longmemeval(cfg, backends, args)
     return 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="compare embedding backends")
-    parser.add_argument("--backends", default="hash", help="comma-separated specs: name[@model][+float]")
-    parser.add_argument("--stm", action="store_true", help="also run the STM-tier lever scenario")
-    parser.add_argument(
-        "--antipatterns", action="store_true", help="also run the global anti-pattern surfacing scenario"
-    )
-    parser.add_argument("--integrate", action="store_true", help="also run the integrate (gist-chunking) scenario")
-    args = parser.parse_args()
-    sys.exit(
-        main(
-            [b.strip() for b in args.backends.split(",") if b.strip()],
-            stm=args.stm,
-            antipatterns=args.antipatterns,
-            integrate_stage=args.integrate,
-        )
-    )
+    add_eval_arguments(parser)
+    sys.exit(main(parser.parse_args()))

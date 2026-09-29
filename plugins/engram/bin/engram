@@ -88,6 +88,11 @@ def cmd_doctor(args) -> int:
         f"capacity={cfg.sensory_capacity or 'off'}  ttl={cfg.sensory_ttl_seconds or 'off'}s  "
         f"attention_window={cfg.attention_window_seconds}s"
     )
+    e = store.chunk_stats(project["key"], "exchange")
+    print(
+        f"episodic    : {'on' if cfg.episodic_enabled else 'off'}  {e['count']} exchanges ({e['bytes'] / 1e6:.1f} MB)  "
+        f"min_chars={cfg.episodic_min_chars}  ttl={cfg.episodic_ttl_days or 'off'}d  cap={cfg.episodic_max_chunks or 'off'}"
+    )
     store.close()
     return 0
 
@@ -320,8 +325,8 @@ def cmd_consolidate(args) -> int:
     else:
         targets = [_project(cfg, args)]
     # Route through the shared orchestrator so the CLI can't drift from the
-    # checkpoint pass (bin/capture.py) — same stages, same order (replay →
-    # displace → integrate → refine → purge), each gated/idempotent/reversible.
+    # checkpoint pass (bin/capture.py) — same stages, same order (consolidate()
+    # is the one place that defines them), each gated.
     # Totals are accumulated per stage the orchestrator reports, so a stage added
     # later (e.g. `merged`) flows through to the summary without touching this code.
     totals: dict[str, int] = defaultdict(int)
@@ -462,7 +467,7 @@ def cmd_drift(_args) -> int:
 def cmd_eval(args) -> int:
     from bench.run_eval import main as run_eval
 
-    return run_eval([b.strip() for b in args.backends.split(",") if b.strip()], stm=args.stm)
+    return run_eval(args)
 
 
 def cmd_replay(args) -> int:
@@ -783,9 +788,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("drift", help="pin/check the embedding-drift canary")
     p.set_defaults(func=cmd_drift)
 
+    from bench.cli_args import add_eval_arguments
+
     p = sub.add_parser("eval", help="benchmark embedding backends on a labelled recall set")
-    p.add_argument("--backends", default="hash", help="comma-separated: hash,fastembed")
-    p.add_argument("--stm", action="store_true", help="also run the STM-tier lever (stm_recall_weight) scenario")
+    add_eval_arguments(p)
     p.set_defaults(func=cmd_eval)
 
     p = sub.add_parser("replay", help="counterfactual token savings from past session transcripts")

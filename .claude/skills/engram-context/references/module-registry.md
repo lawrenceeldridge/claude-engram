@@ -39,7 +39,7 @@ core to Claude Code.
 | `service.py` | Capture Command/Handler — `add_facts`, consolidation, `_find_superseded`; idempotent per fact. |
 | `recall.py` | Read side — Query Object `search`, hybrid re-rank, `render_block` DTO (Null Object on empty). |
 | `scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`. |
-| `confidence.py` | Calibrates the `recall` verdict (`ok` / `low_confidence` / `no_memory`). |
+| `domain/confidence.py` | Pure score behind the `recall` verdict: `pool_stats` / `pool_z` (the best match against every fact scanned), `Calibration` VO + `calibrate` / `calibrated_confidence` (Platt), `sigmoid` (the one logistic — bench `platt_fit` uses it). A ranked score, not a probability; `core.recall.get_calibration` selects the calibration (`None` for the `hash` stub). |
 | `distill.py` | Distiller Strategy — heuristic (default) + Claude-CLI + HTTP/Ollama; atomic facts + `supersedes` links; heuristic fallback. |
 | `transcript.py` | Parse Claude Code transcripts into capturable text. |
 
@@ -49,7 +49,9 @@ core to Claude Code.
 | `embedding.py` | Gateway + Separated Interface for embedding providers. |
 | `adapters/fastembed_gw.py` | fastembed Gateway adapter (opt-in, real semantic model). |
 | `adapters/__init__.py` | Adapter package init. |
-| `lexical.py` | `hash` lexical embedding stub (zero-dep default) + lexical/FTS support. |
+| `domain/episodes.py` | Pure episodic pipeline: `exchange_units` (user turn + the assistant turns answering it, verbatim, ~800-char split), `should_keep_exchange` (length gate), `prepare_exchanges` (redact → gate; shared by capture and the LongMemEval bench), `episode_key` (the `<session>:<delta start>` key shared by a delta's exchanges and the `facts.episode` provenance link). |
+| `domain/privacy.py` | Pure `redact` (credentials, emails, non-project paths → `«redacted»`) for verbatim storage, and `privacy_flags` (the bench's human-gate detector). |
+| `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`) for the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
 | `quantize.py` | int8 (primary search rep) + binary sign-bit quantisation. |
 | `provision.py` | Self-provisions the private fastembed venv (no manual pip). |
 | `daemon_client.py` | Thin client to the resident daemon; falls back in-process (fail-open). |
@@ -62,7 +64,7 @@ core to Claude Code.
 | `code_symbols.py` | Python symbol extraction via stdlib `ast`. |
 | `treesitter_symbols.py` | TS/JS symbol extraction via `tree-sitter-language-pack`. |
 | `chunking.py` | Markdown/doc chunking by heading structure. |
-| `index_recall.py` | Ranked index search backing `search_code` / `search_docs`. |
+| `index_recall.py` | Ranked index search backing `search_code` / `search_docs` / `search_history` (scoped by kind and optionally one source/episode; cosine via the shared `VectorScorer`). |
 | `fusion.py` | Reciprocal-rank fusion (FTS5 bm25 ⊕ cosine) + diversity-budget packing. |
 
 ### Shared
@@ -85,7 +87,7 @@ core to Claude Code.
 | `index_docs.py` | SessionStart — auto-index the project (single-flight, file-capped). |
 | `index_edit.py` | PostToolUse — re-index each Edited/Written file. |
 | `capture.py` | Stop / SessionEnd / PreCompact — detached capture + throttled summary. |
-| `mcp_server.py` | `engram-memory` MCP server (`recall`, `search_code`, `get_symbol`, `code_outline`, `search_docs`, `get_doc_section`, `doc_outline`, `index_docs`, `list_projects`). |
+| `mcp_server.py` | `engram-memory` MCP server (`recall`, `search_code`, `get_symbol`, `code_outline`, `search_docs`, `get_doc_section`, `doc_outline`, `search_history`, `index_docs`, `list_projects`, `invalidate_memory`, `review_memory`); `TOOLS` is the one registry — dispatch is by name to the `_Engine` method. |
 | `daemon.py` | Optional resident embedder (keeps the model warm). |
 | `engram` | The CLI — `doctor`, `capture`, `recall`, `core`, `projects`, `prune`, `sweep`, `setup`, `daemon`, `viewer`, `stats`, `drift`, `eval`, `demo`. |
 | `_bootstrap.py` | Shared path/interpreter bootstrap for the entry points. |
@@ -109,8 +111,17 @@ core to Claude Code.
 
 | File | Role |
 |---|---|
-| `run_eval.py` | Runs the labelled paraphrase set through the real quantised search path (Recall@1/@3, MRR@10, bytes/fact). |
-| `dataset.json` | The labelled facts + paraphrased queries. |
+| `run_eval.py` | Runs the labelled paraphrase set through the real quantised search path (Recall@1/@3, MRR@10, bytes/fact); owns the shared `add_eval_arguments` flag set used by `bin/engram eval`. |
+| `confidence_eval.py` | `--confidence`: calibration of the `recall` verdict (AUROC, Brier/ECE, ok-precision/recall) over answerable + unanswerable queries on the production `search_fused_with_stats` path. |
+| `longmemeval.py` | `--longmemeval`: LongMemEval session retrieval — parity / verbatim-exchange / distilled / hybrid arms, plus `--lme-shipped` (transcript → capture → `recall` / `search_history`), session metrics + chars@5. |
+| `age_eval.py` | `--aged`: old- vs new-gold Recall@k on both production rankers (`search`, `search_fused`) across recency weights, against the age-blind (recency-off) ranking. |
+| `retrieval.py` / `stores.py` | Shared rankers over the real paths + Recall@k/MRR scorer; throwaway eval stores with explicit timestamps. |
+| `replay_ledger.py` | Replays the last N real `recall_events` queries on a snapshot of the live store (unlabelled reality check). |
+| `distractors.py` / `snapshot.py` | Runtime-only distractor mining (contamination/privacy-filtered) from a `sqlite3.backup` snapshot; never written to the repo. |
+| `stats.py` / `report.py` / `backends.py` | Pure seeded statistics; table printing; backend spec parsing + embedder construction. |
+| `mine_corpus.py` | Dev tool: mines dataset *candidates* from the live store for the human review gate. |
+| `replay.py` / `run_ab.py` / `eval_code_index.py` | Transcript counterfactual replay; paired live A/B; code-index model scoping. |
+| `dataset.json` | The labelled facts + paraphrased queries, plus scenario keys (`stm_`/`antipattern_`/`duplicate_cluster_`/`confidence_scenario`). |
 
 ## `viewer/` — localhost browser (stdlib `http.server`)
 

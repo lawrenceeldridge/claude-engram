@@ -15,10 +15,9 @@ import time
 from collections.abc import Callable, Iterable
 
 from core.config import Config
-from core.domain.confidence import compute_confidence
 from core.domain.entities import extract_entities
+from core.domain.episodes import episode_key, prepare_exchanges
 from core.domain.ingest import is_trivial_prompt
-from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.domain.scoring import salience_of
 from core.domain.sensory import normalize_url, should_promote
@@ -33,9 +32,18 @@ from core.ports.embedding import EmbeddingGateway
 from core.ports.scorer import VectorScorer, get_scorer
 from core.ports.workqueue import WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
-from core.recall import render_block, render_scaffold, search, search_fused
+from core.recall import (
+    best_match,
+    get_calibration,
+    is_trusted,
+    recall_confidence,
+    render_block,
+    render_scaffold,
+    search,
+    search_fused_with_stats,
+)
 from core.store import Store
-from core.transcript import extract_incremental_parts, extract_text
+from core.transcript import TranscriptDelta, extract_incremental_parts, extract_text
 
 
 def _scored_active(
@@ -128,6 +136,7 @@ def add_records(
     kind: str = "fact",
     tier: str = "stm",
     scorer: VectorScorer | None = None,
+    episode: str | None = None,
 ) -> int:
     inserted = 0
     now = time.time()
@@ -141,7 +150,7 @@ def add_records(
         if store.exists(fact_id):
             # Rehearsal — a fact seen again reinforces, and once rehearsed enough
             # (frequency >= promote_after_freq) it transfers from STM to LTM.
-            freq = store.reinforce(fact_id, now)
+            freq = store.reinforce(fact_id, now, episode=episode)
             if freq >= cfg.promote_after_freq:
                 store.promote(fact_id, now)
             continue
@@ -168,6 +177,7 @@ def add_records(
             type=record.type,
             observation_id=record.observation_id,
             tier=tier,
+            episode=episode,
         )
         if victims:
             store.supersede(list(victims), fact_id)
@@ -309,6 +319,8 @@ def capture_text(
     project: Project,
     session_id: str,
     text: str,
+    *,
+    episode: str | None = None,
 ) -> int:
     if is_distiller_prompt(text):
         return 0  # a nested `claude -p` distiller session captured itself — never store it
@@ -321,14 +333,20 @@ def capture_text(
     else:
         existing = [(row["id"], row["text"]) for row in store.recent(project["key"], cfg.supersede_candidates)]
     records = distiller.distill(text, existing)
-    inserted = add_records(store, embedder, cfg, project, session_id, records, scorer=scorer)
+    inserted = add_records(store, embedder, cfg, project, session_id, records, scorer=scorer, episode=episode)
     # If an LLM distiller degraded to the heuristic (unreachable / timed out), publish
     # the raw delta to the durable 'rescue' queue so a later healthy session re-distils
     # it and replaces these facts. Idempotent on the delta's content hash.
     if records and cfg.distiller in LLM_DISTILLERS and all(r.degraded for r in records):
         fact_ids = [store.fact_id(project["key"], r.text) for r in records]
         payload = json.dumps(
-            {"text": text, "fact_ids": fact_ids, "session_id": session_id, "project_key": project["key"]}
+            {
+                "text": text,
+                "fact_ids": fact_ids,
+                "session_id": session_id,
+                "project_key": project["key"],
+                "episode": episode,
+            }
         )
         queue = get_queue(cfg, store)
         try:
@@ -375,7 +393,16 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
             records = distiller.distill(text, existing)
             if records and not all(r.degraded for r in records):
                 store.delete_facts(data.get("fact_ids") or [])
-                add_records(store, embedder, cfg, project, data.get("session_id", ""), records, scorer=scorer)
+                add_records(
+                    store,
+                    embedder,
+                    cfg,
+                    project,
+                    data.get("session_id", ""),
+                    records,
+                    scorer=scorer,
+                    episode=data.get("episode"),
+                )
                 lease.ack()
                 recovered += 1
             else:
@@ -600,6 +627,8 @@ def capture_prompts(
     project: Project,
     session_id: str,
     prompts: list[str],
+    *,
+    episode: str | None = None,
 ) -> int:
     """Store user prompts verbatim (kind='prompt') — a 1:1 copy, not distilled.
 
@@ -620,7 +649,7 @@ def capture_prompts(
             continue
         fid = store.fact_id(project["key"], prompt)
         if store.exists(fid):
-            store.reinforce(fid, now)
+            store.reinforce(fid, now, episode=episode)
             continue
         vec = embedder.embed_one(prompt)
         blob, scale = quantize_int8(vec)
@@ -636,6 +665,7 @@ def capture_prompts(
             vec_bits=pack_bits(vec),
             importance=salience_of("prompt"),
             created_at=now,
+            episode=episode,
         )
         inserted += 1
     return inserted
@@ -661,8 +691,14 @@ def capture_transcript_incremental(
     rescue(store, embedder, cfg)  # drain any heuristic-fallback backlog first (durable queue)
     cursor_key = f"{project['key']}:{session_id or transcript_path}"
     start = store.get_capture_cursor(cursor_key)
-    text, prompts, end = extract_incremental_parts(transcript_path, start)
-    if end == start:
+    delta = extract_incremental_parts(transcript_path, start)
+    if delta.end == start:
+        return 0
+    text = delta.text
+    if is_distiller_prompt(text):
+        # A nested `claude -p` distiller session captured itself (backstop behind ENGRAM_DISABLE):
+        # none of it is conversation — no sensory record, prompts, facts or episode. Skip past it.
+        store.set_capture_cursor(cursor_key, delta.end)
         return 0
     # Verbal intake into the A-S sensory register: record the perceived conversation delta (in full
     # — no cap) so ALL input enters one register (visual page snapshots + verbal conversation), per
@@ -675,10 +711,47 @@ def capture_transcript_incremental(
             store.add_sensory(project["key"], "verbal", text, observation_id=session_id or None, now=time.time())
         except Exception:
             pass
-    capture_prompts(store, embedder, cfg, project, session_id, prompts)
-    inserted = capture_text(store, embedder, cfg, project, session_id, text) if text.strip() else 0
-    store.set_capture_cursor(cursor_key, end)
+    # Episodic trace: the delta's exchanges kept verbatim beside the facts distilled from it. Indexed
+    # first so the facts can link to it only once it exists — `episode` stays None when the layer
+    # is off, nothing substantive was said, or indexing failed. ADDITIVE and fail-open, like the
+    # sensory tee: an error here leaves `facts` text byte-identical and the cursor still advances.
+    episode = None
+    if cfg.episodic_enabled and delta.turns:
+        try:
+            if capture_episodes(store, embedder, cfg, project, session_id, delta):
+                episode = episode_key(session_id, delta.start)
+        except Exception:
+            pass
+    capture_prompts(store, embedder, cfg, project, session_id, delta.prompts, episode=episode)
+    inserted = capture_text(store, embedder, cfg, project, session_id, text, episode=episode) if text.strip() else 0
+    store.set_capture_cursor(cursor_key, delta.end)
     return inserted
+
+
+def capture_episodes(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    delta: TranscriptDelta,
+    *,
+    now: float | None = None,
+) -> int:
+    """Index a transcript delta's substantive exchanges verbatim — the episodic trace (kind
+    ``exchange``) beside the semantic facts. Redacted before storage, gated by length, keyed by
+    episode (``episode_key``) so re-capturing a delta replaces rather than duplicates.
+    Runs in the detached capture worker only. Returns the number of exchanges indexed."""
+    from core.index.indexer import exchange_chunk_units, index_nonfile
+
+    stamp = now if now is not None else time.time()
+    exchanges = prepare_exchanges(delta.turns, project["path"], cfg.episodic_min_chars)
+    episode = episode_key(session_id, delta.start)
+    title = time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+    records = index_nonfile(
+        store, embedder, project, "exchange", episode, exchange_chunk_units(episode, exchanges, title), now=stamp
+    )
+    return len(records)
 
 
 def index_prompt_block(
@@ -853,6 +926,11 @@ def orientation_block(store: Store, project: Project, max_chars: int = 900) -> s
     return block[:max_chars]
 
 
+# The `hash` Special Case: hits, but no calibrated score to judge them by — never `ok`.
+_UNJUDGED_GUIDANCE = (
+    "Unscored recall — the lexical `hash` embedder can't judge relevance (set `embedding=fastembed`), "
+    "so treat these as hints only; widen to Grep/Glob if they don't answer the question."
+)
 _GUIDANCE = {
     "ok": "Strong recall — trust these facts; a broad code search is likely unnecessary.",
     "low_confidence": "Weak recall — treat these as hints only; widen to Grep/Glob if they don't answer the question.",
@@ -890,6 +968,8 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]
     ``invalidate_memory``. This is the on-demand pull only; the passive per-turn injection
     (``render_block``) is unaffected, so the hot-path token budget does not change. The same
     ids are returned separately for retrieval attribution (recall_count / last_recalled).
+    A fact captured with its conversation also carries ``episode`` — the key ``search_history``
+    scopes to for the verbatim exchanges behind it; omitted (zero bytes) when there is none.
     """
     packed: list[dict] = []
     packed_ids: list[str] = []
@@ -898,15 +978,16 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]
         text = row["text"]
         if packed and used + len(text) > max_chars:
             continue
-        packed.append(
-            {
-                "id": row["id"],
-                "text": text,
-                "similarity": round(float(sim), 4),
-                "kind": row["kind"],
-                "frequency": row["frequency"] or 1,
-            }
-        )
+        fact = {
+            "id": row["id"],
+            "text": text,
+            "similarity": round(float(sim), 4),
+            "kind": row["kind"],
+            "frequency": row["frequency"] or 1,
+        }
+        if row["episode"]:
+            fact["episode"] = row["episode"]
+        packed.append(fact)
         packed_ids.append(row["id"])
         used += len(text)
     return packed, len(hits) - len(packed), packed_ids
@@ -925,10 +1006,12 @@ def recall_structured(
     """Recall as a structured, confidence-gated result for on-demand callers.
 
     Unlike ``recall_prompt_block`` (which renders an injection string), this returns
-    a JSON-friendly dict carrying a calibrated ``confidence`` and a ``verdict``
-    (ok / low_confidence / no_memory) so the caller can decide whether to trust
-    memory or fall back to a wider, more expensive search. Ranking is rank-fusion
-    (``search_fused``); confidence reads the cosine similarities carried through it.
+    a JSON-friendly dict carrying a ``confidence`` score (0-1, ranked — ``None`` when the embedder
+    can't judge) and a ``verdict`` (ok / low_confidence / no_memory / embedding_mismatch) so the
+    caller can decide whether to trust memory or fall back to a wider, more expensive search. Ranking is rank-fusion
+    (``search_fused_with_stats``) and decides the order facts are returned in;
+    ``recall_confidence`` judges the best-*matching* hit, which fusion's recency/frequency
+    channels can demote below a newer, weaker one.
     Never raises on an empty store — it returns an explicit no_memory verdict.
     """
     max_chars = cfg.recall_max_chars if max_chars is None else max_chars
@@ -936,17 +1019,17 @@ def recall_structured(
     # injected focus; an explicit k still overrides. The injected hot path (recall_prompt_block
     # -> search -> top_k) is unaffected, so the per-turn token focus stays small.
     k = cfg.activated_k if k is None else k
-    hits = search_fused(store, embedder, project, query, cfg, k=k)
-    sims = [sim for _score, sim, _row in hits]
-    identity = has_overlap(query, hits[0][2]["text"]) if hits else None
-    confidence = compute_confidence(sims, has_identity_match=identity)["confidence"]
+    fused = search_fused_with_stats(store, embedder, project, query, cfg, k=k)
+    hits = fused.hits
+    best = best_match(hits)
+    confidence = recall_confidence(fused, get_calibration(embedder))
 
     if not hits:
         verdict = "embedding_mismatch" if _embedding_mismatch(store, embedder, project["key"]) else "no_memory"
-    elif confidence < cfg.recall_min_confidence:
-        verdict = "low_confidence"
-    else:
+    elif is_trusted(confidence, cfg.recall_min_confidence):
         verdict = "ok"
+    else:
+        verdict = "low_confidence"
 
     facts, dropped, recalled_ids = _pack_facts(hits, max_chars)
     result = {
@@ -954,7 +1037,7 @@ def recall_structured(
         "project": project["label"],
         "verdict": verdict,
         "confidence": confidence,
-        "guidance": _GUIDANCE[verdict],
+        "guidance": _UNJUDGED_GUIDANCE if hits and confidence is None else _GUIDANCE[verdict],
         "facts": facts,
         "returned": len(facts),
         "matched": len(hits),
@@ -964,7 +1047,7 @@ def recall_structured(
         project["key"],
         query,
         returned=len(facts),
-        top_sim=sims[0] if sims else 0.0,
+        top_sim=best[1] if best else 0.0,
         confidence=confidence,
         verdict=verdict,
     )

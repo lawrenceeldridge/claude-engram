@@ -35,7 +35,7 @@ claude-engram is **one package** (`plugins/engram/`) with one internal hexagonal
                                 │
                       Functional Core / Domain (core)
                       ───────────────────────────────
-                      distill · scoring · quantize · fusion · confidence · lexical
+                      distill · scoring · quantize · fusion · confidence · lexical · episodes · privacy · …
                       (pure functions over facts + quantised vectors)
                                 │
                                 ▲ depends on (via ports)
@@ -68,9 +68,9 @@ subprocess, no clock, no randomness.
 / Entity / Aggregate** — a fact is data, not an object with behaviour (see
 `engram-defaults.md` § Domain Logic).
 
-**claude-engram files.** `core/distill.py` (pure `heuristic_facts`, `parse_records`,
-`observations_to_facts`), `core/scoring.py`, `core/quantize.py`, `core/fusion.py`,
-`core/confidence.py`, `core/lexical.py`. Value objects: `DistilledFact`, `Observation`,
+**claude-engram files.** `core/ports/distill.py` (pure `heuristic_facts`, `parse_records`,
+`observations_to_facts`), `core/domain/scoring.py`, `core/domain/quantize.py`,
+`core/domain/fusion.py`, `core/domain/confidence.py`, `core/domain/lexical.py`. Value objects: `DistilledFact`, `Observation`,
 `Hit`, the frozen `Config` (`core/config.py`).
 
 **Forbidden in this layer.** `import sqlite3` use, model loading, `subprocess`,

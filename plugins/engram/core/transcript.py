@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 
 from core.domain.ingest import is_harness_noise, strip_harness_blocks
 
@@ -85,8 +86,9 @@ def _content_lines(content, role: str) -> list[str]:
     return lines
 
 
-def _lines_to_parts(lines) -> list[str]:
-    parts: list[str] = []
+def _messages(lines) -> list[tuple[str, list[str]]]:
+    """``(role, rendered lines)`` for each user/assistant message — the one parse of the JSONL."""
+    messages: list[tuple[str, list[str]]] = []
     for line in lines:
         line = line.strip()
         if not line:
@@ -99,55 +101,50 @@ def _lines_to_parts(lines) -> list[str]:
         role = obj.get("type") or message.get("role")
         if role not in ("user", "assistant"):
             continue
-        parts.extend(_content_lines(message.get("content", obj.get("content")), role))
-    return parts
+        messages.append((role, _content_lines(message.get("content", obj.get("content")), role)))
+    return messages
 
 
-def _prompt_lines(lines) -> list[str]:
-    """Verbatim user prompts in the transcript — a 1:1 copy of what the user sent.
+def _parts(messages: list[tuple[str, list[str]]]) -> list[str]:
+    """Distillable text: every rendered line, user and assistant, in order."""
+    return [line for _role, lines in messages for line in lines]
 
-    Reuses the user-role cleaning (drops system-reminders and harness scaffolding),
-    but does NOT distil: each returned string is the user's message text as typed.
-    Tool-result messages (also role 'user') carry no text block, so they drop out.
+
+def _prompts(messages: list[tuple[str, list[str]]]) -> list[str]:
+    """Verbatim user prompts — a 1:1 copy of what the user sent.
+
+    The user-role cleaning drops system-reminders and harness scaffolding but does NOT distil:
+    each string is the user's message text as typed. Tool-result messages (also role 'user')
+    carry no text block, so they drop out.
     """
-    prompts: list[str] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        message = obj.get("message") or {}
-        role = obj.get("type") or message.get("role")
-        if role != "user":
-            continue
-        text = "\n".join(_content_lines(message.get("content", obj.get("content")), "user")).strip()
-        if text:
-            prompts.append(text)
-    return prompts
+    return [text for role, lines in messages if role == "user" and (text := "\n".join(lines).strip())]
+
+
+def _turns(messages: list[tuple[str, list[str]]]) -> list[tuple[str, str]]:
+    """``(role, text)`` per message with content — the input to episodic exchange units."""
+    return [(role, "\n".join(lines)) for role, lines in messages if lines]
 
 
 def extract_text(transcript_path: str) -> str:
     try:
         with open(transcript_path, encoding="utf-8") as fh:
-            return "\n".join(_lines_to_parts(fh))
+            return "\n".join(_parts(_messages(fh)))
     except FileNotFoundError:
         return ""
 
 
-def _read_delta(transcript_path: str, start_offset: int) -> tuple[list[str], int]:
-    """Read the transcript bytes appended since ``start_offset``; return (lines, end).
+def _read_delta(transcript_path: str, start_offset: int) -> tuple[list[str], int, int]:
+    """Read the transcript bytes appended since ``start_offset``; return (lines, start, end).
 
     JSONL is append-only and newline-delimited, so an end-of-content byte offset
-    always lands on a line boundary. A shrunk file (rotated/truncated) resets to 0.
-    Read in binary because a text-mode file can't be seeked-then-line-iterated.
+    always lands on a line boundary. A shrunk file (rotated/truncated) resets to 0,
+    which is why the effective ``start`` is returned. Read in binary because a
+    text-mode file can't be seeked-then-line-iterated.
     """
     try:
         size = os.path.getsize(transcript_path)
     except OSError:
-        return [], start_offset
+        return [], start_offset, start_offset
     if start_offset > size:
         start_offset = 0
     try:
@@ -155,17 +152,24 @@ def _read_delta(transcript_path: str, start_offset: int) -> tuple[list[str], int
             fh.seek(start_offset)
             data = fh.read()
     except OSError:
-        return [], start_offset
-    return data.decode("utf-8", errors="ignore").splitlines(), start_offset + len(data)
+        return [], start_offset, start_offset
+    return data.decode("utf-8", errors="ignore").splitlines(), start_offset, start_offset + len(data)
 
 
-def extract_incremental(transcript_path: str, start_offset: int = 0) -> tuple[str, int]:
-    """Assistant/user text appended since ``start_offset``. Returns (text, end_offset)."""
-    lines, end = _read_delta(transcript_path, start_offset)
-    return "\n".join(_lines_to_parts(lines)), end
+@dataclass(frozen=True)
+class TranscriptDelta:
+    """One read of the transcript appended since a cursor: the distillable text, the verbatim
+    user prompts, the ``(role, text)`` turns (for episodic exchanges), and the byte span."""
+
+    text: str
+    prompts: list[str]
+    turns: list[tuple[str, str]]
+    start: int
+    end: int
 
 
-def extract_incremental_parts(transcript_path: str, start_offset: int = 0) -> tuple[str, list[str], int]:
-    """One read of the delta → (distillable_text, verbatim_user_prompts, end_offset)."""
-    lines, end = _read_delta(transcript_path, start_offset)
-    return "\n".join(_lines_to_parts(lines)), _prompt_lines(lines), end
+def extract_incremental_parts(transcript_path: str, start_offset: int = 0) -> TranscriptDelta:
+    """One read + one parse of the delta since ``start_offset``."""
+    lines, start, end = _read_delta(transcript_path, start_offset)
+    messages = _messages(lines)
+    return TranscriptDelta("\n".join(_parts(messages)), _prompts(messages), _turns(messages), start, end)

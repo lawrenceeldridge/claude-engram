@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -35,6 +34,7 @@ ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().par
 sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
+from core.domain.privacy import privacy_flags  # noqa: E402
 from core.domain.quantize import cosine, dequantize_int8  # noqa: E402
 from core.project import resolve_project  # noqa: E402
 from core.store import Store  # noqa: E402
@@ -78,11 +78,6 @@ CONTAMINATION = (
     "nomic",
 )
 
-# Privacy flaggers — matches route the fact to the manual pile, never auto-accept.
-RE_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
-RE_SECRET = re.compile(r"(api[_-]?key|secret|token|password|bearer|aws_|sk-[A-Za-z0-9]{8,})", re.IGNORECASE)
-RE_ABS_PATH = re.compile(r"/(?:Users|home)/[\w.-]+/[^\s'\"]*")
-
 DEDUPE_SIM = 0.90  # near-identical wording
 CLUSTER_SIM = 0.60  # same-topic grouping for reviewer convenience
 
@@ -93,19 +88,6 @@ def contamination_hit(text: str) -> str | None:
         if marker in low:
             return marker
     return None
-
-
-def privacy_flags(text: str, repo_path: str) -> list[str]:
-    flags = []
-    if RE_EMAIL.search(text):
-        flags.append("email")
-    if RE_SECRET.search(text):
-        flags.append("credential-shaped")
-    for path in RE_ABS_PATH.findall(text):
-        if not path.startswith(repo_path):
-            flags.append(f"non-repo path: {path[:60]}")
-            break
-    return flags
 
 
 def mine(store: Store, project_key: str, repo_path: str, min_len: int, max_facts: int) -> dict:

@@ -109,6 +109,15 @@ class RecoveryTests(unittest.TestCase):
         self.assertIsNotNone(self.store.get(self.store.fact_id("p", "uses gemma3 for distillation")))
         self.assertEqual(self._rescue_count(), 0)  # acked -> removed
 
+    def test_rescue_keeps_the_episode_link(self):
+        # The re-distilled facts replace the heuristic ones, so they must inherit their episode.
+        with mock.patch.object(service, "get_distiller", return_value=_StubDistiller(_degraded())):
+            service.capture_text(self.store, self.embedder, self.cfg, self.project, "s1", "raw", episode="s1:0")
+        self.assertEqual(self.store.get(self.store.fact_id("p", "some raw line"))["episode"], "s1:0")
+        with mock.patch.object(service, "get_distiller", return_value=_StubDistiller(_titled())):
+            service.rescue(self.store, self.embedder, self.cfg)
+        self.assertEqual(self.store.get(self.store.fact_id("p", "uses gemma3 for distillation"))["episode"], "s1:0")
+
     def test_rescue_naks_when_still_failing(self):
         with mock.patch.object(service, "get_distiller", return_value=_StubDistiller(_degraded())):
             service.capture_text(self.store, self.embedder, self.cfg, self.project, "s1", "raw")

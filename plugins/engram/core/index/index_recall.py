@@ -20,8 +20,8 @@ from pathlib import Path
 
 from core.config import Config
 from core.domain.fusion import Channel, fuse
-from core.domain.quantize import cosine, dequantize_int8
 from core.ports.embedding import EmbeddingGateway
+from core.ports.scorer import DIM_MISMATCH, get_scorer
 from core.project import Project
 from core.store import Store
 
@@ -29,18 +29,12 @@ _PER_FILE_CAP = 3
 _FRESH_WEIGHTS = {"similarity": 1.0, "fts": 0.8}
 
 
-def _cosine_ranked(
-    store: Store, embedder: EmbeddingGateway, project_key: str, query: str, k: int, kind: str | None
-) -> list[str]:
-    """Chunk ids ranked by cosine to the query, dropping vectors of a different dimension."""
-    qvec = embedder.embed_one(query)
-    qdim = len(qvec)
-    scored: list[tuple[float, str]] = []
-    for row in store.chunk_rows(project_key, kind=kind):
-        if not row["vec_int8"] or (row["dim"] and row["dim"] != qdim):
-            continue
-        sim = cosine(qvec, dequantize_int8(row["vec_int8"], row["scale"]))
-        scored.append((sim, row["id"]))
+def _cosine_ranked(cfg: Config, embedder: EmbeddingGateway, rows, query: str, k: int) -> list[str]:
+    """Chunk ids ranked by cosine to the query — the same ``VectorScorer`` recall scans facts with
+    (vectorised where numpy is present) — skipping unembedded rows and other-dimension vectors."""
+    embedded = [row for row in rows if row["vec_int8"]]
+    sims = get_scorer(cfg).cosine_all(embedded, embedder.embed_one(query))
+    scored = [(sim, row["id"]) for sim, row in zip(sims, embedded) if sim != DIM_MISMATCH]
     scored.sort(reverse=True)
     return [cid for _sim, cid in scored[:k]]
 
@@ -64,15 +58,32 @@ def _snapshot_freshness(indexed_at: float | None, now: float) -> str:
     return "fresh" if (now - (indexed_at or 0.0)) <= _SNAPSHOT_FRESH_SECONDS else "stale"
 
 
-def _diverse_pack(fused, rows: dict, max_chars: int) -> list[tuple]:
-    """Greedy budget pack with a per-file cap + ``0.5^n`` same-file score decay."""
+def _conversation_freshness(indexed_at: float | None, now: float) -> str:
+    """An exchange records a conversation that already happened — it never drifts."""
+    return "fresh"
+
+
+# Chunk kinds whose source is not a file on disk: freshness is decided by kind, never file drift.
+_NONFILE_FRESHNESS = {"snapshot": _snapshot_freshness, "exchange": _conversation_freshness}
+NONFILE_KINDS = frozenset(_NONFILE_FRESHNESS)
+
+
+def _nonfile_freshness(row, now: float) -> str | None:
+    """Freshness for a non-file chunk (snapshot / exchange), or None for a file-backed chunk."""
+    rule = _NONFILE_FRESHNESS.get(row["kind"])
+    return rule(row["indexed_at"], now) if rule else None
+
+
+def _diverse_pack(fused, rows: dict, max_chars: int, *, diverse: bool = True) -> list[tuple]:
+    """Greedy budget pack with a per-file cap + ``0.5^n`` same-file score decay. ``diverse=False``
+    (a search already scoped to one source) packs in fused order with no per-source cap."""
     per_file: dict[str, int] = {}
     scored: list[tuple] = []
     for entry in fused:
         row = rows.get(entry.fact_id)
         if row is None:
             continue
-        seen = per_file.get(row["source_path"], 0)
+        seen = per_file.get(row["source_path"], 0) if diverse else 0
         if seen >= _PER_FILE_CAP:
             continue
         per_file[row["source_path"]] = seen + 1
@@ -100,11 +111,13 @@ def search_index(
     k: int | None = None,
     max_chars: int | None = None,
     kind: str | None = None,
+    source_path: str | None = None,
 ) -> dict:
     """Hybrid keyword+semantic search over indexed chunks. Returns outline rows only.
 
-    ``kind`` scopes the search to one chunk kind (``doc_section`` / ``code_symbol``);
-    None searches the whole index.
+    ``kind`` scopes the search to one chunk kind (``doc_section`` / ``code_symbol`` / ``snapshot`` /
+    ``exchange``); None searches the whole index. ``source_path`` scopes it to one source (a file,
+    a snapshot URL, or an episode), which also lifts the per-source diversity cap.
     """
     k = k or 10
     max_chars = cfg.recall_max_chars if max_chars is None else max_chars
@@ -113,23 +126,22 @@ def search_index(
         return {"query": query, "project": project["label"], "results": [], "returned": 0, "matched": 0}
 
     pool = max(k * 4, 40)
-    fts_ids = store.chunk_fts_search(project["key"], query, limit=pool, kind=kind)
-    cos_ids = _cosine_ranked(store, embedder, project["key"], query, k=pool, kind=kind)
+    rows = {r["id"]: r for r in store.chunk_rows(project["key"], kind=kind, source_path=source_path)}
+    fts_ids = store.chunk_fts_search(project["key"], query, limit=pool, kind=kind, source_path=source_path)
+    cos_ids = _cosine_ranked(cfg, embedder, rows.values(), query, k=pool)
     fused = fuse(
         [Channel("fts", fts_ids), Channel("similarity", cos_ids)],
         weights=_FRESH_WEIGHTS,
     )
-    rows = {r["id"]: r for r in store.chunk_rows(project["key"], kind=kind)}
-    packed = _diverse_pack(fused, rows, max_chars)[:k]
+    packed = _diverse_pack(fused, rows, max_chars, diverse=source_path is None)[:k]
 
     now = time.time()
     fresh_cache: dict[str, str] = {}
     results = []
     for row, score in packed:
         sp = row["source_path"]
-        if row["kind"] == "snapshot":
-            fresh = _snapshot_freshness(row["indexed_at"], now)  # URL source — age-based, not file drift
-        else:
+        fresh = _nonfile_freshness(row, now)
+        if fresh is None:
             if sp not in fresh_cache:
                 fresh_cache[sp] = _file_freshness(project["path"], sp, _source_hash(store, project["key"], sp))
             fresh = fresh_cache[sp]
@@ -160,7 +172,8 @@ def _source_hash(store: Store, project_key: str, source_path: str) -> str:
 
 
 def get_chunk(store: Store, project: Project, ref: str) -> dict:
-    """Fetch one section's full body and verify it section-precisely against the live file."""
+    """Fetch one chunk's full body. A file-backed chunk is verified section-precisely against the
+    live file; a non-file chunk (snapshot / exchange) takes its kind's freshness rule."""
     row = store.get_chunk(project["key"], ref)
     if row is None:
         return {"found": False, "ref": ref}
@@ -168,10 +181,11 @@ def get_chunk(store: Store, project: Project, ref: str) -> dict:
         "found": True,
         "anchor": row["anchor"],
         "title": row["title"],
+        "kind": row["kind"],
         "heading_path": row["heading_path"],
         "source_path": row["source_path"],
         "body": row["body"],
-        "freshness": _section_freshness(project["path"], row),
+        "freshness": _nonfile_freshness(row, time.time()) or _section_freshness(project["path"], row),
     }
 
 

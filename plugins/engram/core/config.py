@@ -51,6 +51,14 @@ def _opt(key: str, default: str) -> str:
     return default
 
 
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _flag(key: str, default: bool) -> bool:
+    """A boolean option: truthy strings (1/true/yes/on, any case) are True; the default applies when unset."""
+    return _opt(key, "true" if default else "false").lower() in _TRUTHY
+
+
 def _num(val: str, fallback: float) -> float:
     try:
         return float(val)
@@ -148,6 +156,10 @@ class Config:
     sensory_enabled: bool
     sensory_capacity: int
     sensory_ttl_seconds: float
+    episodic_enabled: bool
+    episodic_min_chars: int
+    episodic_ttl_days: float
+    episodic_max_chunks: int
 
 
 def get_config() -> Config:
@@ -171,14 +183,14 @@ def get_config() -> Config:
         core_size=int(_num(_opt("core_size", "5"), 5)),
         # LT-WM retrieval structure: group the session core into a titled scaffold instead of
         # a flat list. Default off preserves the current flat core block.
-        core_scaffold=_opt("core_scaffold", "false").lower() in ("1", "true", "yes", "on"),
+        core_scaffold=_flag("core_scaffold", False),
         max_chars=int(_num(_opt("max_chars", "800"), 800)),
         # Passive index injection at UserPromptSubmit (0 = off). FTS-prefiltered then
         # cosine-reranked, so it stays hot-path-cheap regardless of index size.
         index_top_k=int(_num(_opt("index_top_k", "2"), 2)),
         index_min_sim=_num(_opt("index_min_sim", "0.18"), 0.18),
         index_max_chars=int(_num(_opt("index_max_chars", "400"), 400)),
-        cross_project=_opt("cross_project", "false").lower() in ("1", "true", "yes", "on"),
+        cross_project=_flag("cross_project", False),
         half_life_days=_num(_opt("half_life_days", "30"), 30),
         w_sim=_num(_opt("w_sim", "1.0"), 1.0),
         # 0.05, not 0.3: at 0.3 the recency term (up to 0.3) dwarfs typical cosine gaps (~0.03),
@@ -249,18 +261,18 @@ def get_config() -> Config:
         ingest_min_prompt_len=int(_num(_opt("ingest_min_prompt_len", "12"), 12)),
         # Anti-pattern catalogue: mine admitted mistakes into durable 'antipattern' memories.
         # On by default, but a no-op unless an LLM distiller is configured (heuristic returns []).
-        antipatterns=_opt("antipatterns", "true").lower() in ("1", "true", "yes", "on"),
+        antipatterns=_flag("antipatterns", True),
         # Distiller-assisted memory review (`engram review` / the review_memory MCP tool): the
         # LLM proposes stale/contradicted entries to retire. On by default, but a no-op unless an
         # LLM distiller is configured (the heuristic returns no proposals). Direct invalidation
         # (invalidate_memory / `engram forget`) is always available regardless of this gate.
-        review_enabled=_opt("review_enabled", "true").lower() in ("1", "true", "yes", "on"),
+        review_enabled=_flag("review_enabled", True),
         ttl_days=_num(_opt("ttl_days", "0"), 0),
         ttl_keep_frequency=int(_num(_opt("ttl_keep_frequency", "3"), 3)),
-        recall_min_confidence=_num(_opt("recall_min_confidence", "0.35"), 0.35),
+        recall_min_confidence=_num(_opt("recall_min_confidence", "0.40"), 0.40),
         recall_max_chars=int(_num(_opt("recall_max_chars", "1200"), 1200)),
         viewer_port=int(_num(_opt("viewer_port", "7801"), 7801)),
-        viewer_autostart=_opt("viewer_autostart", "true").lower() in ("1", "true", "yes", "on"),
+        viewer_autostart=_flag("viewer_autostart", True),
         markers=markers,
         # Project identity: 'workspace' (default) keys memory on the folder Claude was
         # started in (CLAUDE_PROJECT_DIR, else cwd) — matching the human's chosen workspace,
@@ -276,7 +288,14 @@ def get_config() -> Config:
         sock_path=data_dir / "engram.sock",
         viewer_pid_path=data_dir / "viewer.pid",
         attention_window_seconds=_num(_opt("attention_window_seconds", "300"), 300),
-        sensory_enabled=_opt("sensory_enabled", "true").lower() in ("1", "true", "yes", "on"),
+        sensory_enabled=_flag("sensory_enabled", True),
         sensory_capacity=int(_num(_opt("sensory_capacity", "64"), 64)),
         sensory_ttl_seconds=_num(_opt("sensory_ttl_seconds", "900"), 900),
+        # Episodic memory: verbatim conversation exchanges indexed (redacted) for on-demand recall —
+        # the semantic facts stay the injected layer. Measured on LongMemEval (plan
+        # verbatim-episodic-layer): exchanges lift session R_any@5 0.891 → 0.983 over facts alone.
+        episodic_enabled=_flag("episodic_enabled", True),
+        episodic_min_chars=int(_num(_opt("episodic_min_chars", "24"), 24)),
+        episodic_ttl_days=_num(_opt("episodic_ttl_days", "180"), 180),
+        episodic_max_chunks=int(_num(_opt("episodic_max_chunks", "20000"), 20000)),
     )

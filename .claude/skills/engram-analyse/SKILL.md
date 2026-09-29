@@ -72,8 +72,8 @@ Every workflow follows these 7 steps, defined once here and applied to all 6 bel
 Before any broad search, apply the project's own memory-first discipline (the rule
 `prefer_memory.py` enforces at runtime):
 
-1. **`recall`** — prior decisions/facts for this project, with a calibrated verdict
-   (`ok` / `low_confidence` / `no_memory`).
+1. **`recall`** — prior decisions/facts for this project, with a confidence score and
+   verdict (`ok` / `low_confidence` / `no_memory`).
 2. **`search_code`** / **`search_docs`** — ranked symbol/section outlines for the
    affected area (qualname + summary + freshness), not file contents.
 3. **`get_symbol`** / **`get_doc_section`** — pull one exact span once search points

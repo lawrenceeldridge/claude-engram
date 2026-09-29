@@ -24,11 +24,12 @@ Capture and recall have opposite performance profiles, so they are split:
 UserPromptSubmit ─► recall (embed → rank → gated inject)      ← hot path, tail of context
 SessionStart     ─► core inject (small, stable)               ← joins cached prefix
 Stop/SessionEnd/PreCompact ─► spawn detached capture worker   ← fire & forget
-                              │ distil → embed → persist (tier=stm)
-                              │ checkpoint: consolidate  (replay → displace → refine → purge)
+                              │ distil → embed → persist (tier=stm) · verbatim exchanges → index
+                              │ checkpoint: consolidate  (replay → … → purge → forget; § sleep pass)
                               ▼
               ${CLAUDE_PLUGIN_DATA}/memory.db   ◄── read-only ── localhost viewer
-              (facts + int8/binary embeddings, tier + status, rows tagged by project)
+              (facts + int8/binary embeddings, tier + status, rows tagged by project;
+               index chunks: docs · code · snapshots · exchanges)
                               ▲
        durable WorkQueue (inproc SQLite) ─► rescue: re-distil degraded deltas
 ```
@@ -66,8 +67,18 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
 2. **Just-in-time + threshold-gated.** `UserPromptSubmit` injects only when a
    fact clears `min_sim`, capped at `top_k` / `max_chars`. Irrelevant turns cost
    nothing.
-3. **Distil, don't store transcripts.** Atomic facts (~15 tokens) instead of
-   transcript chunks (hundreds). Lossy compression tuned for relevance.
+3. **Distil for injection; keep verbatim for on-demand detail.** What is *injected* is atomic
+   facts (~15 tokens) instead of transcript chunks (hundreds) — lossy compression tuned for
+   relevance. What is *kept* also includes each exchange verbatim (redacted, retention-bounded,
+   index kind `exchange`), so the detail a fact dropped is one `search_history` call away and
+   never injected. Measured on LongMemEval session retrieval (470 questions, fastembed, R@5):
+   facts alone 0.891, verbatim exchanges 0.983 (p<0.001) — distillation drops what users state
+   in passing (preferences, single-session details). Through the shipped tools end to end
+   (transcript → capture → `recall` / `search_history`, hash, 470): `recall` alone 0.864,
+   `recall` + `search_history` 0.913. Pulling the top 5 costs ~850 tokens of exchanges vs ~175
+   of facts, so it is a pull, not a push. (The harness neutralises LongMemEval's session ids,
+   which label the answer; the leak was measured negligible — 0 of 250 paired fastembed questions
+   changed R@5.)
 
 ## Cache efficiency
 
@@ -77,8 +88,8 @@ Hook `additionalContext` is wrapped in a system-reminder and inserted into the
 - **SessionStart** → near the head → stable all session → joins the prompt-cache
   prefix → read at ~0.1× on every later turn. Used for the **stable project core**.
 - **UserPromptSubmit** → tail → does *not* bust the earlier cached prefix, but is
-  never a same-turn cache hit and varies per turn. Used for **JIT episodic** recall
-  only, kept tiny.
+  never a same-turn cache hit and varies per turn. Used for **JIT relevance** recall
+  (distilled facts) only, kept tiny.
 
 This is why recall is a **hybrid**: cache-friendly core + relevance-driven JIT.
 
@@ -94,7 +105,9 @@ This is why recall is a **hybrid**: cache-friendly core + relevance-driven JIT.
 ## Embedding backend — measured, not assumed
 
 `engram eval` runs a labelled paraphrase benchmark (Recall@1/@3, MRR@10) through the
-real quantised search path. Findings that drove the defaults:
+real quantised search path. Findings that drove the defaults, measured on the original
+64-fact / 77-query set (frozen as `bench/dataset-v1.json` so these figures reproduce; current
+numbers on the larger mined set are in [README § Benchmarking](README.md)):
 
 | backend | Recall@1 | Recall@3 | MRR@10 | bytes/fact |
 |---|---|---|---|---|
@@ -105,9 +118,64 @@ real quantised search path. Findings that drove the defaults:
 
 - **int8 ≈ float** — quantization loss is negligible, so the compact int8 store
   stays and float-rescore was measured *not* worth building.
-- **Model size is the lever** — bge-base ~2.2× bge-small's Recall@1 for ~5ms/query
-  (absorbed by the warm daemon). Hence bge-base is the default; bge-small remains
+- **Model size is the lever** — bge-base ~2.2× bge-small's Recall@1 here for ~5ms/query
+  (absorbed by the warm daemon); on the harder mined set the gap is smaller (0.463 vs 0.398)
+  but still significant (paired McNemar p=0.033). Hence bge-base is the default; bge-small remains
   available via `embedding_model` for constrained environments.
+
+Recall@k is one axis; the same harness measures the others a default rests on — `--confidence`
+(does the `recall` verdict mean what it says; § Recall confidence below), `--aged` (does age
+override relevance on either ranker), `--longmemeval` (verbatim vs distilled session retrieval;
+§ Token efficiency), plus `--stm` / `--antipatterns` / `--integrate`. `--distractors N` pads the
+store with real facts mined at runtime to reproduce density. Commands and output columns:
+[README § Benchmarking](README.md) and `.claude/skills/engram-test/references/benchmark.md`.
+
+## Recall confidence — measured
+
+The `recall` MCP tool returns a `confidence` score and a verdict; `ok` tells the model to trust the
+facts and skip a wider search, so it is only worth having if `ok` is usually right. It wasn't:
+
+- **Ordering defect (fixed first).** Confidence read the *fused* first hit, which fusion's recency
+  and frequency channels often make a newer, weaker fact — the gap to the "runner-up" (really the
+  best match) went to zero. On 120 replayed real queries, 28% collapsed that way and 42% had the
+  best cosine match demoted. Confidence now judges the best-matching hit (`best_match`), and the
+  recall ledger's `recall_events.top_sim` records that hit's cosine — **rows written before this
+  change hold the fused first hit's**, so compare old and new rows with care.
+- **Formula defect.** The old gap × strength × identity score barely separated right from wrong
+  recalls (AUROC 0.54 / 0.58 / 0.55 at 0 / 1,788 / 20,000 extra facts), so `ok` was right about
+  half the time (precision 0.49 / 0.57 / 0.42).
+
+**The score now** is the best match's **pool z-score** — how many standard deviations its cosine
+sits above the similarity of *every* comparable fact recall scanned — Platt-scaled to 0-1
+(`sigmoid(0.6341·z − 3.2706)`, `core/domain/confidence.py`, fitted in `core/recall`). Of the
+candidates measured it was the only one better than the old formula at every density, and its fit
+barely moves between embedding models. Measured on `engram eval --confidence` (fastembed bge-base,
+244 answerable + 89 unanswerable queries), `ok` at the shipped `recall_min_confidence` 0.40:
+
+| store (extra facts) | AUROC (old → new) | `ok` precision (old → new) | `ok` recall (old → new) |
+|---|---|---|---|
+| 0 | 0.54 → 0.71 | 0.49 → 0.73 | 0.42 → 0.12 |
+| 1,788 on-topic | 0.58 → 0.64 | 0.57 → 0.63 | 0.37 → 0.24 |
+| 20,000 off-topic | 0.55 → 0.68 | 0.42 → 0.55 | 0.31 → 0.49 |
+
+- **A ranked score, not a probability.** The best Platt fit drifts with store size (b = −2.27 at 0
+  extra facts, −3.27 at 20,000), so no fixed calibration holds a promised precision everywhere —
+  the old 0.90 target is unreachable with any single signal. The constants are fitted where real
+  stores live (tens of thousands of facts); on a small store the same match scores lower, so `ok`
+  is rarer there but more often right — the safe error, since a missed `ok` only costs a search.
+- **A store floor.** `ok` needs z ≥ 4.5, and one outlier among n values can sit at most √(n−1)
+  standard deviations out, so a project with fewer than ~22 facts can never say `ok`.
+- **The `hash` stub never says `ok`.** On its lexical vectors the same signal is near or below
+  chance (pool z-score AUROC 0.59 / 0.56 / 0.44 at the three densities; no candidate exceeds 0.61), so
+  a gateway that isn't `semantic` gets no calibration: `confidence` is `null`, the verdict is
+  `low_confidence`, and the guidance says why (the honest Special Case, not a made-up number).
+- **Ledger continuity.** `engram stats`' estimated savings count `ok` recalls; on real queries the
+  `ok` rate moved from 15% to 62% with this change, so the estimate steps up without any real
+  saving. It is excluded from the headline figure for exactly this kind of reason.
+
+Reproduce: `engram eval --backends hash,fastembed --confidence [--distractors N
+--distractor-project <key>] --confidence-out obs.jsonl` — the `platt (a, b)` column is where the
+shipped constants come from; `bench/replay_ledger.py` replays real ledger queries unlabelled.
 
 ## Distillation — heuristic vs LLM
 
@@ -226,6 +294,7 @@ memory-research models, made explicit on the *write side*, off the hot path.
 | Short-term store (fresh, capacity-bounded, *displaced* when full) | `tier='stm'` facts; `stm_capacity` bounds the active STM set, `store.displace_stm` sheds the weakest |
 | Rehearsal (STM→LTM transfer) | inline `store.reinforce` + `store.promote` (freq ≥ `promote_after_freq`); batch `replay` promotes STM that was *retrieved* |
 | Long-term store (durable, semantic) | `tier='engram'` facts + decay + supersession + TTL |
+| Long-term store (episodic, verbatim) | `exchange` chunks in the index — each conversation exchange, redacted; on demand only (`search_history`), never recalled or injected; facts link to theirs by `episode`; forgotten past `episodic_ttl_days` / `episodic_max_chunks` |
 | Retrieval (LTM→use) | `recall.search` → `render_block` |
 
 **Two distinct promotion signals — kept separate, not unified.** STM→LTM promotion
@@ -251,7 +320,12 @@ process, *not* rehearsal — it never touches `freq`/`reinforce`) gates two exit
 - **Verbal → SR → STS → LTS.** Conversation is *coded* (distilled) into facts; the STM tier is
   the short-term store and consolidation the LTM transfer — the pipeline above. `sensory_enabled`
   records the raw delta as a `verbal` observation *additively*, so distillation still reads the
-  full delta and `facts` output is byte-identical whether or not the register is on.
+  full delta and `facts` output is byte-identical whether or not the register is on. Alongside
+  the coded facts (semantic memory), the delta's exchanges are also kept *uncoded* as the
+  episodic trace (`exchange` chunks, redacted and length-gated) — an on-demand copy that never
+  enters recall, which is why distillation stays the only thing injected. The earlier rule
+  "verbal is only ever coded" gave way to measurement: facts alone lose ~9 points of LongMemEval
+  session recall that the verbatim trace keeps (§ Token efficiency).
 - **Visual → SR → LTS directly.** A page snapshot resists verbal coding, so (A-S §III) it enters
   the *visual* store directly — engram's index, as a `snapshot` chunk (`index_snapshot`), skipping
   the facts pipeline: the SR→LTS dashed path in Fig. 1. Attention here is *re-perception* of the
@@ -266,8 +340,9 @@ transient, `Config`-tunable *control processes* over them.
 **Active Systems Consolidation Hypothesis + the Sequential Hypothesis** — an offline
 "sleep" pass (`core/consolidation/`) runs at session checkpoints (not every turn, like
 sleep itself), orchestrated by `consolidate()` and exposed as `engram consolidate`. Its
-stages run in order `replay → displace → integrate → refine → purge`; each maps to a
-mechanism and is individually gated and reversible:
+stages run in order `replay → mature → displace → integrate → refine → invalidate → purge →
+forget` (the order `consolidate()` runs them); each maps to a mechanism and is individually gated
+— every stage but purge and forget archives reversibly:
 
 - **Replay** (`replay.py`) — *active systems consolidation*: short-term facts that were
   actually **recalled** graduate STM→LTM, mirroring selective, prioritized hippocampal
@@ -297,6 +372,10 @@ mechanism and is individually gated and reversible:
   Archival is a reversible status flip (`status='pruned'`), never a delete. Note `engram eval`
   is recall-only and does **not** exercise consolidation, so these are validated by unit tests
   + reasoning, not the benchmark.
+- **Forget** (episodic) — verbatim `exchange` chunks past `episodic_ttl_days` or beyond the
+  per-project `episodic_max_chunks` cap leave the index (a hard delete: an on-demand trace, not a
+  fact), and facts whose whole episode is gone lose their `episode` link. Ships on (180 days /
+  20,000) because unbounded verbatim storage is the layer's storage and privacy risk.
 - **Rescue** (`service.rescue`) — re-distils degraded deltas parked on the durable queue
   when an LLM distiller was down, so a transient outage doesn't leave low-quality facts
   behind. It needs the embedder + distiller and runs at the head of every capture, so it
@@ -319,9 +398,9 @@ choices, called out so the mapping isn't over-claimed:
   checkpoint pass. Entity-level conflict merge across disjoint vocabulary still relies on
   the LLM (`merge_cluster` in integrate, and the `supersedes` path at capture), since the
   cosine clustering only groups lexically/semantically near facts.
-- **Pipeline order is engineering-first, not phase-order.** We run
-  replay → displace → integrate → refine → purge so a fact about to be promoted leaves the STM
-  overflow set *before* displacement (nothing is lost). This is a data-safety ordering,
+- **Pipeline order is engineering-first, not phase-order.** The order above promotes (replay,
+  mature) before displacement so a fact about to be promoted leaves the STM overflow set first
+  (nothing is lost). This is a data-safety ordering,
   not a claim to reproduce the NREM-then-REM sequence.
 - **STM is a promotion-gated state, not a faster clock.** Atkinson–Shiffrin has the
   short-term store decay in *seconds*; that timescale deliberately does **not** transfer
@@ -376,7 +455,8 @@ consolidate upward. In both modes an explicit `.engram-root` sentinel overrides 
 | Hook error breaks a turn | every hook exits 0 on any error, injects nothing |
 | Irrelevant recall pollutes context | `min_sim` threshold + `top_k` + `max_chars` cap + project scoping |
 | Cross-project leakage | project-scoped by default; fallback penalised and opt-in |
-| Store growth / stale facts | recency decay + supersession de-rank/retire old facts; idempotent capture; viewer prune |
+| Store growth / stale facts | recency decay + supersession de-rank/retire old facts; idempotent capture; viewer prune; verbatim exchanges bounded by `episodic_ttl_days` + `episodic_max_chunks` (reported by `engram doctor`) |
+| Verbatim storage keeps secrets a distiller would drop | exchanges are redacted before storage (credentials, auth headers, token shapes, private keys, emails, non-project paths); local-only store; retention horizon; `episodic_enabled=false` turns the layer off |
 | Over-eager supersession retires a distinct fact | conservative default threshold (0.85); superseded rows are archived (reversible), not deleted |
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |

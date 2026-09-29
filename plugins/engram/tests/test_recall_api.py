@@ -1,7 +1,8 @@
 """Recall API + MCP server tests — stdlib unittest, no external deps.
 
-Covers the 0.4.0 memory-first surface: calibrated confidence, the confidence-gated
-structured recall verdict, and the pure JSON-RPC dispatch of the MCP stdio server.
+Covers the memory-first surface: the recall confidence score (calibrated pool_z, the hash
+Special Case), the confidence-gated structured recall verdict, and the pure JSON-RPC dispatch
+of the MCP stdio server.
 
 Run: python3 -m unittest discover -s plugins/engram/tests
 """
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -21,39 +23,125 @@ sys.path.insert(0, str(ROOT / "bin"))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.domain.confidence import compute_confidence  # noqa: E402
-from core.domain.lexical import has_overlap, tokenize  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
+from core.domain.confidence import (  # noqa: E402
+    Calibration,
+    PoolStats,
+    calibrate,
+    calibrated_confidence,
+    pool_stats,
+    pool_z,
+    sigmoid,
+)
+from core.domain.lexical import tokenize  # noqa: E402
+from core.ports.embedding import EmbeddingGateway, HashEmbedding  # noqa: E402
+from core.recall import (  # noqa: E402
+    SEMANTIC_CALIBRATION,
+    FusedResult,
+    get_calibration,
+    is_trusted,
+    recall_confidence,
+    search_fused,
+    search_fused_with_stats,
+)
 from core.store import Store  # noqa: E402
 
 
+class _SemanticStandIn(EmbeddingGateway):
+    """Hash vectors behind a non-stub gateway — stands in for a semantic embedder, which gets a
+    calibration (the stub itself never does)."""
+
+    def __init__(self, dim: int) -> None:
+        self.dim = dim
+        self._hash = HashEmbedding(dim=dim)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._hash.embed(texts)
+
+
 class ConfidenceTests(unittest.TestCase):
-    def test_empty_scores_zero(self):
-        self.assertEqual(compute_confidence([])["confidence"], 0.0)
+    CAL = Calibration(a=1.0, b=0.0)
 
-    def test_dominant_top_with_identity_is_high(self):
-        strong = compute_confidence([1.2, 0.1], has_identity_match=True)["confidence"]
-        self.assertGreater(strong, 0.6)
+    def test_pool_z_known_values(self):
+        pool = PoolStats(n=4, mean=0.5, std=0.1)
+        self.assertAlmostEqual(pool_z(0.7, pool), 2.0)
+        self.assertAlmostEqual(pool_z(0.4, pool), -1.0)
+        self.assertEqual(pool_z(0.9, PoolStats(n=1, mean=0.9, std=0.0)), 0.0)  # flat pool: no evidence
 
-    def test_tied_top_lowers_confidence(self):
-        tied = compute_confidence([0.5, 0.49], has_identity_match=True)["confidence"]
-        clear = compute_confidence([0.5, 0.05], has_identity_match=True)["confidence"]
-        self.assertLess(tied, clear)
+    def test_sigmoid_is_stable_and_symmetric(self):
+        self.assertEqual(sigmoid(0.0), 0.5)
+        self.assertAlmostEqual(sigmoid(2.0) + sigmoid(-2.0), 1.0)
+        self.assertEqual((sigmoid(-1000.0), sigmoid(1000.0)), (0.0, 1.0))  # no overflow
 
-    def test_identity_miss_penalised(self):
-        hit = compute_confidence([0.8, 0.1], has_identity_match=True)["confidence"]
-        miss = compute_confidence([0.8, 0.1], has_identity_match=False)["confidence"]
-        self.assertLess(miss, hit)
+    def test_calibrated_confidence_is_platt_on_pool_z(self):
+        pool = PoolStats(n=10, mean=0.5, std=0.1)
+        self.assertEqual(calibrated_confidence(0.7, pool, self.CAL), round(sigmoid(2.0), 3))
+        self.assertEqual(calibrate(2.0, Calibration(a=0.5, b=-1.0)), 0.5)
+
+    def test_a_stronger_standout_scores_higher(self):
+        pool = PoolStats(n=100, mean=0.6, std=0.05)
+        weak, strong = (calibrated_confidence(s, pool, SEMANTIC_CALIBRATION) for s in (0.62, 0.80))
+        self.assertLess(weak, strong)
+
+    def test_recall_confidence_empty_unjudged_and_best_match(self):
+        self.assertEqual(recall_confidence(FusedResult([], pool_stats([])), self.CAL), 0.0)
+        pool = pool_stats([0.5, 0.6, 0.7])
+        hits = [(0.9, 0.5, None), (0.8, 0.7, None)]  # fused order; the best cosine is second
+        self.assertIsNone(recall_confidence(FusedResult(hits, pool), None))  # can't judge → no score
+        self.assertEqual(
+            recall_confidence(FusedResult(hits, pool), self.CAL), calibrated_confidence(0.7, pool, self.CAL)
+        )
+
+    def test_the_hash_stub_gets_no_calibration(self):
+        self.assertIsNone(get_calibration(HashEmbedding(dim=64)))
+        self.assertEqual(get_calibration(_SemanticStandIn(dim=64)), SEMANTIC_CALIBRATION)
+
+    def test_calibration_follows_the_declared_capability_not_the_type(self):
+        from core.adapters.fastembed_gw import FastEmbedGateway  # class only — fastembed loads lazily
+
+        self.assertTrue(FastEmbedGateway.semantic)
+        self.assertFalse(HashEmbedding.semantic)
+        lexical = _SemanticStandIn(dim=64)
+        lexical.semantic = False  # any gateway that declares itself lexical gets no calibration
+        self.assertIsNone(get_calibration(lexical))
+
+    def test_a_tiny_store_can_never_be_ok(self):
+        # One outlier among n values sits at most sqrt(n-1) population σ above the mean.
+        sims = [0.9] + [0.1] * 12  # n = 13 → z = sqrt(12) ≈ 3.46, short of the ~4.5 `ok` needs
+        pool = pool_stats(sims)
+        self.assertAlmostEqual(pool_z(0.9, pool), 12**0.5)
+        confidence = calibrated_confidence(0.9, pool, SEMANTIC_CALIBRATION)
+        self.assertFalse(is_trusted(confidence, get_config().recall_min_confidence))
+
+    def test_is_trusted(self):
+        self.assertTrue(is_trusted(0.6, 0.6))
+        self.assertFalse(is_trusted(0.59, 0.6))
+        self.assertFalse(is_trusted(None, 0.0))  # unjudged is never ok, whatever the threshold
+
+
+class PoolStatsTests(unittest.TestCase):
+    def test_empty_pool(self):
+        self.assertEqual(pool_stats([]), PoolStats(0, 0.0, 0.0))
+
+    def test_single_value_has_zero_spread(self):
+        self.assertEqual(pool_stats([0.7]), PoolStats(1, 0.7, 0.0))
+
+    def test_constant_pool_never_negative_variance(self):
+        # Float cancellation in E[x^2] - E[x]^2 can dip below 0; std must clamp to 0, not NaN.
+        stats = pool_stats([0.1] * 1000)
+        self.assertAlmostEqual(stats.mean, 0.1)
+        self.assertEqual(stats.std, 0.0)
+
+    def test_known_population_moments(self):
+        stats = pool_stats(iter([0.2, 0.4, 0.6, 0.8]))  # any iterable, consumed once
+        self.assertEqual(stats.n, 4)
+        self.assertAlmostEqual(stats.mean, 0.5)
+        self.assertAlmostEqual(stats.std, 0.05**0.5)  # population variance = 0.05
 
 
 class LexicalTests(unittest.TestCase):
     def test_stopwords_and_short_tokens_dropped(self):
         self.assertNotIn("the", tokenize("the deployment is on it"))
         self.assertIn("deployment", tokenize("the deployment is on it"))
-
-    def test_overlap_detects_shared_content_token(self):
-        self.assertTrue(has_overlap("how does deployment work", "deployment runs on github actions"))
-        self.assertFalse(has_overlap("database schema", "frontend styling tokens"))
 
 
 class RecallStructuredTests(unittest.TestCase):
@@ -268,21 +356,86 @@ class RecallStructuredTests(unittest.TestCase):
         self.assertEqual(result["facts"], [])
         self.assertIn("configuration problem", result["guidance"])
 
-    def test_relevant_recall_is_ok(self):
+    def _standout_store(self, embedder) -> None:
+        # A realistic pool: `ok` needs the best match ~4.5 pool σ clear, and a lone outlier among n
+        # values can't exceed sqrt(n-1) σ, so a store under ~22 facts can never be `ok`.
+        facts = ["The deployment pipeline runs on github actions with a manual approval gate."]
+        topics = ["tailwind", "sqlite", "email", "viewer", "logging", "fonts", "billing", "search"]
+        facts += [f"unrelated note {i} about {topic} colours" for i, topic in enumerate(topics * 20)]
+        service.add_facts(self.store, embedder, self.cfg, self.project, "s1", facts)
+
+    def test_a_standout_match_is_ok_on_a_semantic_backend(self):
+        embedder = _SemanticStandIn(dim=self.cfg.dim)
+        self._standout_store(embedder)
+        result = service.recall_structured(
+            self.store, embedder, self.cfg, self.project, "deployment pipeline github actions approval gate"
+        )
+        self.assertEqual(result["verdict"], "ok")
+        self.assertGreaterEqual(result["confidence"], self.cfg.recall_min_confidence)
+        self.assertTrue(any("github actions" in f["text"] for f in result["facts"]))
+
+    def test_the_hash_backend_is_never_ok_and_says_why(self):
+        self._standout_store(self.embedder)
+        result = service.recall_structured(
+            self.store, self.embedder, self.cfg, self.project, "deployment pipeline github actions approval gate"
+        )
+        self.assertTrue(result["facts"])  # facts still come back — as hints
+        self.assertEqual((result["verdict"], result["confidence"]), ("low_confidence", None))
+        self.assertIn("hash", result["guidance"])
+        logged = self.store.db.execute(
+            "SELECT confidence, verdict FROM recall_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(tuple(logged), (None, "low_confidence"))
+
+    def test_confidence_judges_best_match_not_fused_first(self):
+        # Fusion's recency/frequency channels can rank a newer, weaker fact above an older,
+        # better-matching one. Returned order must follow fusion; confidence and the ledger's
+        # top_sim must follow the best cosine match — otherwise old memories read as ~0.
         service.add_facts(
             self.store,
             self.embedder,
             self.cfg,
             self.project,
             "s1",
-            ["The deployment pipeline runs on github actions with a manual approval gate."],
+            ["Deploys go through github actions with a manual approval gate.", "Frontend uses tailwind."],
         )
-        result = service.recall_structured(
-            self.store, self.embedder, self.cfg, self.project, "how does the deployment pipeline work"
+        old_strong, new_weak = sorted(self.store.rows_for_project(self.project["key"]), key=lambda r: r["text"])
+        fused = FusedResult([(0.9, 0.698, new_weak), (0.8, 0.760, old_strong)], pool_stats([0.698, 0.760]))
+        query = "github actions approval gate"
+        semantic = _SemanticStandIn(dim=self.cfg.dim)
+        with mock.patch.object(service, "search_fused_with_stats", return_value=fused):
+            result = service.recall_structured(self.store, semantic, self.cfg, self.project, query)
+
+        self.assertEqual(result["confidence"], calibrated_confidence(0.760, fused.pool, SEMANTIC_CALIBRATION))
+        self.assertEqual([f["id"] for f in result["facts"]], [new_weak["id"], old_strong["id"]])
+        top_sim = self.store.db.execute("SELECT top_sim FROM recall_events ORDER BY id DESC LIMIT 1").fetchone()[0]
+        self.assertAlmostEqual(top_sim, 0.760)
+
+    def test_search_fused_is_the_hits_of_search_fused_with_stats(self):
+        texts = [
+            "The deployment pipeline runs on github actions with a manual approval gate.",
+            "Frontend styling uses tailwind utility classes.",
+            "The sqlite store keeps int8 vectors per fact.",
+            "Approval of a release needs two reviewers.",
+            "Recall injects at most three facts per prompt.",
+            "The viewer serves on localhost only.",
+        ]
+        service.add_facts(self.store, self.embedder, self.cfg, self.project, "s1", texts)
+        self.assertEqual(self.store.active_count(self.project["key"]), len(texts))
+        query = "deployment approval"
+        plain = search_fused(self.store, self.embedder, self.project, query, self.cfg, k=4)
+        result = search_fused_with_stats(self.store, self.embedder, self.project, query, self.cfg, k=4)
+        self.assertEqual([(s, sim, r["id"]) for s, sim, r in plain], [(s, sim, r["id"]) for s, sim, r in result.hits])
+        # The pool is every comparable fact scanned, not just the k returned.
+        self.assertEqual(result.pool.n, len(texts))
+
+    def test_pool_excludes_dimension_mismatched_rows(self):
+        service.add_facts(
+            self.store, self.embedder, self.cfg, self.project, "s1", ["deployment runs on github actions"]
         )
-        self.assertEqual(result["verdict"], "ok")
-        self.assertGreaterEqual(result["confidence"], self.cfg.recall_min_confidence)
-        self.assertTrue(any("github actions" in f["text"] for f in result["facts"]))
+        other_space = HashEmbedding(dim=self.cfg.dim // 2)
+        result = search_fused_with_stats(self.store, other_space, self.project, "deployment", self.cfg)
+        self.assertEqual((result.hits, result.pool.n), ([], 0))
 
     def test_budget_packs_and_reports_dropped(self):
         facts = [f"fact number {i} about compact memory storage systems and budgets" for i in range(20)]
@@ -333,8 +486,11 @@ class McpServerTests(unittest.TestCase):
                 "code_outline",
                 "invalidate_memory",
                 "review_memory",
+                "search_history",
             },
         )
+        for name in names:  # dispatch is by name: every advertised tool has its handler
+            self.assertTrue(callable(getattr(self.mcp.ENGINE, name, None)), name)
 
     def test_notification_gets_no_response(self):
         self.assertIsNone(self.mcp._handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
@@ -418,9 +574,12 @@ class DistillStructuredTests(unittest.TestCase):
         with os.fdopen(fd, "w") as fh:
             fh.write("\n".join(rows))
         try:
-            text, prompts, _end = extract_incremental_parts(path, 0)
-            self.assertEqual(prompts, ["Fix the timezone bug please."])
-            self.assertIn("Edited serve.py", text)
+            delta = extract_incremental_parts(path, 0)
+            self.assertEqual(delta.prompts, ["Fix the timezone bug please."])
+            self.assertIn("Edited serve.py", delta.text)
+            self.assertEqual(
+                delta.turns, [("user", "Fix the timezone bug please."), ("assistant", "Done.\nEdited serve.py")]
+            )  # the tool_result-only user message carries no text, so it is not a turn
         finally:
             os.unlink(path)
 
