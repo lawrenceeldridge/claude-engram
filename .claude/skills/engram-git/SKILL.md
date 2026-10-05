@@ -274,7 +274,7 @@ Every change should state which budget (token or latency) it touches.
 
 **User says:** `/engram-git commit`
 
-**Result:** Runs `git status`, sees changes under `plugins/engram/core/recall.py`, picks
+**Result:** Runs `git status`, sees changes under `plugins/engram/core/recall/`, picks
 scope `core` and type `perf` for an int8 pre-filter, commits
 `perf(core): int8 pre-filter before float cosine rescore` with the Co-Authored-By trailer.
 

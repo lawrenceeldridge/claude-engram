@@ -13,18 +13,18 @@ claude-engram is one package (see `single-package.md`); the question is *seam*, 
 
 ```
 Is it a pure decision/computation over data (distil, rank, score, quantise, fuse)?
-    └─ yes ──► Functional Core  (core/distill.py, scoring.py, quantize.py, fusion.py, …)
+    └─ yes ──► Functional Core  (core/ports/distill.py, scoring.py, quantize.py, fusion.py, …)
 
 Is it orchestration — open the store, call the core, embed, persist/render?
     ├─ a write (capture) ──► core/service.py   (Command/Handler)
-    └─ a read (recall)   ──► core/recall.py    (Query Object + render_block DTO)
+    └─ a read (recall)   ──► core/recall/    (Query Object + render_block DTO)
 
 Is it persistence / a query surface?
     └─ yes ──► core/store.py   (Repository over Data Mapper — the ONLY place SQL lives)
 
 Is it I/O against a model / subprocess / socket?
-    └─ yes ──► a Gateway behind an interface  (core/embedding.py + core/adapters/,
-                                               core/distill.py distiller impls, core/daemon_client.py)
+    └─ yes ──► a Gateway behind an interface  (core/ports/embedding.py + core/adapters/,
+                                               core/ports/distill.py distiller impls, core/daemon_client.py)
 
 Is it reading config, picking adapters, and invoking a handler for a hook/CLI/MCP call?
     └─ yes ──► a Composition Root  (bin/*, sharing bin/_bootstrap.py)
@@ -39,7 +39,7 @@ never imported into `core/` proper. That's Hexagonal's inward-dependency rule.
 
 ```
 Is it a pure decision computable from its inputs (no I/O)?
-    ├─ yes ──► Functional Core — a pure function (core/scoring.py, distill.py, quantize.py, fusion.py)
+    ├─ yes ──► Functional Core — a pure function (core/domain/scoring.py, distill.py, quantize.py, fusion.py)
     └─ no
         Does it open the store / embed / spawn a worker / render a payload?
             ├─ yes ──► Imperative Shell — service.py (capture) or recall.py (read), or a bin/* root
@@ -115,7 +115,7 @@ Is the code reaching out to a model / subprocess / HTTP endpoint / socket?
     ├─ SQLite  ──► already covered by Store (Repository/Data Mapper), no separate Gateway
     └─ embedding model / local LLM / claude CLI / resident daemon
         ──► Gateway behind a Separated Interface
-        ├─ Define the ABC port (EmbeddingGateway in core/embedding.py; Distiller in core/distill.py)
+        ├─ Define the ABC port (EmbeddingGateway in core/ports/embedding.py; Distiller in core/ports/distill.py)
         ├─ One real impl in core/adapters/ (or a distiller subclass)  ← heavy deps import HERE only
         ├─ One zero-dep Service Stub that doubles as the test fake (HashEmbedding, HeuristicDistiller)
         └─ Plugin selection via get_embedder(cfg) / get_distiller(cfg) in the Composition Root

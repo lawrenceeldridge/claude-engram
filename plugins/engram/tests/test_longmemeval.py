@@ -189,7 +189,7 @@ class EvaluateTests(unittest.TestCase):
         # distiller, and a hard guard — an LLM distiller fails open to the heuristic, so a stray call
         # would otherwise pass silently while spending external API calls.
         self.cfg = replace(get_config(), distiller="heuristic")
-        llm = mock.patch("core.ports.distill.subprocess.run")
+        llm = mock.patch("core.adapters.llm_distillers.subprocess.run")
         self.llm_call = llm.start()
         self.addCleanup(llm.stop)
         self.addCleanup(lambda: self.assertFalse(self.llm_call.called, "a harness test reached an LLM distiller"))

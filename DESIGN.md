@@ -50,12 +50,12 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
 |---|---|---|
 | Overall shape | CQRS + Hexagonal (Ports & Adapters) | whole plugin |
 | Capture pipeline | Command/Handler, idempotent per fact | `core/service.py` |
-| Distil/rank/quantise/consolidate | Functional Core / Imperative Shell | `core/distill.py`, `recall/`, `domain/quantize.py`, `consolidation/{replay,refine,scoring}.py` |
+| Distil/rank/quantise/consolidate | Functional Core / Imperative Shell | `core/ports/distill.py`, `recall/`, `domain/quantize.py`, `consolidation/{replay,refine,scoring}.py` |
 | Memory access + STM/LTM tiers | Repository over Data Mapper (never Active Record); tiers = a `tier` column + `Store` methods, **not** a second Repository | `core/store.py` |
-| Query params | Query Object | `core/recall.py::search` |
+| Query params | Query Object | `core/recall/__init__.py::search` |
 | Embedding provider | Gateway + Separated Interface | `core/ports/embedding.py`, `core/adapters/` |
 | Durable per-memory work (`rescue`, `exchange_format`) | Command queue (`WorkQueue`) behind a Separated Interface — **not** Events; single stdlib `inproc` backend; port retained for future backends | `core/ports/workqueue.py`, `core/adapters/inproc_queue.py` |
-| Injected payload | DTO (deliberately one line/fact) | `core/recall.py::render_block` |
+| Injected payload | DTO (deliberately one line/fact) | `core/recall/__init__.py::render_block` |
 | Empty recall | Special Case / Null Object (inject nothing) | `render_block` returns `""` |
 | Wiring | Composition Root | `bin/*` entry points |
 
@@ -137,6 +137,13 @@ override relevance on either ranker), `--longmemeval` (verbatim vs distilled ses
 store with real facts mined at runtime to reproduce density. Commands and output columns:
 [README § Benchmarking](README.md) and `.claude/skills/engram-test/references/benchmark.md`.
 
+**Tuned on dev, reported on test.** Anything a harness fits or chooses is fitted on a fixed dev
+split and reported once on a held-out test split, never on the rows it was tuned on: one
+`bench.stats.stable_split` (a salted-hash rank within each stratum — order- and seed-free, so a
+growing dataset keeps its split) serves `--confidence` (50 / 50, Platt fitted on dev) and
+`--longmemeval` (`--lme-split`, 20 / 80 by question id). The 244-query paraphrase set is a
+regression gate: changes hold parity on it, never tune to it.
+
 ## Recall confidence — measured
 
 The `recall` MCP tool returns a `confidence` score and a verdict; `ok` tells the model to trust the
@@ -201,14 +208,14 @@ quality lever. Strategy pattern behind one interface:
   LLM distillers, and the test stub) — dependency-free line extraction, keeping a delta's
   most salient lines (`line_salience`) under its 12-fact cap. Cannot detect
   conflicts, so it leans on similarity-based supersession.
-- **ClaudeCliDistiller** (`distiller=claude`) — headless `claude -p`, defaulting to
+- **ClaudeCliDistiller** (`distiller=claude`, `core/adapters/llm_distillers.py`) — headless `claude -p`, defaulting to
   **Haiku** (the right tier for cheap extraction). Spawned inside a tight isolation
   envelope so a model reading the transcript-in-prompt cannot act on it: `--tools ""`
   disables the **built-in** tools, `--strict-mcp-config` (with no `--mcp-config`) loads
   **zero MCP servers** — without the latter the nested session would inherit ambient MCP
   servers (browser, tracker, …) *and* the project allow-list and perform side-effecting
   "ghost actions" — and `ENGRAM_DISABLE=1` no-ops engram's own hooks (recursion guard).
-- **HTTPDistiller** (`distiller=ollama`) — POSTs to any OpenAI-compatible endpoint
+- **HTTPDistiller** (`distiller=ollama`, same module) — POSTs to any OpenAI-compatible endpoint
   via stdlib urllib; point it at a local Ollama / LM Studio / llama.cpp / vLLM
   server for **zero-token, offline** distillation.
 
@@ -493,6 +500,13 @@ Done and measured:
   an old fact a change contradicts is reachable — plus demand-driven curation
   (`invalidate_memory` / `engram forget`, and the distiller-assisted `review`).
 - **Hard expiry** — TTL sweep with frequency protection.
+- **Verbatim episodic layer** — redacted exchanges kept beside the facts (conversation first,
+  tool actions in one footer), linked by `facts.episode`, pulled on demand by `search_history`
+  (with an optional `after` / `before` window); LongMemEval R@5 facts 0.891 → exchanges 0.983.
+- **Recall confidence** — the calibrated pool z-score behind the `recall` verdict, re-checked on
+  a held-out split (§ Recall confidence); the `hash` stub never says `ok`.
+- **Salience-ranked heuristic facts** — the 12-fact cap keeps first-person preferences, habits
+  and decisions over tool actions (held-out LongMemEval facts-only R@5 0.894 → 0.907).
 - **Multi-store tiers + sleep pass** — explicit STM/LTM `tier` with promotion by rehearsal,
   recall, **and age** (`stm_max_age_days`, on by default — the time-based maturation path); an
   offline `consolidate()` pass (replay / mature / displace / integrate / refine / purge); and a

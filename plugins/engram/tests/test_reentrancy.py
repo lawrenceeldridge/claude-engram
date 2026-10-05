@@ -28,9 +28,11 @@ sys.path.insert(0, str(ROOT / "bin"))
 from _bootstrap import hooks_disabled  # noqa: E402
 
 from core import service  # noqa: E402
+from core.adapters import llm_distillers  # noqa: E402
+from core.adapters.llm_distillers import ClaudeCliDistiller  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.ports import distill  # noqa: E402
-from core.ports.distill import ClaudeCliDistiller, is_distiller_prompt  # noqa: E402
+from core.ports.distill import is_distiller_prompt  # noqa: E402
 from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.store import Store  # noqa: E402
 
@@ -108,7 +110,7 @@ class DistillerEnvTests(unittest.TestCase):
             captured["kwargs"] = kwargs
             return _Result()
 
-        with mock.patch.object(distill.subprocess, "run", fake_run):
+        with mock.patch.object(llm_distillers.subprocess, "run", fake_run):
             ClaudeCliDistiller(**distiller_kwargs)._complete("some prompt")
         return captured["args"], captured["kwargs"]
 
@@ -170,6 +172,19 @@ class DistillerPromptBackstopTests(unittest.TestCase):
         self.assertTrue(is_distiller_prompt("Summarise this coding-assistant session as one durable memory."))
         self.assertTrue(is_distiller_prompt("You are consolidating long-term memory for a coding assistant."))
         self.assertFalse(is_distiller_prompt("The deploy target is AWS Lambda."))
+
+    def test_every_prompt_the_llm_distillers_send_is_recognised(self):
+        # Derived from the prompts, so a new or reworded one can't slip past the backstop (the
+        # review prompt once did, while the prefixes were a hand-kept copy).
+        sent = [
+            distill._build_prompt("Edited auth.py", [("id1", "an existing fact")]),
+            distill._build_summary_prompt("a session"),
+            distill._build_merge_prompt(["fact a", "fact b"]),
+            distill._build_antipattern_prompt("a session", []),
+            distill._build_review_prompt([("id1", "a fact")], "context"),
+        ]
+        for prompt in sent:
+            self.assertTrue(is_distiller_prompt(prompt), prompt[:60])
 
     def test_capture_text_skips_a_distiller_prompt(self):
         n = service.capture_text(

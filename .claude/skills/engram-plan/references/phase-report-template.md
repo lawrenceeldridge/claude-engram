@@ -31,7 +31,7 @@ discoverable from the tracker.
 
 #### Actions Performed
 - Created: `core/adapters/new_gw.py` — <description>
-- Modified: `core/recall.py` — <what changed>
+- Modified: `core/recall/` — <what changed>
 - Deleted: `bin/old_hook.py` — <why removed>
 
 #### Budget Impact
@@ -97,7 +97,7 @@ the fail-open contract.
 ## Guidelines
 
 - Keep the report concise — a reader should understand the phase outcome in 30 seconds.
-- Use file paths relative to `plugins/engram/` (e.g. `core/recall.py`, `bin/capture.py`) or
+- Use file paths relative to `plugins/engram/` (e.g. `core/recall/`, `bin/capture.py`) or
   the repo root for dev files (e.g. `.claude/skills/engram-plan/SKILL.md`).
 - Group related actions (e.g. "Created 3 adapter tests" rather than listing trivial creates).
 - For a failed verification, include the actual output truncated to the key error lines.

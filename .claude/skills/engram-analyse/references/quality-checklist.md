@@ -59,7 +59,7 @@ Complete before presenting the analysis output.
 ### Completeness
 
 - [ ] **All evidence-table entries have file paths and line numbers** — Every row must have a specific path and line, not a layer-level reference.
-- [ ] **Recommendations are actionable** — Concrete ("Move ranking from `bin/recall_prompt.py:40` into `core/recall.py`"), not abstract ("improve layering").
+- [ ] **Recommendations are actionable** — Concrete ("Move ranking from `bin/recall_prompt.py:40` into `core/recall/`"), not abstract ("improve layering").
 - [ ] **Open questions are genuine** — Each needs human input or further investigation the analysis couldn't resolve. Don't pad.
 
 ### Budget Validation
@@ -106,7 +106,7 @@ read the actual source (`get_symbol` / `Read`) to confirm.
 ### 4. Evidence Over Opinion
 
 Findings are statements of fact with evidence, not subjective assessments. Instead of
-"the layering is sloppy", say "`core/recall.py:88` imports `fastembed` directly,
+"the layering is sloppy", say "`core/recall/__init__.py:88` imports `fastembed` directly,
 violating the stdlib-only core contract in `.claude/rules/02-architecture/00-overview.md`."
 
 ### 5. Scope Appropriately
@@ -133,10 +133,10 @@ Patterns to avoid in analysis output.
 
 | Failure | Example | How to Avoid |
 |---------|---------|-------------|
-| Stale references | "The recall logic is in `search.py`" (it's `core/recall.py`) | Confirm with `search_code`/`Read`, not memory |
+| Stale references | "The recall logic is in `search.py`" (it's `core/recall/`) | Confirm with `search_code`/`Read`, not memory |
 | Layer-level findings | "The core has layering issues" | Be specific: which file, which pattern, what violation |
-| Missing line numbers | "`recall.py` skips the similarity gate" | Read the file, cite the line: `core/recall.py:88` |
-| Assumed code state | "The distiller emits `supersedes` links" (from a prior session) | Read `core/distill.py` now to confirm |
+| Missing line numbers | "`recall.py` skips the similarity gate" | Read the file, cite the line: `core/recall/__init__.py:88` |
+| Assumed code state | "The distiller emits `supersedes` links" (from a prior session) | Read `core/ports/distill.py` now to confirm |
 | Placeholder recommendations | "Consider more tests" | Be specific: "Add a fail-open test for a dead daemon in `tests/test_daemon_client.py`" |
 | Ignoring the budget | Proposing a hot-path embed with no latency note | State the token/latency impact for every hot-path change |
 | Unmeasured retrieval change | Changing fusion weights without `engram eval` | Require the A/B before the finding recommends shipping |

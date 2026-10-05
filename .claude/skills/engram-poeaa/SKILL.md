@@ -200,8 +200,8 @@ Full justifications and citations live in `references/engram-defaults.md`. The s
 |---------|----------------------|--------|
 | Repository over Data Mapper | core/store.py:266 | ✅ aligned with claude-engram default |
 | Active Record | core/foo.py:45 — `fact.save()` | ⚠️ violates claude-engram default (Repository) |
-| I/O in pure core | core/scoring.py:88 — DB read inside ranking fn | 🐌 breaks Functional Core / Imperative Shell |
-| Heavy dep outside adapters | core/recall.py:5 — `import fastembed` | ⚠️ breaks Hexagonal inward-dependency rule |
+| I/O in pure core | core/domain/scoring.py:88 — DB read inside ranking fn | 🐌 breaks Functional Core / Imperative Shell |
+| Heavy dep outside adapters | core/recall/__init__.py:5 — `import fastembed` | ⚠️ breaks Hexagonal inward-dependency rule |
 
 ### Dated Patterns Found
 | Pattern | Severity | Modern Equivalent |
@@ -343,7 +343,7 @@ Read these on demand based on the mode and category in play. Each file is small 
 
 **Symptom:** `audit <path>` is invoked but the path resolves to nothing under the plugin root.
 **Cause:** Typo, or a path given relative to the repo root rather than `plugins/engram/`.
-**Fix:** Re-run with the plugin-relative path (e.g. `core/store.py`, `core/recall.py`, `core/adapters/`, `bin/recall_prompt.py`). Prefer auditing a whole seam (`core/`, or `bin/*` as the Composition Roots) over a single file when the concern is cross-cutting (fail-open, budget, dependency direction).
+**Fix:** Re-run with the plugin-relative path (e.g. `core/store.py`, `core/recall/`, `core/adapters/`, `bin/recall_prompt.py`). Prefer auditing a whole seam (`core/`, or `bin/*` as the Composition Roots) over a single file when the concern is cross-cutting (fail-open, budget, dependency direction).
 
 ### Catalog reference file not found
 

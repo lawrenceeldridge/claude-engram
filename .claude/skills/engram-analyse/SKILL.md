@@ -39,7 +39,7 @@ or basic navigation. Consult `recall` / `search_code`, then `Read` directly.
 ## Arguments
 
 ```
-/engram-analyse impact Add a rerank stage to core/recall.py
+/engram-analyse impact Add a rerank stage to core/recall/
 /engram-analyse audit core/store.py
 /engram-analyse budget Inject a second JIT block per prompt
 /engram-analyse deps PR #42
@@ -178,7 +178,7 @@ when refactoring `core/`.
 
 1. **Pattern source** — The canonical map in [DESIGN.md § POEAA / Cosmic Python](../../../DESIGN.md) and [02-architecture/01-poeaa-and-layers.md](../../rules/02-architecture/01-poeaa-and-layers.md). Invoke [`/engram-poeaa`](../../skills/engram-poeaa/SKILL.md) for the full catalogue.
 2. **Repository, not Active Record** — All memory access goes through `core/store.py`; facts are plain data + a mapper, not self-persisting.
-3. **Gateway + Separated Interface** — Heavy deps (`fastembed`) import only in `core/adapters/*`, lazily; the core depends on the interface in `core/embedding.py`, never on `import fastembed`.
+3. **Gateway + Separated Interface** — Heavy deps (`fastembed`) import only in `core/adapters/*`, lazily; the core depends on the interface in `core/ports/embedding.py`, never on `import fastembed`.
 4. **Functional Core / Imperative Shell** — Distillation, ranking, scoring, quantisation are pure over data; I/O lives in the shell. Query Object for `search` params. Null Object for empty recall (`render_block` returns `""`).
 5. **Composition roots wire, don't compute** — `bin/*` reads config, picks adapters, calls the core; business logic must not live in a hook script.
 
@@ -362,8 +362,8 @@ The two retrieval surfaces — memory (`recall`) and the code/docs index
 
 **User says:** `/engram-analyse budget Add a float-rescore stage after int8 cosine`
 
-**Result:** Runs Token & Latency Budget + Risk Assessment. Reads `core/recall.py` and
-`core/quantize.py`, checks rescore stays off the interactive path (or within the 5s
+**Result:** Runs Token & Latency Budget + Risk Assessment. Reads `core/recall/` and
+`core/domain/quantize.py`, checks rescore stays off the interactive path (or within the 5s
 ceiling), notes DESIGN.md already measured int8 ≈ float so rescore was judged not worth
 building, and requires an `engram eval` A/B before shipping. Cites file paths and lines.
 

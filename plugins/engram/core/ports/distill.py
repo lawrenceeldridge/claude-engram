@@ -3,14 +3,16 @@
 Distillation is lossy compression tuned for relevance — the biggest storage,
 token and recall lever (atomic facts embed far better than raw line-splits).
 
-Strategies behind one interface (Strategy pattern):
-  - HeuristicDistiller  : dependency-free, keeps short declarative lines. Cannot
-    detect conflicts, so it relies on similarity-based supersession downstream.
-  - ClaudeCliDistiller  : shells out to ``claude -p`` (defaults to Haiku — the
-    right tier for cheap extraction).
-  - HTTPDistiller       : POSTs to any OpenAI-compatible chat endpoint via stdlib
-    urllib. Point it at a local Ollama / LM Studio / llama.cpp / vLLM server for
-    zero-token, fully offline distillation.
+The port (Separated Interface) and its pure parts; the LLM transports are driven adapters.
+Strategies behind one interface (Strategy pattern), selected by ``get_distiller`` (Plugin):
+  - HeuristicDistiller  : dependency-free, keeps the most salient lines. Cannot detect
+    conflicts, so it relies on similarity-based supersession downstream. The fallback
+    for the LLM distillers, and the test stub.
+  - LLMDistiller        : the shared template every LLM backend runs — the prompts and
+    response parsers below are pure; a backend supplies only ``_complete`` (the I/O).
+  - ClaudeCliDistiller / HTTPDistiller (``core/adapters/llm_distillers.py``): ``claude -p``
+    (the shipped default, on Haiku) and any OpenAI-compatible endpoint (a local Ollama /
+    LM Studio / llama.cpp / vLLM server for zero-token, fully offline distillation).
 
 The LLM distillers produce genuinely atomic facts AND explicit ``supersedes``
 links — the fix for vocabulary-disjoint conflicts (Paris -> London) that
@@ -22,10 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import subprocess
-import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -669,13 +668,14 @@ def parse_antipatterns(output: str) -> list[DistilledFact]:
     return records
 
 
-class _LLMDistiller(Distiller):
+class LLMDistiller(Distiller):
     """Shared orchestration for LLM-backed distillers.
 
     Every operation is the same shape — build a prompt, run it through ``_complete``, parse the
     JSON — so the only thing that varies between backends is *how the completion runs*.
-    Subclasses supply just their construction and ``_complete``; the two concrete backends below
-    (a ``claude -p`` subprocess and an OpenAI-compatible HTTP endpoint) differ in nothing else.
+    Subclasses supply just their construction and ``_complete``: the I/O. The two concrete
+    backends (a ``claude -p`` subprocess and an OpenAI-compatible HTTP endpoint) are driven
+    adapters in ``core/adapters/llm_distillers.py``; everything here is pure.
 
     Fail-open is preserved per operation: ``distill`` falls back to the heuristic, ``summarize``
     / ``extract_antipatterns`` / ``review`` swallow to their Null/Special-Case, and
@@ -720,94 +720,19 @@ class _LLMDistiller(Distiller):
             return []
 
 
-class ClaudeCliDistiller(_LLMDistiller):
-    """Headless ``claude -p``. Defaults to Haiku — cheap and fast for extraction."""
-
-    def __init__(self, cmd: str = "claude", model: str = "", timeout: int = 120) -> None:
-        self.cmd = cmd
-        self.model = model or "haiku"
-        self.timeout = timeout
-
-    def _complete(self, prompt: str) -> str:
-        # Distillation is text-in → JSON-out: the subprocess needs NO tools at all. A weak model
-        # can misread the transcript embedded in the prompt as instructions and act on it (prompt
-        # injection), so both tool surfaces the nested session could reach are closed here — the
-        # Gateway owns its own subprocess isolation envelope. Two surfaces, two flags:
-        #
-        #   --strict-mcp-config : load ONLY MCP servers from --mcp-config; with none passed, the
-        #     effective set is EMPTY. Without it the nested `claude -p` loads every ambient MCP
-        #     server (Chrome DevTools, Linear, …) and can drive them — the built-in `--tools ""`
-        #     does nothing about MCP tools (they aren't in the built-in set). Observed: the
-        #     distiller navigated Chrome and opened tickets while "summarising".
-        #   --tools "" : disable the entire BUILT-IN tool set (Bash/Edit/Write/…) so the model
-        #     *cannot* touch the working tree. Observed: it clobbered a source file mid-edit.
-        #
-        # Together they leave nothing for the project's (often permissive, ~200-entry) inherited
-        # settings.local.json allow-list to grant — closing availability makes permission moot.
-        # This is the tool-side guard; ENGRAM_DISABLE below is the hook-side (recursion) guard.
-        args = [self.cmd, "-p", "--strict-mcp-config"]
-        if self.model:
-            args += ["--model", self.model]
-        # `--tools` is variadic (`<tools...>`) — kept LAST so it can't swallow a following flag.
-        args += ["--tools", ""]
-        # The nested `claude -p` is itself a Claude session that would fire engram's hooks and
-        # capture this very prompt (a self-referential loop). ENGRAM_DISABLE makes those hooks
-        # no-op, breaking the recursion at its root.
-        env = {**os.environ, "ENGRAM_DISABLE": "1"}
-        result = subprocess.run(args, input=prompt, capture_output=True, text=True, timeout=self.timeout, env=env)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or "llm error")[:200])
-        return result.stdout
-
-
-class HTTPDistiller(_LLMDistiller):
-    """Any OpenAI-compatible chat endpoint (Ollama / LM Studio / llama.cpp / vLLM).
-
-    With a local server this is zero-token and fully offline. Stdlib-only.
-    """
-
-    def __init__(self, base_url: str, model: str, api_key: str = "", timeout: int = 120) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.api_key = api_key
-        self.timeout = timeout
-
-    def _complete(self, prompt: str) -> str:
-        body = json.dumps(
-            {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "You extract long-term memory. Output only a JSON object."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0,
-                "stream": False,
-                # Guarantees syntactically valid JSON, so a stray token can't drop the
-                # whole capture to the heuristic fallback. Honoured by Ollama/vLLM/LM Studio.
-                "response_format": {"type": "json_object"},
-            }
-        ).encode()
-        request = urllib.request.Request(f"{self.base_url}/chat/completions", data=body, method="POST")
-        request.add_header("Content-Type", "application/json")
-        if self.api_key:
-            request.add_header("Authorization", f"Bearer {self.api_key}")
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            data = json.loads(response.read().decode())
-        return data["choices"][0]["message"]["content"]
-
-
 # Distiller backends that call out to an LLM — so they can transiently fail (and are the
 # ones that support merge_cluster). Shared by the capture rescue path and the integrate tier.
 LLM_DISTILLERS = frozenset({"claude", "llm", "ollama", "http", "openai"})
 
-# Opening lines of our own distiller / summary / merge prompts. A transcript that begins
-# with one of these is a nested `claude -p` distiller call that got captured as if it were a
-# session — defensive backstop behind the ENGRAM_DISABLE hook guard, so capture drops it.
-_DISTILLER_PROMPT_PREFIXES = (
-    "You extract durable long-term memory",
-    "Summarise this coding-assistant session",
-    "You are consolidating long-term memory",
-    "You review a coding-assistant session",
+# The opening of every prompt the LLM distillers send, derived from the prompts themselves so a
+# new or reworded prompt can't slip past. A transcript that begins with one is a nested
+# `claude -p` distiller call that got captured as if it were a session — the defensive backstop
+# behind the ENGRAM_DISABLE hook guard, so capture drops it. 36 characters: the length of the
+# shortest hand-kept prefix this replaced, so every opening that matched before still matches.
+_PROMPT_PREFIX_CHARS = 36
+_DISTILLER_PROMPT_PREFIXES = tuple(
+    prompt[:_PROMPT_PREFIX_CHARS]
+    for prompt in (_PROMPT, _SUMMARY_PROMPT, _MERGE_PROMPT, _ANTIPATTERN_PROMPT, _REVIEW_PROMPT)
 )
 
 
@@ -817,9 +742,15 @@ def is_distiller_prompt(text: str) -> bool:
 
 
 def get_distiller(cfg) -> Distiller:
+    """Composition-time selection (Plugin pattern): the configured LLM adapter, else the heuristic.
+    The adapters are imported here, on demand, so the port never depends on them at import."""
     if cfg.distiller in ("claude", "llm"):
+        from core.adapters.llm_distillers import ClaudeCliDistiller
+
         return ClaudeCliDistiller(cfg.distiller_cmd, cfg.distiller_model)
     if cfg.distiller in ("ollama", "http", "openai"):
+        from core.adapters.llm_distillers import HTTPDistiller
+
         return HTTPDistiller(
             cfg.distiller_base_url,
             cfg.distiller_model or "qwen2.5:3b",

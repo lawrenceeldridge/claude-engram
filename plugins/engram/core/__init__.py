@@ -1,15 +1,17 @@
 """claude-engram core — token-first, cross-project long-term memory for Claude Code.
 
-Hexagonal layout (Ports & Adapters):
-  - config      : configuration resolved from CLAUDE_PLUGIN_OPTION_* / ENGRAM_* / defaults
-  - project     : marker-walk project identity (fixes basename(cwd) fragmentation)
-  - embedding   : EmbeddingGateway port + HashEmbedding stub (+ optional fastembed adapter)
-  - quantize    : float -> int8 / binary packing (the compact "bytes" layer)
-  - store       : SQLite repository (Data Mapper, never Active Record)
-  - distill     : transcript/text -> atomic facts (heuristic; LLM adapter is the drop-in)
-  - transcript  : parse Claude Code JSONL transcripts
-  - recall      : embed query -> rank -> render injection block
-  - service     : high-level capture/recall operations used by hooks, CLI and daemon
-"""
+Hexagonal layout (Ports & Adapters) — the map lives in ``.claude/rules/02-architecture/`` and the
+module registry; in brief:
+  - store / service / config / project / transcript / provision / daemon_client (root): the
+    Repository, the capture Command/Handlers, configuration, workspace-rooted project identity,
+    transcript parsing, the managed venv, the resident-embedder client
+  - domain/        : the pure Functional Core (scoring, fusion, quantize, confidence, ingest,
+                     episodes, temporal, privacy, …) — no I/O, no clock
+  - ports/         : Separated Interfaces (embedding, distill, scorer, workqueue, memory_source)
+  - adapters/      : the driven adapters with optional dependencies (fastembed, numpy, …)
+  - recall/        : the read side (rank → render the injection block)
+  - index/         : the code/docs index (index, search, outlines)
+  - consolidation/ : the sleep pass
 
-__version__ = "0.1.0"
+The plugin's version lives in ``.claude-plugin/plugin.json`` alone.
+"""

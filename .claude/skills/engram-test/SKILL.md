@@ -39,7 +39,7 @@ Two distinct surfaces, both first-class:
 ```
 
 If the user names no mode, infer from intent: "run the tests" → `run`; "write a
-test for `core/scoring.py`" → `create`; "are these tests any good" → `review`;
+test for `core/domain/scoring.py`" → `create`; "are these tests any good" → `review`;
 "can I delete this" → `audit`; "did the ranking change hurt recall" → `bench`.
 
 | Mode | Argument | Behaviour |
@@ -61,7 +61,7 @@ Input: nothing (whole suite), a file, or a `Module.TestCase[.test_method]` path.
 
 ```bash
 cd plugins/engram
-python3 -m unittest discover -s tests            # whole suite (137 tests, 5 skipped)
+python3 -m unittest discover -s tests            # whole suite (stdlib; a few platform skips)
 python3 -m unittest tests.test_smoke             # one module
 python3 -m unittest tests.test_smoke.ScoringTests.test_recency_decay_curve
 python3 tests/test_smoke.py                       # modules are runnable directly too
@@ -78,10 +78,10 @@ un-closed `Store`, a stub whose signature drifted from the real adapter, etc.).
 Input: a `core/*.py` module, a hook in `bin/`, an adapter, or a feature.
 
 Workflow:
-1. Read the module. Identify its seam — is it a pure function (`core/scoring.py`,
-   `core/quantize.py`), a stateful component over the store (`core/service.py`,
-   `core/recall.py`), a hook (`bin/*.py`, tested as a subprocess), or an adapter
-   behind a port (`core/embedding.py`, `core/distill.py`)?
+1. Read the module. Identify its seam — is it a pure function (`core/domain/scoring.py`,
+   `core/domain/quantize.py`), a stateful component over the store (`core/service.py`,
+   `core/recall/`), a hook (`bin/*.py`, tested as a subprocess), or an adapter
+   behind a port (`core/ports/embedding.py`, `core/ports/distill.py`)?
 2. Pick the fixture shape from [`references/test-data.md`](references/test-data.md):
    pure functions need nothing; store-touching tests need a `tempfile.TemporaryDirectory`
    + `os.environ["ENGRAM_DATA_DIR"]` in `setUp`/`tearDown`; anything embedding-touching
@@ -155,7 +155,7 @@ python3 -m coverage report -m --include="core/*"
 ```
 
 Report line coverage per `core/` module and frame gaps as actionable next steps
-("`core/fusion.py` at 61% — the tie-break branch in `fuse()` is untested"). There
+("`core/domain/fusion.py` at 61% — the tie-break branch in `fuse()` is untested"). There
 is no hard threshold and no CI coverage gate; prioritise coverage of the retrieval
 path and the fail-open branches.
 
@@ -225,7 +225,7 @@ per-session markers by PID where hooks write them (see `test_hooks.py`).
 
 ### A patched/stubbed adapter test passes but the real path is broken
 Outdated stub — the stub's method signature drifted from the real port. Cross-check
-the stub against `core/distill.py` / `core/embedding.py`; `review` mode flags this.
+the stub against `core/ports/distill.py` / `core/ports/embedding.py`; `review` mode flags this.
 
 ### `engram eval` reports 0.0 across the board
 Wrong backend spec or an empty dataset load. Confirm the spec parses

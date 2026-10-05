@@ -30,7 +30,17 @@ reexec_if_pinned()
 ROOT = plugin_root()
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "engram-memory", "version": "0.6.0"}
+
+
+def _plugin_version() -> str:
+    """The plugin's version from its manifest — the one source of truth (bumped once per release)."""
+    try:
+        return str(json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"])
+    except (OSError, ValueError, KeyError):
+        return "unknown"  # fail-open: the handshake still answers
+
+
+SERVER_INFO = {"name": "engram-memory", "version": _plugin_version()}
 
 # Surfaced to the model at initialize (MCP servers may return `instructions` that clients
 # inject as always-present guidance). A soft, zero-cost nudge that complements the hook-based

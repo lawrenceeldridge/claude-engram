@@ -34,12 +34,12 @@ Two adapter classes:
 
 | Hexagonal layer | claude-engram examples |
 |-----------------|---------------------|
-| **Domain (core)** | `core/store.py` (facts + embeddings + chunks data), `core/recall.py` (`Hit`), `core/distill.py` (`DistilledFact`, `Observation`), and the pure functions in every `core/domain/*` module (e.g. `scoring.py`, `fusion.py`, `confidence.py`, `episodes.py`, `privacy.py`) |
-| **Service Layer (core, orchestration)** | `core/service.py` (capture entry functions — the write side), `core/recall.py` (`search` / `search_fused` entry functions — the read side) |
-| **Secondary (driven) adapters** | `core/adapters/fastembed_gw.py` (the only place heavy deps import), the `Distiller` impls (`ClaudeCliDistiller`, `HTTPDistiller`), `core/daemon_client.py` (thin client → resident embedder, fail-open) |
+| **Domain (core)** | `core/store.py` (facts + embeddings + chunks data), `core/recall/` (`Hit`), `core/ports/distill.py` (`DistilledFact`, `Observation`), and the pure functions in every `core/domain/*` module (e.g. `scoring.py`, `fusion.py`, `confidence.py`, `episodes.py`, `privacy.py`) |
+| **Service Layer (core, orchestration)** | `core/service.py` (capture entry functions — the write side), `core/recall/` (`search` / `search_fused` entry functions — the read side) |
+| **Secondary (driven) adapters** | `core/adapters/fastembed_gw.py` (the only place heavy deps import), the `Distiller` transports (`core/adapters/llm_distillers.py`: `ClaudeCliDistiller`, `HTTPDistiller`), `core/daemon_client.py` (thin client → resident embedder, fail-open) |
 | **Primary (driving) adapters** | the `bin/*` hooks (`recall_prompt.py`, `recall_session_start.py`, `capture.py`), the `engram` CLI, `bin/mcp_server.py`, `bin/daemon.py` |
 
-Ports are the `EmbeddingGateway` / `Distiller` ABCs (`core/embedding.py`, `core/distill.py`); concrete implementations live in the adapter locations above. The `bin/*` Composition Roots (with `bin/_bootstrap.py`) do the wiring — see Composition Root below.
+Ports are the `EmbeddingGateway` / `Distiller` ABCs (`core/ports/embedding.py`, `core/ports/distill.py`); concrete implementations live in the adapter locations above. The `bin/*` Composition Roots (with `bin/_bootstrap.py`) do the wiring — see Composition Root below.
 
 The cross-reference document `references/architectural-layers.md` maps this four-layer view onto the claude-engram tree explicitly with concrete file examples.
 
@@ -68,9 +68,9 @@ CQRS is **not** Event Sourcing. It is **not** "two databases". It is the discipl
 **claude-engram applicability.** ✅ **Default, and the top-level split of the whole plugin.** The two sides have opposite performance profiles and run in different hooks:
 
 - **Write side (capture)** — `bin/capture.py` → `core/service.py`. Heavy, batch, **detached** at `Stop` / `SessionEnd` / `PreCompact`. Latency-tolerant; zero interactive-token cost.
-- **Read side (recall)** — `bin/recall_prompt.py` / `bin/recall_session_start.py` → `core/recall.py`. Tiny, hot-path, token- and latency-critical; runs in `UserPromptSubmit` / `SessionStart`.
+- **Read side (recall)** — `bin/recall_prompt.py` / `bin/recall_session_start.py` → `core/recall/`. Tiny, hot-path, token- and latency-critical; runs in `UserPromptSubmit` / `SessionStart`.
 
-Different code paths, different hooks, different data shapes. This is **not** event sourcing and **not** two databases — it is one SQLite store read one way and written another. When query patterns demand it, add a named `Store` query method or extend the Query Object (`core/recall.py`), never overload the capture path onto the read path.
+Different code paths, different hooks, different data shapes. This is **not** event sourcing and **not** two databases — it is one SQLite store read one way and written another. When query patterns demand it, add a named `Store` query method or extend the Query Object (`core/recall/`), never overload the capture path onto the read path.
 
 ---
 
@@ -95,7 +95,7 @@ The metaphor: a thin imperative shell wraps a large functional core. The shell d
 
 **claude-engram applicability.** ✅ **Default.** The core is pure:
 
-- **`core/distill.py`** — `heuristic_facts` and the parsers compute facts from transcript text with no I/O.
+- **`core/ports/distill.py`** — `heuristic_facts` and the parsers compute facts from transcript text with no I/O.
 - **`core/domain/*` (every module — e.g. `scoring.py`, `quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`, `episodes.py`, `privacy.py`)** — ranking, quantisation, RRF fusion, confidence and lexical scoring are all pure functions on their inputs.
 
 The imperative shell is **`core/service.py`** (talks to the DB, drives the embedder/distiller, spawns the detached capture worker) and the **`bin/*`** entry points. Tests for the pure core need no mocks. When adding a scoring / ranking / quantisation step, make it a **pure function** — even if the shell has to gather more data first.

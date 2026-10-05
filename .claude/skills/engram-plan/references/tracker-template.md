@@ -48,7 +48,7 @@ Trackers are saved to `docs/generated/trackers/` using the work's slug:
 
 ### 1.1 <Task Group>
 
-- [ ] Task description (reference the file, e.g. `core/recall.py`)
+- [ ] Task description (reference the file, e.g. `core/recall/`)
 - [ ] Another task
 - [ ] Verification: `ruff check . && ruff format .` (from `plugins/engram/`)
 - [ ] Verification: `python3 -m unittest discover -s tests`

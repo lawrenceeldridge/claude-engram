@@ -78,7 +78,7 @@ not in the core suite.
 ## Stub distillers and summarizers
 
 The distiller and summarizer are ports with tiny interfaces. Implement a
-duck-typed stub that matches the **real** signatures in `core/distill.py`, then
+duck-typed stub that matches the **real** signatures in `core/ports/distill.py`, then
 inject it with `mock.patch.object`:
 
 ```python

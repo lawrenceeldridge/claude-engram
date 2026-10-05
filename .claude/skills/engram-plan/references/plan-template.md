@@ -84,7 +84,7 @@ The claude-engram spine of the plan — how it satisfies the Development Workflo
 
 #### 1.1 <Task Group>
 - Step-by-step implementation details
-- Reference specific files to create/modify (e.g. `core/recall.py`, `bin/recall_prompt.py`)
+- Reference specific files to create/modify (e.g. `core/recall/`, `bin/recall_prompt.py`)
 - Include code examples for non-obvious patterns
 
 #### 1.2 <Task Group>
@@ -100,7 +100,7 @@ The claude-engram spine of the plan — how it satisfies the Development Workflo
 | Action | File | Layer | Description |
 |--------|------|-------|-------------|
 | Create | `core/adapters/new_gw.py` | adapters | Description |
-| Modify | `core/recall.py` | core | What changes |
+| Modify | `core/recall/` | core | What changes |
 | Delete | `bin/old_hook.py` | bin | Why removed |
 
 ---

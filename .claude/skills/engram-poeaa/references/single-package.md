@@ -22,10 +22,10 @@ across all of them:
 |------|-----------|------------------|
 | Domain / functional core | `core/domain/*` (every module — e.g. `scoring.py`, `fusion.py`, `confidence.py`, `episodes.py`, `privacy.py`), pure fns of `core/ports/distill.py` | Functional Core, Value Object |
 | Service layer (write) | `core/service.py` | Command / Handler, function-style Service Layer |
-| Service layer (read) | `core/recall.py` | Query Object, DTO / Null Object |
+| Service layer (read) | `core/recall/` | Query Object, DTO / Null Object |
 | Persistence | `core/store.py` | Repository over Data Mapper |
-| Driven adapters | `core/embedding.py`, `core/distill.py` interfaces, `core/adapters/`, `core/daemon_client.py` | Gateway, Separated Interface, Plugin, Service Stub, Remote Facade |
-| Index pipeline | `core/indexer.py`, `chunking.py`, `code_symbols.py`, `treesitter_symbols.py`, `index_recall.py` | Functional Core parsers over the same Repository |
+| Driven adapters | `core/ports/embedding.py`, `core/ports/distill.py` interfaces, `core/adapters/`, `core/daemon_client.py` | Gateway, Separated Interface, Plugin, Service Stub, Remote Facade |
+| Index pipeline | `core/index/indexer.py`, `chunking.py`, `code_symbols.py`, `treesitter_symbols.py`, `index_recall.py` | Functional Core parsers over the same Repository |
 | Composition roots | `bin/*`, `bin/_bootstrap.py` | Composition Root (per entry-point type) |
 | Presentation | `viewer/` | thin Front-Controller-shaped dispatcher (mostly N/A) |
 

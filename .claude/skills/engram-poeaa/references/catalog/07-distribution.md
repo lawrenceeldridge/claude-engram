@@ -46,7 +46,7 @@ Remote Facade and DTO are **inseparable** in practice — Remote Facade exposes 
 
 | DTO | Where | Shaped for |
 |---|---|---|
-| **`recall.render_block`** | `core/recall.py` | the injected `additionalContext` payload — deliberately **one line per fact**, capped at `max_chars` (shaped for the token budget, not the store) |
+| **`recall.render_block`** | `core/recall/` | the injected `additionalContext` payload — deliberately **one line per fact**, capped at `max_chars` (shaped for the token budget, not the store) |
 | **MCP tool responses** | `bin/mcp_server.py` | outlines + anchors + freshness verdicts, not raw rows — the model fetches one body on demand via `get_symbol` |
 | **daemon socket payload** | `core/daemon_client.py` | vectors over the local socket |
 

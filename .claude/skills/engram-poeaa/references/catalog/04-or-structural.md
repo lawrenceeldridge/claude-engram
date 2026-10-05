@@ -96,7 +96,7 @@ These ten patterns describe **how objects map onto tables**. They are largely or
 
 **Anti-pattern guard.** Storing a queryable entity as a LOB is a frequent mistake — when you find yourself parsing a blob column in WHERE clauses, the entity wanted to be normalised.
 
-**claude-engram applicability.** ✅ **Modern (non-XML) form.** The quantised vectors are stored as opaque blob columns: the **int8 vector** (the primary search representation) and the **binary sign-bit vector** (32× smaller, used as a Hamming pre-filter). Both are read and written whole and are **never filtered inside SQL** — ranking happens in the pure Functional Core (`core/scoring.py`, `core/fusion.py`, `core/quantize.py`) after the rows are loaded, not in a `WHERE`. This is Serialized LOB done right: opaque bytes, decoded by the mapper, scored in Python.
+**claude-engram applicability.** ✅ **Modern (non-XML) form.** The quantised vectors are stored as opaque blob columns: the **int8 vector** (the primary search representation) and the **binary sign-bit vector** (32× smaller, used as a Hamming pre-filter). Both are read and written whole and are **never filtered inside SQL** — ranking happens in the pure Functional Core (`core/domain/scoring.py`, `core/domain/fusion.py`, `core/domain/quantize.py`) after the rows are loaded, not in a `WHERE`. This is Serialized LOB done right: opaque bytes, decoded by the mapper, scored in Python.
 
 ---
 

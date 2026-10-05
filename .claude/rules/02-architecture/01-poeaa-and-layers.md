@@ -14,11 +14,11 @@ the core, and keeps capture off the hot path. The canonical map (from
 |---|---|---|
 | Overall shape | CQRS + Hexagonal (Ports & Adapters) | whole plugin |
 | Capture pipeline | Command / Handler, idempotent per fact | `core/service.py` |
-| Distil / rank / quantise | Functional Core / Imperative Shell | `core/distill.py`, `recall.py`, `quantize.py` |
+| Distil / rank / quantise | Functional Core / Imperative Shell | `core/domain/*` (pure: `quantize`, `fusion`, `scoring`, `ingest`, `episodes`, …), called from `core/ports/distill.py` and `core/recall/` |
 | Memory access | **Repository over Data Mapper** (never Active Record) | `core/store.py` |
-| Query params | Query Object | `core/recall.py::search` |
-| Embedding provider | **Gateway + Separated Interface** | `core/embedding.py`, `core/adapters/` |
-| Injected payload | DTO (deliberately one line per fact) | `core/recall.py::render_block` |
+| Query params | Query Object | `core/recall/__init__.py::search` |
+| Embedding provider | **Gateway + Separated Interface** | `core/ports/embedding.py`, `core/adapters/` |
+| Injected payload | DTO (deliberately one line per fact) | `core/recall/__init__.py::render_block` |
 | Empty recall | Special Case / Null Object (inject nothing) | `render_block` returns `""` |
 | Durable per-memory processing | Separated Interface — a **Command** queue (`WorkQueue`), **not** Events | `core/ports/workqueue.py`, `core/adapters/inproc_queue.py` |
 | Wiring | Composition Root | `bin/*` entry points |
@@ -37,7 +37,7 @@ core/  (app + persistence at root: service, store, config, project, provision, t
   └─ consolidation/  (the sleep pass — replay/mature/displace/integrate/refine/invalidate/purge/forget, in consolidate()'s order; the RNR "rescue" stage lives in core/service.py, co-located with capture)
    │ depends on interfaces, not implementations
    ▼
-core/adapters/  (driven adapters: fastembed_gw, inproc_queue, …)  ← the only place heavy deps import
+core/adapters/  (driven adapters: fastembed_gw, llm_distillers, inproc_queue, …)  ← the only place heavy deps import
 ```
 
 The `core/` tree groups by concern (domain/ports/recall/index), keeping the app-service +
@@ -46,7 +46,7 @@ persistence + cross-cutting modules at the root (the fastapi-best-practices conv
 `Store`** — the subpackages are internal module boundaries, not separate contexts.
 
 - **Dependencies point inward.** `core/` never imports from `bin/`; `core/` depends
-  on the *interface* (`embedding.py`, the distiller protocol), not on `fastembed`.
+  on the *interface* (`core/ports/embedding.py`, the distiller protocol), not on `fastembed`.
 - **Adapters are the seam for optional deps.** `fastembed` is imported lazily in
   `core/adapters/fastembed_gw.py`. Adding a new embedding or distiller backend means
   a new adapter behind the existing interface — not an `if backend == …` in the core.

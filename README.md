@@ -540,7 +540,7 @@ Two escape hatches:
 
 ## Status
 
-Working end to end (240 tests, 10 skipped). Defaults are local-first and
+Working end to end (stdlib suite: `python3 -m unittest discover -s tests`). Defaults are local-first and
 zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for
