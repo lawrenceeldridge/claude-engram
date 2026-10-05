@@ -471,12 +471,14 @@ only order facts, never override relevance). `--longmemeval` (with `--lme-downlo
 MIT-licensed dataset is fetched at runtime, never bundled) compares distilled facts, verbatim
 exchanges and both on LongMemEval session retrieval, including a configuration comparable with
 mempalace's published number; `--lme-shipped` adds the shipped path end to end (transcript →
-capture → `recall` / `search_history` at their default budgets).
+capture → `recall` / `search_history` at their default budgets). `--lme-split dev|test|all` picks a
+fixed hold-out (20% dev, the default, for tuning; 80% test, run once to report; `all` = the full set).
 
 `--confidence` measures whether the `recall` tool's `ok` verdict means "the returned
 facts contain the answer": the answerable queries plus 89 unanswerable, near-topic ones
 run through the real on-demand recall path, and each candidate confidence score is
-reported for discrimination (AUROC), calibration (Brier/ECE) and `ok` precision/recall.
+reported for discrimination (AUROC), calibration (Brier/ECE) and `ok` precision/recall —
+Platt fitted on a fixed dev half of the queries, every metric scored on the other half.
 `--distractors N --distractor-project <key|label>` pads the store with facts mined at
 runtime from a snapshot of a real store (filtered, never written to the repo) to
 reproduce real density; `bench/replay_ledger.py` replays real recall-ledger queries on a

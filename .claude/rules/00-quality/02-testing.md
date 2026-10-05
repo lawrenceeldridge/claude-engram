@@ -23,6 +23,9 @@ harness) lives in the [`engram-test`](../../skills/engram-test/SKILL.md) skill.
    fusion, or distillation is A/B'd with `engram eval` **before** it ships. Quantization
    loss, model choice, and fusion weights are all decisions the harness settled — see
    [DESIGN.md § Embedding backend — measured, not assumed](../../../DESIGN.md).
+   Anything *fitted or chosen* on a harness (`--confidence`, `--longmemeval`) is tuned on its
+   fixed **dev** split and reported once on **test**, never on the rows it was tuned on (see the
+   skill's [benchmark reference](../../skills/engram-test/references/benchmark.md#tune-on-dev-report-on-test)).
 3. **Fail-open is a test target.** A hook or adapter given a broken input, a missing
    dep, or a dead daemon must still exit 0 / fall back — assert that, don't assume it.
 4. **Fixtures are local.** No live embedding model in the default test path; use the

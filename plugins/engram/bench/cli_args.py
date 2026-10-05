@@ -55,7 +55,17 @@ def add_eval_arguments(parser: argparse.ArgumentParser) -> None:
         "--lme-download", action="store_true", help="--longmemeval: fetch the dataset (HF, MIT) into the data dir"
     )
     parser.add_argument(
-        "--lme-limit", type=int, default=60, help="--longmemeval: stratified question sample (0 = all 500)"
+        "--lme-limit",
+        type=int,
+        default=60,
+        help="--longmemeval: stratified question sample within --lme-split (0 = the whole split)",
+    )
+    parser.add_argument(
+        "--lme-split",
+        choices=("dev", "test", "all"),
+        default="dev",
+        help="--longmemeval: fixed hold-out to run — tune on dev (20%%), report once on test (80%%);"
+        " all = the full set",
     )
     parser.add_argument("--lme-out", type=Path, help="--longmemeval: append per-question arm scores (JSONL) here")
     parser.add_argument(

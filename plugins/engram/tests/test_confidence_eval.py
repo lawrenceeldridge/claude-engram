@@ -1,9 +1,11 @@
-"""Calibration-benchmark tests: candidates, labelling, distractor mining, snapshots, ledger replay.
+"""Calibration-benchmark tests: candidates, labelling, the hold-out split, distractor mining,
+snapshots, ledger replay.
 
 All stdlib and deterministic (hash embedder, temp stores). The benchmark's numbers decide
 the recall verdict's formula and threshold, so its plumbing is pinned here: candidates score
-exactly what production recall computes, labels mean "gold returned", mined distractors can't
-leak benchmark labels or private text, and the live store is only ever read via a snapshot.
+exactly what production recall computes, labels mean "gold returned", the calibration is fitted
+on dev and every reported metric is scored on test, mined distractors can't leak benchmark labels
+or private text, and the live store is only ever read via a snapshot.
 """
 
 from __future__ import annotations
@@ -25,10 +27,12 @@ from bench.confidence_eval import (  # noqa: E402
     CANDIDATES,
     NO_RECALL,
     candidate_scores,
-    cross_fit,
     dataset_records,
+    fit_calibration,
     gate,
     observe,
+    probabilities,
+    split,
     summarise,
     write_observations,
 )
@@ -85,16 +89,22 @@ class CandidateTests(unittest.TestCase):
 class ObservationRecordTests(unittest.TestCase):
     def test_records_round_trip_with_no_recall_as_null(self):
         observations = [
-            {"q": "a", "label": True, "confidence": 0.62, "scores": dict.fromkeys(CANDIDATES, 1.5)},
-            {"q": "b", "label": False, "confidence": None, "scores": dict.fromkeys(CANDIDATES, NO_RECALL)},
+            {"q": "a", "answerable": True, "label": True, "confidence": 0.62, "scores": dict.fromkeys(CANDIDATES, 1.5)},
+            {
+                "q": "b",
+                "answerable": False,
+                "label": False,
+                "confidence": None,
+                "scores": dict.fromkeys(CANDIDATES, NO_RECALL),
+            },
         ]
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "obs.jsonl"
             write_observations(out, "fastembed", 20000, observations)
             rows = [json.loads(line) for line in out.read_text().splitlines()]
         self.assertEqual(
-            [(r["backend"], r["distractors"], r["q"], r["label"]) for r in rows],
-            [("fastembed", 20000, "a", True), ("fastembed", 20000, "b", False)],
+            [(r["backend"], r["distractors"], r["q"], r["answerable"], r["label"]) for r in rows],
+            [("fastembed", 20000, "a", True, True), ("fastembed", 20000, "b", False, False)],
         )
         self.assertEqual((rows[0]["confidence"], rows[1]["confidence"]), (0.62, None))
         self.assertEqual(rows[1]["scores"], dict.fromkeys(CANDIDATES))  # NO_RECALL → null, not -Infinity
@@ -108,13 +118,62 @@ class GateAndFitTests(unittest.TestCase):
     def test_gate_with_no_ok_has_undefined_precision(self):
         self.assertIsNone(gate([False, False], [True, False])["precision"])
 
-    def test_cross_fit_is_seeded_and_maps_no_recall_to_zero(self):
+    def test_no_recall_rows_are_not_fitted_and_map_to_zero(self):
         scores = [NO_RECALL, 0.1, 0.2, 0.3, 0.7, 0.8, 0.9, 0.85]
-        labels = [False, False, False, False, True, True, True, True]
-        probs = cross_fit(scores, labels)
-        self.assertEqual(probs, cross_fit(scores, labels))
+        labels = [True, False, False, False, True, True, True, True]  # the NO_RECALL row's label is ignored
+        calibration = fit_calibration(scores, labels)
+        self.assertEqual(calibration, fit_calibration(scores[1:], labels[1:]))
+        probs = probabilities(scores, calibration)
         self.assertEqual(probs[0], 0.0)
         self.assertTrue(all(0.0 <= p <= 1.0 for p in probs))
+
+
+def _observation(i: int, answerable: bool) -> dict:
+    """A synthetic labelled query: answerable ones mostly score high and are mostly positive."""
+    score = (i % 7) / 2 + (2.0 if answerable else 0.0)
+    return {
+        "q": f"query {i}",
+        "answerable": answerable,
+        "label": answerable and i % 3 != 0,
+        "confidence": round(score / 6, 3),
+        "scores": dict.fromkeys(CANDIDATES, score),
+    }
+
+
+class HoldOutSplitTests(unittest.TestCase):
+    def setUp(self):
+        self.observations = [_observation(i, answerable=i % 4 != 0) for i in range(80)]
+
+    def test_split_is_disjoint_complete_stratified_and_order_free(self):
+        dev, test = split(self.observations)
+        self.assertEqual(len(dev) + len(test), len(self.observations))
+        self.assertFalse({o["q"] for o in dev} & {o["q"] for o in test})
+        self.assertEqual(sum(o["answerable"] for o in dev), sum(o["answerable"] for o in test))  # 60 → 30 / 30
+        self.assertEqual(sum(not o["answerable"] for o in dev), 10)  # 20 → 10 / 10
+        reversed_dev, _ = split(list(reversed(self.observations)))
+        self.assertEqual({o["q"] for o in reversed_dev}, {o["q"] for o in dev})
+
+    def test_calibration_is_fitted_on_dev_only(self):
+        dev, test = split(self.observations)
+        summary = summarise(self.observations, ok_precision=0.9, shipped_threshold=0.4)
+        expected = fit_calibration([o["scores"]["pool_z"] for o in dev], [o["label"] for o in dev])
+        row = next(r for r in summary["rows"] if r["candidate"] == "pool_z")
+        self.assertEqual(row["platt (a, b) [dev]"], f"{expected.a:.4f}, {expected.b:.4f}")
+        self.assertEqual((summary["dev_n"], summary["test_n"]), (len(dev), len(test)))
+        self.assertEqual(summary["positives"], sum(o["label"] for o in test))
+
+    def test_every_reported_metric_is_scored_on_test_only(self):
+        dev_q = {o["q"] for o in split(self.observations)[0]}
+        before = summarise(self.observations, ok_precision=0.9, shipped_threshold=0.4)
+        # Flip every dev label: the dev fit moves, so only fit-derived cells may change; the shipped
+        # gate and AUROC are computed from test rows alone and must not.
+        flipped = [{**o, "label": not o["label"]} if o["q"] in dev_q else o for o in self.observations]
+        after = summarise(flipped, ok_precision=0.9, shipped_threshold=0.4)
+        self.assertEqual(before["shipped"], after["shipped"])
+        self.assertEqual([r["auroc"] for r in before["rows"]], [r["auroc"] for r in after["rows"]])
+        self.assertNotEqual(
+            [r["platt (a, b) [dev]"] for r in before["rows"]], [r["platt (a, b) [dev]"] for r in after["rows"]]
+        )
 
 
 class EvaluateTests(unittest.TestCase):
@@ -154,12 +213,13 @@ class EvaluateTests(unittest.TestCase):
         finally:
             store.close()
         self.assertEqual([o["label"] for o in observations], [True, False])
+        self.assertEqual([o["answerable"] for o in observations], [True, False])
         self.assertEqual(set(observations[0]["scores"]), set(CANDIDATES))
         summary = summarise(observations, ok_precision=0.9, shipped_threshold=self.cfg.recall_min_confidence)
-        self.assertEqual((summary["n"], summary["positives"]), (2, 1))
+        self.assertEqual(summary["dev_n"] + summary["test_n"], 2)
         self.assertEqual([r["candidate"] for r in summary["rows"]], list(CANDIDATES))
-        for row in summary["rows"]:  # the full-sample fit a shipped Calibration is taken from
-            a, b = (float(v) for v in row["platt (a, b)"].split(","))
+        for row in summary["rows"]:  # the dev fit a shipped Calibration is taken from — finite even when tiny
+            a, b = (float(v) for v in row["platt (a, b) [dev]"].split(","))
             self.assertTrue(all(map(math.isfinite, (a, b))))
 
 

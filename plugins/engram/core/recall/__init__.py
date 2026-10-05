@@ -204,9 +204,11 @@ def best_match(hits: list[FusedHit]) -> FusedHit | None:
 
 # Platt fit of ``pool_z`` for semantic embedders at realistic density — the full-sample fit of
 # `engram eval --backends fastembed --confidence --distractors 20000 --distractor-project <a large
-# off-topic project>` (the `platt (a, b)` column, bge-base, 333 labelled queries, 2026-09-29).
-# Fitted where real stores live (tens of thousands of facts): on a small store the same score reads
-# lower, so `ok` is rarer there but more often right. See ``core.domain.confidence``.
+# off-topic project>` (bge-base, 333 labelled queries, 2026-09-29), re-checked on a held-out half
+# (2026-10-05: a dev-only refit puts the `ok` boundary at z 4.49 vs these constants' 4.52; every
+# figure within the held-out interval). Fitted where real stores live (tens of thousands of facts):
+# on a small store the same score reads lower, so `ok` is rarer there but more often right.
+# See ``core.domain.confidence``.
 SEMANTIC_CALIBRATION = Calibration(a=0.6341, b=-3.2706)
 
 

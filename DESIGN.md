@@ -173,9 +173,17 @@ barely moves between embedding models. Measured on `engram eval --confidence` (f
   `ok` rate moved from 15% to 62% with this change, so the estimate steps up without any real
   saving. It is excluded from the headline figure for exactly this kind of reason.
 
+- **Held out.** The constants and threshold were fitted and chosen on all 333 queries, so they were
+  re-checked on a fixed half they never saw (`bench.stats.stable_split`, stratified answerable /
+  unanswerable): refitted on the other half alone, the `ok` boundary barely moves (z\* 4.49 vs the
+  shipped 4.52), and every figure above lies inside the held-out 95% interval (e.g. 20,000:
+  precision 0.51 [0.38, 0.63], recall 0.48 [0.36, 0.60]). The constants stand. Only that boundary
+  is well determined; `a` and `b` individually are not (half-size fits spread `a` over 0.39–0.90).
+
 Reproduce: `engram eval --backends hash,fastembed --confidence [--distractors N
---distractor-project <key>] --confidence-out obs.jsonl` — the `platt (a, b)` column is where the
-shipped constants come from; `bench/replay_ledger.py` replays real ledger queries unlabelled.
+--distractor-project <key>] --confidence-out obs.jsonl` — Platt is fitted on the dev half (the
+`platt (a, b) [dev]` column) and every other column is scored on the test half;
+`bench/replay_ledger.py` replays real ledger queries unlabelled.
 
 ## Distillation — heuristic vs LLM
 

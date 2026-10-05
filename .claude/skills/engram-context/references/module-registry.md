@@ -112,13 +112,13 @@ core to Claude Code.
 | File | Role |
 |---|---|
 | `run_eval.py` | Runs the labelled paraphrase set through the real quantised search path (Recall@1/@3, MRR@10, bytes/fact); owns the shared `add_eval_arguments` flag set used by `bin/engram eval`. |
-| `confidence_eval.py` | `--confidence`: calibration of the `recall` verdict (AUROC, Brier/ECE, ok-precision/recall) over answerable + unanswerable queries on the production `search_fused_with_stats` path. |
-| `longmemeval.py` | `--longmemeval`: LongMemEval session retrieval — parity / verbatim-exchange / distilled / hybrid arms, plus `--lme-shipped` (transcript → capture → `recall` / `search_history`), session metrics + chars@5. |
+| `confidence_eval.py` | `--confidence`: calibration of the `recall` verdict (AUROC, Brier/ECE, ok-precision/recall) over answerable + unanswerable queries on the production `search_fused_with_stats` path — Platt fitted on the dev half, every metric on the test half. |
+| `longmemeval.py` | `--longmemeval`: LongMemEval session retrieval — parity / verbatim-exchange / distilled / hybrid arms, plus `--lme-shipped` (transcript → capture → `recall` / `search_history`), session metrics + chars@5; `--lme-split dev|test|all` (20 / 80 hold-out). |
 | `age_eval.py` | `--aged`: old- vs new-gold Recall@k on both production rankers (`search`, `search_fused`) across recency weights, against the age-blind (recency-off) ranking. |
 | `retrieval.py` / `stores.py` | Shared rankers over the real paths + Recall@k/MRR scorer; throwaway eval stores with explicit timestamps. |
 | `replay_ledger.py` | Replays the last N real `recall_events` queries on a snapshot of the live store (unlabelled reality check). |
 | `distractors.py` / `snapshot.py` | Runtime-only distractor mining (contamination/privacy-filtered) from a `sqlite3.backup` snapshot; never written to the repo. |
-| `stats.py` / `report.py` / `backends.py` | Pure seeded statistics; table printing; backend spec parsing + embedder construction. |
+| `stats.py` / `report.py` / `backends.py` | Pure seeded statistics + `stable_split` (the one dev/test hold-out every harness uses); table printing; backend spec parsing + embedder construction. |
 | `mine_corpus.py` | Dev tool: mines dataset *candidates* from the live store for the human review gate. |
 | `replay.py` / `run_ab.py` / `eval_code_index.py` | Transcript counterfactual replay; paired live A/B; code-index model scoping. |
 | `dataset.json` | The labelled facts + paraphrased queries, plus scenario keys (`stm_`/`antipattern_`/`duplicate_cluster_`/`confidence_scenario`). |

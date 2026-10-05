@@ -1,18 +1,59 @@
 """Statistics for the bench harness — pure, stdlib, seeded.
 
-Shared by ``run_eval`` (retrieval quality) and ``confidence_eval`` (calibration of the
-recall verdict). A bug here becomes a false claim in a design doc, so every function is
-pinned to hand-computed values in ``tests/test_bench_stats.py``. Randomness is always
+Shared by ``run_eval`` (retrieval quality), ``confidence_eval`` (calibration of the
+recall verdict) and ``longmemeval``. A bug here becomes a false claim in a design doc, so every
+function is pinned to hand-computed values in ``tests/test_bench_stats.py``. Randomness is always
 seeded — every run of the bench prints the same numbers.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Sequence
+from typing import TypeVar
 
 from core.domain.confidence import sigmoid
+
+T = TypeVar("T")
+
+SPLIT_SALT = "engram-holdout-v1"  # changing it re-deals every split: a new hold-out, not a tweak
+
+
+def _split_rank(key: str) -> int:
+    return int.from_bytes(hashlib.sha256(f"{SPLIT_SALT}\0{key}".encode()).digest()[:8], "big")
+
+
+def stable_split(
+    items: Sequence[T],
+    key: Callable[[T], str],
+    dev_fraction: float,
+    stratum: Callable[[T], Hashable] | None = None,
+) -> tuple[list[T], list[T]]:
+    """Deal ``items`` into a ``(dev, test)`` hold-out split — the one definition every harness uses.
+
+    Within each stratum the ``round(dev_fraction * n)`` items with the lowest salted hash of their
+    ``key`` go to dev, the rest to test, so each stratum keeps its share exactly. Membership depends
+    only on the keys — not on input order and not on a seed — and adding an item to a stratum moves
+    at most one existing item across its boundary. Both halves keep input order. Keys must be
+    unique: a duplicate would make membership depend on order.
+    """
+    if not 0.0 <= dev_fraction <= 1.0:
+        raise ValueError(f"dev_fraction must be within [0, 1], got {dev_fraction}")
+    keys = [key(item) for item in items]
+    if len(set(keys)) != len(keys):
+        raise ValueError("split keys must be unique")
+    groups: dict[Hashable, list[int]] = {}
+    for i, item in enumerate(items):
+        groups.setdefault(None if stratum is None else stratum(item), []).append(i)
+    dev_idx: set[int] = set()
+    for members in groups.values():
+        quota = math.floor(dev_fraction * len(members) + 0.5)
+        dev_idx.update(sorted(members, key=lambda i: _split_rank(keys[i]))[:quota])
+    dev = [item for i, item in enumerate(items) if i in dev_idx]
+    test = [item for i, item in enumerate(items) if i not in dev_idx]
+    return dev, test
 
 
 def wilson(k: float, n: int, z: float = 1.96) -> tuple[float, float]:

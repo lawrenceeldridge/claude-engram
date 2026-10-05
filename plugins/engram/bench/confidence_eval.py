@@ -9,11 +9,16 @@ judged on:
 
 * **discrimination** — AUROC (rank-based, so invariant to rescaling), with a paired
   seeded-bootstrap delta against the shipped formula;
-* **calibration** — Brier and ECE of 2-fold cross-fitted Platt probabilities, plus each candidate's
-  full-sample Platt ``(a, b)`` — the fit a shipped ``Calibration`` takes its constants from;
-* **the gate** — precision/recall of ``ok`` at cross-fitted ``p >= ok_precision``, and for the
+* **calibration** — Brier and ECE of Platt probabilities, plus each candidate's Platt ``(a, b)`` —
+  the fit a shipped ``Calibration`` takes its constants from;
+* **the gate** — precision/recall of ``ok`` at calibrated ``p >= ok_precision``, and for the
   shipped score also at the configured ``recall_min_confidence`` through production's own
   ``is_trusted`` rule (the verdict as it ships today).
+
+**Tuned on dev, reported on test.** The queries are dealt once into a fixed hold-out split
+(``bench.stats.stable_split``, 50/50, stratified answerable / unanswerable). Platt is fitted on
+**dev** only; every reported column — including the shipped gate — is scored on **test**, so no
+number this prints was fitted or chosen on the rows it is measured on.
 
 Candidates score a ``FusedResult`` — the exact object production recall computes — and
 ``current`` *is* production's ``recall_confidence`` with the backend's ``get_calibration``, so
@@ -32,7 +37,7 @@ from pathlib import Path
 
 from bench.backends import make_embedder, parse_spec
 from bench.report import print_rows
-from bench.stats import auroc, bootstrap_stat_ci, brier, ece, platt_fit, wilson
+from bench.stats import auroc, bootstrap_stat_ci, brier, ece, platt_fit, stable_split, wilson
 from bench.stores import build_store
 from core.domain.confidence import Calibration, calibrate, pool_z
 from core.ports.embedding import EmbeddingGateway
@@ -47,6 +52,7 @@ from core.recall import (
 from core.store import Store
 
 NO_RECALL = float("-inf")  # can never be `ok` (nothing returned, or unjudged); ranks below every real score
+DEV_FRACTION = 0.5  # Platt has two parameters: half the queries fit it, half judge it
 
 Candidate = Callable[[FusedResult, Calibration | None], float]
 
@@ -95,7 +101,8 @@ def observe(
     store: Store, embedder: EmbeddingGateway, project: dict, cfg, labelled: list[tuple[str, set[str]]]
 ) -> list[dict]:
     """Run each ``(query, gold_texts)`` through production recall; label and score it, keeping the
-    production confidence as returned (``None`` when unjudged) for the shipped gate."""
+    production confidence as returned (``None`` when unjudged) for the shipped gate. ``answerable``
+    (gold exists) is the stratum the hold-out split keeps balanced."""
     calibration = get_calibration(embedder)
     out = []
     for query, gold in labelled:
@@ -104,6 +111,7 @@ def observe(
         out.append(
             {
                 "q": query,
+                "answerable": bool(gold),
                 "label": bool(gold & returned),
                 "confidence": recall_confidence(result, calibration),
                 "scores": candidate_scores(result, calibration),
@@ -112,21 +120,22 @@ def observe(
     return out
 
 
-def cross_fit(scores: list[float], labels: list[bool], seed: int = 0) -> list[float]:
-    """Out-of-fold Platt probabilities: fit on one seeded half, apply to the other, and swap.
+def split(observations: list[dict]) -> tuple[list[dict], list[dict]]:
+    """The fixed ``(dev, test)`` hold-out of the labelled queries (keyed by query text)."""
+    return stable_split(
+        observations, key=lambda o: o["q"], dev_fraction=DEV_FRACTION, stratum=lambda o: o["answerable"]
+    )
 
-    Rows with no recall are excluded from fitting and map to probability 0.
-    """
-    order = list(range(len(scores)))
-    random.Random(seed).shuffle(order)
-    folds = (order[0::2], order[1::2])
-    probs = [0.0] * len(scores)
-    for held_out, train in ((folds[0], folds[1]), (folds[1], folds[0])):
-        fit = [i for i in train if scores[i] != NO_RECALL]
-        calibration = Calibration(*platt_fit([scores[i] for i in fit], [labels[i] for i in fit]))
-        for i in held_out:
-            probs[i] = 0.0 if scores[i] == NO_RECALL else calibrate(scores[i], calibration)
-    return probs
+
+def fit_calibration(scores: list[float], labels: list[bool]) -> Calibration:
+    """Platt fit over the rows that returned something (``NO_RECALL`` carries no score to fit)."""
+    fit = [i for i, sc in enumerate(scores) if sc != NO_RECALL]
+    return Calibration(*platt_fit([scores[i] for i in fit], [labels[i] for i in fit]))
+
+
+def probabilities(scores: list[float], calibration: Calibration) -> list[float]:
+    """Calibrated probabilities; a row with no recall maps to 0 (it can never be ``ok``)."""
+    return [0.0 if sc == NO_RECALL else calibrate(sc, calibration) for sc in scores]
 
 
 def gate(ok: list[bool], labels: list[bool]) -> dict:
@@ -155,10 +164,13 @@ def _resampled_auroc(scores: list[float], labels: list[bool]) -> Callable[[list[
 
 
 def summarise(observations: list[dict], ok_precision: float, shipped_threshold: float) -> dict:
-    """Per-candidate discrimination, calibration and gate metrics over labelled observations."""
-    labels = [o["label"] for o in observations]
+    """Per-candidate discrimination, calibration and gate metrics: Platt fitted on the dev split,
+    every metric scored on the test split."""
+    dev, test = split(observations)
+    dev_labels = [o["label"] for o in dev]
+    labels = [o["label"] for o in test]
     n = len(labels)
-    by_name = {name: [o["scores"][name] for o in observations] for name in CANDIDATES}
+    by_name = {name: [o["scores"][name] for o in test] for name in CANDIDATES}
     current = by_name["current"]
     current_auroc = _resampled_auroc(current, labels)
     rows = []
@@ -176,10 +188,9 @@ def summarise(observations: list[dict], ok_precision: float, shipped_threshold: 
         else:
             d_lo, d_hi = bootstrap_stat_ci(n, delta, BOOTSTRAP_ITERS)
             d_cell = f"{area - auroc(current, labels):+.3f} {_ci(d_lo, d_hi)}"
-        probs = cross_fit(scores, labels)
+        calibration = fit_calibration([o["scores"][name] for o in dev], dev_labels)
+        probs = probabilities(scores, calibration)
         at_target = gate([p >= ok_precision for p in probs], labels)
-        fitted = [i for i, sc in enumerate(scores) if sc != NO_RECALL]  # the full-sample fit a Calibration ships
-        a, b = platt_fit([scores[i] for i in fitted], [labels[i] for i in fitted])
         rows.append(
             {
                 "candidate": name,
@@ -191,11 +202,11 @@ def summarise(observations: list[dict], ok_precision: float, shipped_threshold: 
                 "ok_n": at_target["ok_n"],
                 "ok precision": _gate_cell(at_target["precision"], at_target["precision_ci"]),
                 "ok recall": _gate_cell(at_target["recall"], at_target["recall_ci"]),
-                "platt (a, b)": f"{a:.4f}, {b:.4f}",
+                "platt (a, b) [dev]": f"{calibration.a:.4f}, {calibration.b:.4f}",
             }
         )
-    shipped = gate([is_trusted(o["confidence"], shipped_threshold) for o in observations], labels)
-    return {"n": n, "positives": sum(labels), "rows": rows, "shipped": shipped}
+    shipped = gate([is_trusted(o["confidence"], shipped_threshold) for o in test], labels)
+    return {"dev_n": len(dev), "test_n": n, "positives": sum(labels), "rows": rows, "shipped": shipped}
 
 
 def _gate_cell(value: float | None, ci: tuple[float, float]) -> str:
@@ -212,7 +223,7 @@ CONFIDENCE_COLS = [
     "ok_n",
     "ok precision",
     "ok recall",
-    "platt (a, b)",
+    "platt (a, b) [dev]",
 ]
 
 
@@ -244,13 +255,16 @@ def evaluate_confidence(spec: str, data: dict, cfg, distractors: list[tuple[str,
 
 
 def write_observations(out: Path, spec: str, distractors: int, observations: list[dict]) -> None:
-    """Append one JSON line per query — label, production confidence, every candidate's raw score
-    (``None`` where ``NO_RECALL``) — so a calibration or threshold can be fitted offline."""
+    """Append one JSON line per query — answerable, label, production confidence, every candidate's raw
+    score (``None`` where ``NO_RECALL``) — so a calibration or threshold can be fitted offline, on the
+    same hold-out split (``split`` keys on ``q`` and stratifies on ``answerable``)."""
     with out.open("a", encoding="utf-8") as fh:
         for o in observations:
+            record = {"backend": spec, "distractors": distractors, "q": o["q"], "answerable": o["answerable"]}
             scores = {name: None if v == NO_RECALL else v for name, v in o["scores"].items()}
-            record = {"backend": spec, "distractors": distractors, "q": o["q"], "label": o["label"]}
-            fh.write(json.dumps({**record, "confidence": o["confidence"], "scores": scores}) + "\n")
+            fh.write(
+                json.dumps({**record, "label": o["label"], "confidence": o["confidence"], "scores": scores}) + "\n"
+            )
 
 
 def run_confidence(
@@ -271,15 +285,18 @@ def run_confidence(
             write_observations(out, spec, len(distractors), summary["observations"])
         print(
             f"\nRecall-verdict calibration — {spec}, k={cfg.activated_k}, {len(distractors)} distractors: "
-            f"{summary['answerable']} answerable + {summary['unanswerable']} unanswerable queries, "
-            f"{summary['positives']}/{summary['n']} positive (gold returned)\n"
+            f"{summary['answerable']} answerable + {summary['unanswerable']} unanswerable queries — "
+            f"Platt fitted on dev ({summary['dev_n']}), every column on test ({summary['test_n']}, "
+            f"{summary['positives']} positive: gold returned)\n"
         )
         print_rows(summary["rows"], CONFIDENCE_COLS)
         shipped = summary["shipped"]
         print(
-            f"\n  shipped gate (production `ok`: current >= recall_min_confidence {cfg.recall_min_confidence}): "
+            f"\n  shipped gate on test (production `ok`: current >= recall_min_confidence {cfg.recall_min_confidence}): "
             f"ok_n {shipped['ok_n']}, "
             f"precision {_gate_cell(shipped['precision'], shipped['precision_ci'])}, "
             f"recall {_gate_cell(shipped['recall'], shipped['recall_ci'])}"
         )
-        print(f"  ok precision / recall above are at calibrated p >= {ok_precision} (2-fold cross-fitted Platt)")
+        print(
+            f"  ok precision / recall above are at calibrated p >= {ok_precision} (Platt fitted on dev, scored on test)"
+        )

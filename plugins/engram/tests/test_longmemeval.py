@@ -1,8 +1,8 @@
 """LongMemEval harness tests — stdlib, hash embedder, inline fixture, no network.
 
 The harness decides whether engram gains a verbatim layer, so its plumbing is pinned: parsing,
-the stratified sample, each arm's unit construction and session mapping, abstention exclusion,
-the hybrid fusion, dataset resolution, and the atomic download.
+the dev/test hold-out, the stratified sample, each arm's unit construction and session mapping,
+abstention exclusion, the hybrid fusion, dataset resolution, and the atomic download.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from bench import longmemeval as lme  # noqa: E402
+from bench.cli_args import add_eval_arguments  # noqa: E402
 from core.config import get_config  # noqa: E402
 
 
@@ -91,6 +92,74 @@ class ParseAndSampleTests(unittest.TestCase):
         s = lme.parse(FIXTURE)[0].sessions[0]
         self.assertEqual(lme.session_document(s), "I just bought a new bicycle and it is bright green.")
         self.assertIn("Lovely!", lme.session_text(s))
+
+
+def _questions(per_type: dict[str, int]) -> list:
+    """Bare scoreable Questions — the split only reads ids and types."""
+    return [
+        lme.Question(f"{qtype}-{i}", qtype, "?", (), frozenset({"s00"}))
+        for qtype, n in per_type.items()
+        for i in range(n)
+    ]
+
+
+class SplitTests(unittest.TestCase):
+    def setUp(self):
+        self.questions = _questions({"multi-session": 50, "single-session-preference": 10, "temporal-reasoning": 40})
+
+    def test_dev_and_test_are_disjoint_complete_and_stratified_by_type(self):
+        dev, test = lme.select_split(self.questions, "dev"), lme.select_split(self.questions, "test")
+        self.assertFalse({q.qid for q in dev} & {q.qid for q in test})
+        self.assertEqual(len(dev) + len(test), len(self.questions))
+        self.assertEqual(
+            {
+                t: sum(q.qtype == t for q in dev)
+                for t in ("multi-session", "single-session-preference", "temporal-reasoning")
+            },
+            {"multi-session": 10, "single-session-preference": 2, "temporal-reasoning": 8},  # 20% of each type
+        )
+
+    def test_membership_is_by_question_id_not_position(self):
+        dev = {q.qid for q in lme.select_split(self.questions, "dev")}
+        self.assertEqual(dev, {q.qid for q in lme.select_split(list(reversed(self.questions)), "dev")})
+
+    def test_all_is_everything_and_an_unknown_split_is_refused(self):
+        self.assertEqual(lme.select_split(self.questions, "all"), self.questions)
+        with self.assertRaises(ValueError):
+            lme.select_split(self.questions, "train")
+
+    def test_cli_choices_match_the_harness_and_default_to_dev(self):
+        # cli_args can't import the harness (it stays stdlib-light), so pin the copy here.
+        parser = argparse.ArgumentParser()
+        add_eval_arguments(parser)
+        action = next(a for a in parser._actions if a.dest == "lme_split")
+        self.assertEqual((tuple(action.choices), action.default), (lme.SPLITS, "dev"))
+
+    def test_run_samples_within_the_chosen_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lme.json"
+            entries = [
+                _entry(f"q{i}", ("multi-session", "temporal-reasoning")[i % 2], "?", {"a": [("user", "x")]}, ["a"])
+                for i in range(20)
+            ]
+            path.write_text(json.dumps(entries))
+            seen = {}
+            for which in lme.SPLITS:
+                args = argparse.Namespace(
+                    lme_path=path,
+                    lme_download=False,
+                    lme_split=which,
+                    lme_limit=0,
+                    lme_llm=0,
+                    lme_out=None,
+                    lme_shipped=False,
+                )
+                with mock.patch.object(lme, "_report") as report, mock.patch("builtins.print"):
+                    lme.run_longmemeval(get_config(), ["hash"], args)
+                seen[which] = {q.qid for q in report.call_args.args[3]}
+        self.assertEqual(len(seen["dev"]), 4)  # 20% of 10 per type
+        self.assertEqual(seen["dev"] | seen["test"], seen["all"])
+        self.assertFalse(seen["dev"] & seen["test"])
 
 
 class RankingTests(unittest.TestCase):
