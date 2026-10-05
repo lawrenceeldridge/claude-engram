@@ -283,8 +283,9 @@ Follow the Run Mode workflow (Steps E1–E5) from the identified resume point.
 **Key conventions (a plan phase must honour these):**
 - **Two budgets, stated explicitly** — tokens (injected text) vs latency (hook wall-clock);
   each change says which it touches and why it's still a net win.
-- **Stdlib-first core** — `core/**` imports the standard library alone; `fastembed` / LLM
-  distillation are opt-in adapters that self-provision a venv (never `import fastembed` at core import).
+- **Stdlib-first core** — `core/**` imports the standard library alone; `fastembed` is an opt-in
+  adapter that self-provisions a venv (never `import fastembed` at core import); the LLM distillers
+  (default `claude`) run behind the Distiller interface with a heuristic fallback.
 - **Hooks fail open** — exit 0, inject nothing on any error, 5s ceiling. **Capture is detached** — distillation/embedding never on the interactive path.
 - **CQRS split** — capture (write) is heavy/batch/detached; recall (read) is tiny/hot-path/gated. Keep changes on the correct side.
 - **POEAA layering** — Repository over Active Record (`core/store.py`), Gateway + Separated

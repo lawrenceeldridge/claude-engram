@@ -32,7 +32,7 @@ These three patterns are about **describing** the O/R mapping and **constructing
 
 **Required pairings.** Data Mapper (provides the type info that lets the Query Object speak in classes/fields).
 
-**claude-engram applicability.** ✅ **Default.** `recall.search(...)` and `recall.search_fused(...)` take a *bundled* set of parameters — the frozen `Config` (ranking weights), the query vector, `min_sim`, `top_k`, and the cross-project penalty — rather than a sprawling positional signature. That bundle *is* the Query Object in the Fowler sense: a value carrier that describes the search, extended by adding a field rather than another positional argument. Reads fuse FTS5 (bm25) with vector cosine via reciprocal-rank fusion in `core/fusion.py`, then re-rank by priority in `core/scoring.py`. New search knobs go on the query/`Config` object; do not grow `search` into a ten-argument function, and do not concatenate raw SQL strings above the `Store` boundary — the only SQL (including FTS5 `MATCH`) lives inside `core/store.py`.
+**claude-engram applicability.** ✅ **Default.** `recall.search(...)` and `recall.search_fused(...)` take a *bundled* set of parameters — the frozen `Config` (ranking weights), the query vector, `min_sim`, `top_k`, and the cross-project penalty — rather than a sprawling positional signature. That bundle *is* the Query Object in the Fowler sense: a value carrier that describes the search, extended by adding a field rather than another positional argument. Reads fuse FTS5 (bm25) with vector cosine via reciprocal-rank fusion in `core/domain/fusion.py`, then re-rank by priority in `core/domain/scoring.py`. New search knobs go on the query/`Config` object; do not grow `search` into a ten-argument function, and do not concatenate raw SQL strings above the `Store` boundary — the only SQL (including FTS5 `MATCH`) lives inside `core/store.py`.
 
 ---
 
@@ -70,9 +70,9 @@ Service Layer
 In claude-engram this stack is concrete and single-backend:
 
 ```
-Service Layer (core/service.py capture, core/recall.py read)
+Service Layer (core/service.py capture, core/recall/ read)
     └─ Store  ← lightweight Repository (active_rows_for_project, fts_search, chunk_outline)
-        └─ search / search_fused params + frozen Config  ← Query Object (fused via RRF in core/fusion.py)
+        └─ search / search_fused params + frozen Config  ← Query Object (fused via RRF in core/domain/fusion.py)
             └─ hand-written Data Mapper on stdlib sqlite3 (row ↔ dict, quantize)
                 └─ SQLite (${CLAUDE_PLUGIN_DATA}/memory.db)
 ```

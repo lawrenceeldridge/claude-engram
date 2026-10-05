@@ -4,7 +4,7 @@ description: Consult the project's long-term memory AND its code/docs index befo
 license: MIT
 metadata:
   author: Lawrence Eldridge
-  version: 0.5.0
+  version: 0.6.0
   mcp-server: engram-memory
 ---
 
@@ -73,7 +73,9 @@ fall back to a normal search (and consider running `index_docs`).
 A recalled fact is a one-line summary. When you need the exact wording, numbers or
 reasoning behind it, **`search_history`** searches past sessions kept verbatim (redacted):
 conversation `exchanges` by default, or browser page `snapshots`. If the fact carries an
-`episode`, pass it to search only that conversation. Results are outlines; then
+`episode`, pass it to search only that conversation. If the question names a time ("last
+week", "in March"), translate it into `after` / `before` ISO dates — sessions in that window
+rank first, though a strong match outside it can still appear. Results are outlines; then
 `get_doc_section(ref=<anchor>)` for one exchange. Use this only when a fact is too terse —
 most questions are answered by the fact alone.
 

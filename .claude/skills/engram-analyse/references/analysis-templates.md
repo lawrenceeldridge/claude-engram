@@ -109,7 +109,7 @@ contract (`.claude/rules/02-architecture/`).
 | # | File | Rule / Pattern | Violation | Fix |
 |---|------|----------------|-----------|-----|
 | 1 | `core/adapters/foo.py` | Separated Interface | Leaks `fastembed` type into `core/` signature | Return a plain vector; keep the dep in the adapter |
-| 2 | `bin/recall_prompt.py` | Composition roots wire, don't compute | Ranking logic inline in the hook | Move to `core/recall.py` |
+| 2 | `bin/recall_prompt.py` | Composition roots wire, don't compute | Ranking logic inline in the hook | Move to `core/recall/` |
 
 #### Compliance Score
 
@@ -180,7 +180,7 @@ sequencing constraints. GitHub only — no ticket system.
 
 ```
 Change X (new rerank stage)
-  |-- depends-on: Query Object in core/recall.py::search  [present]
+  |-- depends-on: Query Object in core/recall/__init__.py::search  [present]
   |-- depends-on: fastembed adapter (real vectors)        [present]
   +-- optional: resident daemon — not blocking
 
@@ -200,7 +200,7 @@ Change Y (float-rescore)
 
 | Constraint | Reason | Impact if Violated |
 |------------|--------|--------------------|
-| Interface before adapter | Adapter implements the port in `core/embedding.py` | Adapter references a missing protocol |
+| Interface before adapter | Adapter implements the port in `core/ports/embedding.py` | Adapter references a missing protocol |
 | Benchmark before default change | `engram eval` must confirm no regression | Ships an unmeasured recall regression |
 
 #### Coherence Check

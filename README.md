@@ -6,9 +6,11 @@ them into atomic facts, embeds those compactly, and injects the *relevant* ones
 back into context — automatically, via hooks. Alongside memory it indexes your
 codebase and docs into ranked symbol/section outlines, so recall and a
 `search_code` / `get_symbol` lookup replace broad Grep/Glob/Read sweeps (measured
-~2/3 fewer tokens). Local-first: no API key and no network in the default
-configuration, no telemetry. The core runs on the Python standard library alone;
-real semantic recall, the index, and LLM distillation are opt-in.
+~2/3 fewer tokens). Local-first: memory and the index stay on your machine, no API key,
+no telemetry. In the default configuration the only network use is distillation — a
+detached `claude -p` on Haiku through your own Claude Code login (a little of your usage,
+never on the interactive path); `distiller=heuristic` makes it fully offline. The core runs
+on the Python standard library alone; real semantic recall (`fastembed`) is opt-in.
 
 ## Why it's efficient
 
@@ -163,7 +165,7 @@ index on demand (these are what the memory-first guard steers toward):
 | `code_outline` | Whole-file / project symbol outline. |
 | `search_docs` | Ranked doc-section outlines. |
 | `get_doc_section` | One doc section's body by anchor — or one past exchange / page snapshot from `search_history`. |
-| `search_history` | Ranked outlines of past sessions kept verbatim — conversation `exchanges` (default) or page `snapshots`; pass a fact's `episode` to search just that conversation. |
+| `search_history` | Ranked outlines of past sessions kept verbatim — conversation `exchanges` (default) or page `snapshots`; pass a fact's `episode` to search just that conversation, or `after` / `before` (ISO dates — the model translates "last week") to rank that window first (a soft boost, not a filter). |
 | `doc_outline` | Document/heading outline. |
 | `index_docs` | (Re)index the current project's code + docs. |
 | `list_projects` | Every project in the global store with its active-fact count. |
@@ -376,8 +378,11 @@ separate, capacity- and TTL-bounded table that never touches recall. Set via `us
 
 Distilled facts are the compact layer injected into prompts; alongside them engram can keep
 each conversation **exchange** (a user turn plus the assistant turns answering it) verbatim, so
-detail a fact dropped can be fetched on demand — never injected per prompt. Exchanges are
-redacted (credentials, emails, non-project paths) before they are stored, written in the
+detail a fact dropped can be fetched on demand — never injected per prompt. An exchange is
+the conversation first: the tool actions it triggered are folded into one footer line on its
+first part, grouped by verb (`Actions: Edited a.py, b.py · Ran 12: pytest -q; git status; ruff
+check . (+9)`, capped at 1,024 characters), so a long tool run never fills a result of its own.
+Exchanges are redacted (credentials, emails, non-project paths) before they are stored, written in the
 detached capture worker, and forgotten by the consolidation pass past the retention limits.
 Find them with the `search_history` MCP tool, then read one with `get_doc_section`. Each fact
 captured from a conversation records its `episode` (returned by `recall`), so
@@ -389,14 +394,17 @@ verbatim exchanges 0.983; through the shipped tools end to end (hash): `recall` 
 | Key | Default | Meaning |
 |---|---|---|
 | `episodic_enabled` | `true` | keep redacted verbatim exchanges in the index (kind `exchange`) |
-| `episodic_min_chars` | `24` | shorter exchanges, role labels included (one-line trivia like a lone "thanks"), are not kept |
+| `episodic_min_chars` | `24` | shorter exchanges, role labels and actions footer included (one-line trivia like a lone "thanks"), are not kept |
 | `episodic_ttl_days` | `180` | exchanges older than this are forgotten (0 = no age limit) |
 | `episodic_max_chunks` | `20000` | per-project cap; the oldest beyond it are forgotten (0 = no cap) |
 
 ### Durable work queue — WorkQueue
 
-Detached capture and recovery run through a durable **Command** queue (one handler per
-item, at-least-once with retry + dead-letter) — **not** an event bus. It is a
+The detached capture worker's retry-able work runs through a durable **Command** queue (one
+handler per item, at-least-once with retry + dead-letter) — **not** an event bus: `rescue`
+re-distils a delta whose LLM distillation fell back to the heuristic, and `exchange_format`
+rewrites exchanges stored before tool actions were folded into a footer (published once per
+such episode on upgrade). It is a
 zero-dependency SQLite queue (`work_queue`): idempotent publish, retry + backoff,
 dead-letter past `queue_max_deliver`, and crash recovery via lease expiry. It never runs
 on the recall hot path. Inspect it with `engram queue`. Tune via `userConfig` (or
@@ -429,7 +437,11 @@ export ENGRAM_DAEMON=1                     # recall hook uses the daemon, else i
 
 ## Better distillation (atomic facts + explicit supersedes)
 
-The heuristic distiller just splits lines. An LLM distiller produces genuinely
+The heuristic distiller splits lines and keeps the 12 most salient per capture — a
+first-person preference, habit, tool choice or decision first, a tool action last (measured on
+LongMemEval's held-out test split: facts-only R@5 0.894 → 0.907, evidence reached in preference
+sessions 12% → 25%; on real coding deltas, action lines in the kept facts 29.5% → 6.0%). An LLM
+distiller produces genuinely
 atomic facts and explicit `supersedes` links (the fix for vocabulary-disjoint
 conflicts). It runs in the detached capture worker — off the interactive path —
 and falls back to the heuristic on any failure (flagging the fact for later
@@ -471,12 +483,14 @@ only order facts, never override relevance). `--longmemeval` (with `--lme-downlo
 MIT-licensed dataset is fetched at runtime, never bundled) compares distilled facts, verbatim
 exchanges and both on LongMemEval session retrieval, including a configuration comparable with
 mempalace's published number; `--lme-shipped` adds the shipped path end to end (transcript →
-capture → `recall` / `search_history` at their default budgets).
+capture → `recall` / `search_history` at their default budgets). `--lme-split dev|test|all` picks a
+fixed hold-out (20% dev, the default, for tuning; 80% test, run once to report; `all` = the full set).
 
 `--confidence` measures whether the `recall` tool's `ok` verdict means "the returned
 facts contain the answer": the answerable queries plus 89 unanswerable, near-topic ones
 run through the real on-demand recall path, and each candidate confidence score is
-reported for discrimination (AUROC), calibration (Brier/ECE) and `ok` precision/recall.
+reported for discrimination (AUROC), calibration (Brier/ECE) and `ok` precision/recall —
+Platt fitted on a fixed dev half of the queries, every metric scored on the other half.
 `--distractors N --distractor-project <key|label>` pads the store with facts mined at
 runtime from a snapshot of a real store (filtered, never written to the repo) to
 reproduce real density; `bench/replay_ledger.py` replays real recall-ledger queries on a
@@ -526,7 +540,7 @@ Two escape hatches:
 
 ## Status
 
-Working end to end (240 tests, 10 skipped). Defaults are local-first and
+Working end to end (stdlib suite: `python3 -m unittest discover -s tests`). Defaults are local-first and
 zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for

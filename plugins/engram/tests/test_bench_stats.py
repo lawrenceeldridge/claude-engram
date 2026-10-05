@@ -28,6 +28,7 @@ from bench.stats import (  # noqa: E402
     recall_all_at_k,
     recall_any_at_k,
     reliability_bins,
+    stable_split,
     wilson,
 )
 from core.domain.confidence import Calibration, calibrate  # noqa: E402
@@ -181,6 +182,52 @@ class PlattTests(unittest.TestCase):
     def test_the_fit_is_what_the_shipped_calibration_applies(self):
         a, b = platt_fit([-1.0, -1.0, 1.0, 1.0], [False, False, True, True])
         self.assertAlmostEqual(calibrate(1.0, Calibration(a, b)), 0.75, places=6)  # the smoothed target
+
+
+class StableSplitTests(unittest.TestCase):
+    def test_known_deal_is_pinned(self):
+        # A changed salt or hash re-deals every hold-out, silently leaking test rows into tuning.
+        self.assertEqual(
+            stable_split(list("abcdefghij"), key=str, dev_fraction=0.3),
+            (["b", "c", "d"], ["a", "e", "f", "g", "h", "i", "j"]),
+        )
+
+    def test_disjoint_complete_and_order_preserving(self):
+        items = [f"q{i}" for i in range(50)]
+        dev, test = stable_split(items, key=str, dev_fraction=0.2)
+        self.assertEqual(sorted(dev + test), sorted(items))
+        self.assertFalse(set(dev) & set(test))
+        self.assertEqual(dev, [i for i in items if i in set(dev)])  # each half keeps input order
+        self.assertEqual(test, [i for i in items if i in set(test)])
+
+    def test_independent_of_input_order(self):
+        items = [f"q{i}" for i in range(50)]
+        self.assertEqual(
+            set(stable_split(items, key=str, dev_fraction=0.2)[0]),
+            set(stable_split(list(reversed(items)), key=str, dev_fraction=0.2)[0]),
+        )
+
+    def test_each_stratum_keeps_its_share(self):
+        items = [(f"q{i}", "rare" if i < 10 else "common") for i in range(100)]
+        dev, _test = stable_split(items, key=lambda x: x[0], dev_fraction=0.2, stratum=lambda x: x[1])
+        self.assertEqual(sum(1 for _k, s in dev if s == "rare"), 2)
+        self.assertEqual(sum(1 for _k, s in dev if s == "common"), 18)
+
+    def test_growth_moves_at_most_one_existing_item_per_addition(self):
+        items = [f"q{i}" for i in range(60)]
+        before = set(stable_split(items, key=str, dev_fraction=0.2)[0])
+        after = set(stable_split(items + ["q-new"], key=str, dev_fraction=0.2)[0]) - {"q-new"}
+        self.assertLessEqual(len(before ^ after), 1)
+
+    def test_extremes_and_invalid_input(self):
+        items = ["a", "b", "c"]
+        self.assertEqual(stable_split(items, key=str, dev_fraction=0.0), ([], items))
+        self.assertEqual(stable_split(items, key=str, dev_fraction=1.0), (items, []))
+        self.assertEqual(stable_split([], key=str, dev_fraction=0.5), ([], []))
+        with self.assertRaises(ValueError):
+            stable_split(items, key=str, dev_fraction=1.5)
+        with self.assertRaises(ValueError):
+            stable_split(["a", "a"], key=str, dev_fraction=0.5)
 
 
 class RetrievalMetricTests(unittest.TestCase):

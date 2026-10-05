@@ -105,7 +105,7 @@ from memory or the index.
 | Question | Route |
 |---|---|
 | "Did we decide int8 or float for storage?" | `recall` → `ok` cites the benchmark decision; confirm in [DESIGN § Embedding backend](../../../../DESIGN.md). Stop. |
-| "Where's the recency-decay formula?" | `search_code "recency decay"` → `core/scoring.py`; `get_symbol`. Stop. |
+| "Where's the recency-decay formula?" | `search_code "recency decay"` → `core/domain/scoring.py`; `get_symbol`. Stop. |
 | "How does the capture worker stay off the interactive path?" | `search_docs "detached capture"` + [DESIGN § Latency efficiency](../../../../DESIGN.md); confirm `bin/capture.py` via `get_symbol`. |
 | "What config key controls the injection cap?" | [README § Configuration](../../../../README.md) (`max_chars`) — documented, no search. |
 | "Find every place `CLAUDE_PLUGIN_OPTION_` is read" | Index won't rank a literal prefix well → Grep (Strategy 4), note it was a fresh search. |

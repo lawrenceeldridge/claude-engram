@@ -19,14 +19,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core import service  # noqa: E402
+from core.adapters.llm_distillers import ClaudeCliDistiller, HTTPDistiller  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.domain.quantize import cosine, dequantize_int8, hamming, pack_bits, quantize_int8  # noqa: E402
 from core.domain.scoring import frequency_boost, priority, recency_decay  # noqa: E402
 from core.ports.distill import (  # noqa: E402
-    ClaudeCliDistiller,
     DistilledFact,
     HeuristicDistiller,
-    HTTPDistiller,
     get_distiller,
     parse_records,
 )

@@ -32,6 +32,7 @@ Stop/SessionEnd/PreCompact ─► spawn detached capture worker   ← fire & for
                index chunks: docs · code · snapshots · exchanges)
                               ▲
        durable WorkQueue (inproc SQLite) ─► rescue: re-distil degraded deltas
+                                         ─► exchange_format: rewrite pre-footer exchanges (one-off)
 ```
 
 **Durable capture queue (built).** Detached capture publishes work items to a durable
@@ -49,12 +50,12 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
 |---|---|---|
 | Overall shape | CQRS + Hexagonal (Ports & Adapters) | whole plugin |
 | Capture pipeline | Command/Handler, idempotent per fact | `core/service.py` |
-| Distil/rank/quantise/consolidate | Functional Core / Imperative Shell | `core/distill.py`, `recall/`, `domain/quantize.py`, `consolidation/{replay,refine,scoring}.py` |
+| Distil/rank/quantise/consolidate | Functional Core / Imperative Shell | `core/ports/distill.py`, `recall/`, `domain/quantize.py`, `consolidation/{replay,refine,scoring}.py` |
 | Memory access + STM/LTM tiers | Repository over Data Mapper (never Active Record); tiers = a `tier` column + `Store` methods, **not** a second Repository | `core/store.py` |
-| Query params | Query Object | `core/recall.py::search` |
+| Query params | Query Object | `core/recall/__init__.py::search` |
 | Embedding provider | Gateway + Separated Interface | `core/ports/embedding.py`, `core/adapters/` |
-| Durable per-memory work (rescue/consolidate) | Command queue (`WorkQueue`) behind a Separated Interface — **not** Events; single stdlib `inproc` backend; port retained for future backends | `core/ports/workqueue.py`, `core/adapters/inproc_queue.py` |
-| Injected payload | DTO (deliberately one line/fact) | `core/recall.py::render_block` |
+| Durable per-memory work (`rescue`, `exchange_format`) | Command queue (`WorkQueue`) behind a Separated Interface — **not** Events; single stdlib `inproc` backend; port retained for future backends | `core/ports/workqueue.py`, `core/adapters/inproc_queue.py` |
+| Injected payload | DTO (deliberately one line/fact) | `core/recall/__init__.py::render_block` |
 | Empty recall | Special Case / Null Object (inject nothing) | `render_block` returns `""` |
 | Wiring | Composition Root | `bin/*` entry points |
 
@@ -79,6 +80,12 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
    of facts, so it is a pull, not a push. (The harness neutralises LongMemEval's session ids,
    which label the answer; the leak was measured negligible — 0 of 250 paired fastembed questions
    changed R@5.)
+   An exchange is the conversation first — its tool actions fold into one footer line, so a long
+   tool run never fills a result of its own (114 real queries: bare-action result summaries 10% → 0%).
+   When a question names a time, the model passes `search_history` an `after` / `before` window and
+   candidates in or near it are boosted ×1.4 (halving per week outside) — a soft re-order, never a
+   filter, so a wrong window costs nothing: on LongMemEval's 37 held-out time-anchored questions it
+   gained 0–2 and lost none (the phrase-derived window missed the gold session in 32% of them).
 
 ## Cache efficiency
 
@@ -130,6 +137,13 @@ override relevance on either ranker), `--longmemeval` (verbatim vs distilled ses
 store with real facts mined at runtime to reproduce density. Commands and output columns:
 [README § Benchmarking](README.md) and `.claude/skills/engram-test/references/benchmark.md`.
 
+**Tuned on dev, reported on test.** Anything a harness fits or chooses is fitted on a fixed dev
+split and reported once on a held-out test split, never on the rows it was tuned on: one
+`bench.stats.stable_split` (a salted-hash rank within each stratum — order- and seed-free, so a
+growing dataset keeps its split) serves `--confidence` (50 / 50, Platt fitted on dev) and
+`--longmemeval` (`--lme-split`, 20 / 80 by question id). The 244-query paraphrase set is a
+regression gate: changes hold parity on it, never tune to it.
+
 ## Recall confidence — measured
 
 The `recall` MCP tool returns a `confidence` score and a verdict; `ok` tells the model to trust the
@@ -173,25 +187,35 @@ barely moves between embedding models. Measured on `engram eval --confidence` (f
   `ok` rate moved from 15% to 62% with this change, so the estimate steps up without any real
   saving. It is excluded from the headline figure for exactly this kind of reason.
 
+- **Held out.** The constants and threshold were fitted and chosen on all 333 queries, so they were
+  re-checked on a fixed half they never saw (`bench.stats.stable_split`, stratified answerable /
+  unanswerable): refitted on the other half alone, the `ok` boundary barely moves (z\* 4.49 vs the
+  shipped 4.52), and every figure above lies inside the held-out 95% interval (e.g. 20,000:
+  precision 0.51 [0.38, 0.63], recall 0.48 [0.36, 0.60]). The constants stand. Only that boundary
+  is well determined; `a` and `b` individually are not (half-size fits spread `a` over 0.39–0.90).
+
 Reproduce: `engram eval --backends hash,fastembed --confidence [--distractors N
---distractor-project <key>] --confidence-out obs.jsonl` — the `platt (a, b)` column is where the
-shipped constants come from; `bench/replay_ledger.py` replays real ledger queries unlabelled.
+--distractor-project <key>] --confidence-out obs.jsonl` — Platt is fitted on the dev half (the
+`platt (a, b) [dev]` column) and every other column is scored on the test half;
+`bench/replay_ledger.py` replays real ledger queries unlabelled.
 
 ## Distillation — heuristic vs LLM
 
 Retrieval quality is capped by *what is stored*, so the distiller is the largest
 quality lever. Strategy pattern behind one interface:
 
-- **HeuristicDistiller** (default) — dependency-free line extraction. Cannot detect
+- **HeuristicDistiller** (`distiller=heuristic`; the zero-dependency fallback for the
+  LLM distillers, and the test stub) — dependency-free line extraction, keeping a delta's
+  most salient lines (`line_salience`) under its 12-fact cap. Cannot detect
   conflicts, so it leans on similarity-based supersession.
-- **ClaudeCliDistiller** (`distiller=claude`) — headless `claude -p`, defaulting to
+- **ClaudeCliDistiller** (`distiller=claude`, `core/adapters/llm_distillers.py`) — headless `claude -p`, defaulting to
   **Haiku** (the right tier for cheap extraction). Spawned inside a tight isolation
   envelope so a model reading the transcript-in-prompt cannot act on it: `--tools ""`
   disables the **built-in** tools, `--strict-mcp-config` (with no `--mcp-config`) loads
   **zero MCP servers** — without the latter the nested session would inherit ambient MCP
   servers (browser, tracker, …) *and* the project allow-list and perform side-effecting
   "ghost actions" — and `ENGRAM_DISABLE=1` no-ops engram's own hooks (recursion guard).
-- **HTTPDistiller** (`distiller=ollama`) — POSTs to any OpenAI-compatible endpoint
+- **HTTPDistiller** (`distiller=ollama`, same module) — POSTs to any OpenAI-compatible endpoint
   via stdlib urllib; point it at a local Ollama / LM Studio / llama.cpp / vLLM
   server for **zero-token, offline** distillation.
 
@@ -417,7 +441,8 @@ choices, called out so the mapping isn't over-claimed:
   (ASCH). Earlier revisions of this doc used "consolidation" for the inline boost —
   corrected above.
 
-Full design + the durable `WorkQueue` that carries rescue/consolidate work items:
+Full design + the durable `WorkQueue` (it carries the `rescue` and `exchange_format` Commands;
+consolidation itself runs inline at the checkpoint):
 [`docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md`](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
 
 ## Cross-project
@@ -475,6 +500,13 @@ Done and measured:
   an old fact a change contradicts is reachable — plus demand-driven curation
   (`invalidate_memory` / `engram forget`, and the distiller-assisted `review`).
 - **Hard expiry** — TTL sweep with frequency protection.
+- **Verbatim episodic layer** — redacted exchanges kept beside the facts (conversation first,
+  tool actions in one footer), linked by `facts.episode`, pulled on demand by `search_history`
+  (with an optional `after` / `before` window); LongMemEval R@5 facts 0.891 → exchanges 0.983.
+- **Recall confidence** — the calibrated pool z-score behind the `recall` verdict, re-checked on
+  a held-out split (§ Recall confidence); the `hash` stub never says `ok`.
+- **Salience-ranked heuristic facts** — the 12-fact cap keeps first-person preferences, habits
+  and decisions over tool actions (held-out LongMemEval facts-only R@5 0.894 → 0.907).
 - **Multi-store tiers + sleep pass** — explicit STM/LTM `tier` with promotion by rehearsal,
   recall, **and age** (`stm_max_age_days`, on by default — the time-based maturation path); an
   offline `consolidate()` pass (replay / mature / displace / integrate / refine / purge); and a
@@ -496,9 +528,10 @@ Done and measured:
 Remaining:
 - **No separate REM sleep *phase*** — all consolidation stages run in one checkpoint pass,
   not a distinct NREM-then-REM cycle. A deliberate simplification, not a missing capability.
-- **`hash`/heuristic remain the zero-dep defaults** — real recall needs
-  `embedding=fastembed` (and an LLM distiller for best quality); these cost a
-  dependency / tokens (or a local model), so they are opt-in.
+- **`hash` remains the zero-dep embedding default** — real recall needs
+  `embedding=fastembed`, which costs a dependency and a model download, so it is opt-in. The
+  distiller default is `claude` (Haiku, detached, a little of the user's usage); `heuristic`
+  is its zero-dep fallback and the fully-offline choice.
 - **STM ranking stays default tier-agnostic** — `stm_recall_weight=1.0`; the measurable
   lever exists (`engram eval --stm`) but flipping the default awaits eval tuning.
 - **Eval set** is 297 facts / 244 queries (+ the STM scenario) after the 2026-07 mining

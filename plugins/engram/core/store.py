@@ -16,6 +16,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from core.domain.ingest import ACTION_PREFIXES
+from core.ports.workqueue import EXCHANGE_FORMAT
 from core.project import Project
 
 _FTS_TOKEN = re.compile(r"[A-Za-z0-9_]+")
@@ -359,6 +361,16 @@ def _v11_rescue_from_redistill(db: sqlite3.Connection) -> None:
     db.execute("DELETE FROM pending_redistill")
 
 
+# The one INSERT a new work item takes — Store.enqueue_work and the migrations that publish
+# Commands share it (_v11, a released step, keeps its own literal copy unchanged).
+_ENQUEUE_WORK = (
+    "INSERT OR IGNORE INTO work_queue "
+    "(msg_id, stage, project_key, session_id, ref, payload, status, attempts, "
+    " next_retry_at, lease_owner, lease_expires, enqueued_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, NULL, 0, ?)"
+)
+
+
 def _v13_usage(db: sqlite3.Connection) -> None:
     # Usage ledger for the effectiveness dashboard (`engram stats`): the two sides of the
     # token budget. `inject_*` rows record what claude-engram ADDS (bytes injected per
@@ -483,6 +495,30 @@ def _v19_fact_episode(db: sqlite3.Connection) -> None:
     _add_columns(db, [("episode", "episode TEXT")])
 
 
+def _v20_exchange_format(db: sqlite3.Connection) -> None:
+    # Exchanges stored before tool actions were folded into one footer hold bare action lines —
+    # whole continuation parts of "Ran: …". Publish one durable `exchange_format` Command per such
+    # episode; the detached capture worker re-folds and re-embeds it (service.reformat_exchanges),
+    # keeping its episode key, title and age. Self-limiting: only bodies with an action line at a
+    # line start (or right after the "Assistant: " label) match — a footer's entries never start a
+    # line — so replaying this step once the rewrite has run enqueues nothing new.
+    # The predicate follows the current action vocabulary (ACTION_PREFIXES) by design: the
+    # handler folds with the same vocabulary, so a replay after it changes stays consistent.
+    clause = " OR ".join("instr(char(10) || body, ?) > 0 OR instr(body, ?) > 0" for _ in ACTION_PREFIXES)
+    params = [pattern for prefix in ACTION_PREFIXES for pattern in ("\n" + prefix, "Assistant: " + prefix)]
+    episodes = db.execute(
+        f"SELECT DISTINCT project_key, source_path FROM chunks WHERE kind = 'exchange' AND ({clause})", params
+    ).fetchall()
+    stamp = time.time()
+    db.executemany(
+        _ENQUEUE_WORK,
+        [
+            (f"{EXCHANGE_FORMAT}:{key}:{episode}", EXCHANGE_FORMAT, key, "", episode, "", stamp)
+            for key, episode in episodes
+        ],
+    )
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -507,6 +543,7 @@ _MIGRATIONS = [
     _v17_sensory_schema,
     _v18_facts_browse_index,
     _v19_fact_episode,
+    _v20_exchange_format,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -1561,13 +1598,7 @@ class Store:
         now: float | None = None,
     ) -> bool:
         """Publish a work item; idempotent on ``msg_id`` (INSERT OR IGNORE). True if new."""
-        cur = self.db.execute(
-            "INSERT OR IGNORE INTO work_queue "
-            "(msg_id, stage, project_key, session_id, ref, payload, status, attempts, "
-            " next_retry_at, lease_owner, lease_expires, enqueued_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, NULL, 0, ?)",
-            (msg_id, stage, project_key, session_id, ref, payload, _now(now)),
-        )
+        cur = self.db.execute(_ENQUEUE_WORK, (msg_id, stage, project_key, session_id, ref, payload, _now(now)))
         self.db.commit()
         return cur.rowcount > 0
 

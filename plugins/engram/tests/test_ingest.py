@@ -167,6 +167,74 @@ class LowValueMemoryTests(unittest.TestCase):
         self.assertFalse(ingest.is_low_value_memory("prompt", "yes lets commit", min_prompt_len=0))
 
 
+class ActionVocabularyTests(unittest.TestCase):
+    """The one definition of a rendered tool action, shared by the renderer, the exchange footer
+    and the distiller."""
+
+    def test_every_verb_round_trips(self):
+        for verb in ingest.ACTION_VERBS:
+            line = ingest.action_line(verb.verb, "thing.py")
+            self.assertEqual(ingest.parse_action(line), (verb, "thing.py"), line)
+            self.assertTrue(ingest.is_action_line(line))
+        self.assertEqual(ingest.ACTION_PREFIXES, tuple(v.prefix for v in ingest.ACTION_VERBS))
+
+    def test_counted_verbs_take_free_text(self):
+        verb, argument = ingest.parse_action("Ran: pytest -q tests/test_x.py")
+        self.assertEqual((verb.verb, verb.listed, argument), ("Ran", False, "pytest -q tests/test_x.py"))
+
+    def test_the_longer_prefix_wins(self):
+        self.assertEqual(ingest.parse_action("Used skill engram-plan")[0].verb, "Used skill")
+        self.assertEqual(ingest.parse_action("Used TaskStop")[0].verb, "Used")
+
+    def test_strict_parse_leaves_prose_as_conversation(self):
+        for prose in ("Read the docs before you start", "Wrote the design doc and findings report", "Ran: ", "Edited"):
+            self.assertIsNone(ingest.parse_action(prose), prose)
+            self.assertFalse(ingest.is_action_line(prose))
+        self.assertFalse(ingest.is_action_line(REAL_FACT))
+
+    def test_lenient_parse_only_matches_the_verb(self):
+        verb, argument = ingest.parse_action("Read My Notes.md", strict=False)
+        self.assertEqual((verb.verb, argument), ("Read", "My Notes.md"))
+
+    def test_total_on_bad_input(self):
+        for bad in (None, 42, b"Ran: x", ["Edited a.py"]):
+            self.assertIsNone(ingest.parse_action(bad))
+            self.assertFalse(ingest.is_action_line(bad))
+
+    def test_unknown_verb_is_a_programming_error(self):
+        with self.assertRaises(KeyError):
+            ingest.action_line("Deleted", "a.py")
+
+
+class LineSalienceTests(unittest.TestCase):
+    def test_first_person_statements_rank_highest(self):
+        for line in (
+            "I prefer tabs over spaces in this repo.",
+            "i'd rather avoid mocks in the store tests",
+            "My favourite editor is Helix.",
+            "I usually run the full suite before pushing.",
+            "I'm allergic to shellfish.",
+            "I work as a backend engineer at Acme.",
+            "We use pnpm, not npm, in this monorepo.",
+            "We decided to keep int8 vectors.",
+            "We'll go with SQLite for the queue.",
+            "The decision was to drop the daemon.",
+        ):
+            self.assertEqual(ingest.line_salience(line), ingest.SALIENT, line)
+
+    def test_actions_rank_lowest_and_the_rest_is_plain(self):
+        self.assertEqual(ingest.line_salience("Ran: pytest -q"), ingest.ACTION)
+        self.assertEqual(ingest.line_salience("Edited auth.py"), ingest.ACTION)
+        for line in ("The deploy target is fly.io.", "I used grep to find it.", "Myopia is common.", "Read the docs"):
+            self.assertEqual(ingest.line_salience(line), ingest.PLAIN, line)
+        self.assertGreater(ingest.SALIENT, ingest.PLAIN)
+        self.assertGreater(ingest.PLAIN, ingest.ACTION)
+
+    def test_total_on_bad_input(self):
+        for bad in (None, 3, b"I prefer x"):
+            self.assertEqual(ingest.line_salience(bad), ingest.PLAIN)
+
+
 class RealFactSurvivesEveryGateTests(unittest.TestCase):
     """The over-filtering guard: a genuine decision fact must clear every predicate."""
 

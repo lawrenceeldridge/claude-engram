@@ -18,6 +18,11 @@ exchanges, the fact→episode link), then read back through the model's two surf
 default budgets: ``Vs`` = ``search_history`` exchanges, ``Ds`` = ``recall`` facts mapped to their
 session by ``episode`` only (an unlinked fact credits no session), ``Hs`` = both, fused.
 
+**Tuned on dev, reported on test.** ``--lme-split`` picks a fixed hold-out of the scoreable
+questions (``bench.stats.stable_split``: keyed by question id, stratified by type, 20% dev / 80%
+test). Changes are tuned on ``dev`` (the default) and reported once on ``test``; ``all`` is the
+full set the earlier published figures were measured on.
+
 Engram's own axis rides alongside: characters in the top-5 units — the token cost of the
 model pulling them. Dataset: HF ``xiaowu0162/longmemeval-cleaned`` (MIT), fetched at runtime
 into the data dir, never committed. Abstention questions (``_abs``) have no evidence sessions,
@@ -40,7 +45,15 @@ from pathlib import Path
 
 from bench.backends import make_embedder, parse_spec
 from bench.report import print_rows
-from bench.stats import bootstrap_ci, mcnemar_exact, ndcg_at_k, recall_all_at_k, recall_any_at_k, wilson
+from bench.stats import (
+    bootstrap_ci,
+    mcnemar_exact,
+    ndcg_at_k,
+    recall_all_at_k,
+    recall_any_at_k,
+    stable_split,
+    wilson,
+)
 from core import service
 from core.domain.episodes import episode_key, prepare_exchanges
 from core.domain.fusion import Channel, fuse
@@ -58,6 +71,8 @@ KS = (1, 3, 5, 10)
 POOL = 50  # units ranked per arm — deep enough for recall@10 over ~50 sessions
 ARMS = ("P", "V", "D", "H")
 SHIPPED_ARMS = ("Vs", "Ds", "Hs")
+SPLITS = ("dev", "test", "all")
+DEV_FRACTION = 0.2  # tune on ~94 of the 470 scoreable questions; report once on the other ~376
 
 Unit = tuple[str, str, str]  # (unit id, session id, text) — one ranked retrieval unit
 
@@ -130,6 +145,16 @@ def download(dest_dir: Path) -> Path:
     urllib.request.urlretrieve(LME_URL, partial)  # noqa: S310 — fixed https URL, bench-only
     partial.replace(dest)
     return dest
+
+
+def select_split(questions: list[Question], which: str) -> list[Question]:
+    """The ``dev`` or ``test`` hold-out of ``questions`` (by question id, stratified by type), or ``all``."""
+    if which == "all":
+        return list(questions)
+    if which not in SPLITS:
+        raise ValueError(f"unknown split {which!r}; expected one of {SPLITS}")
+    dev, test = stable_split(questions, key=lambda q: q.qid, dev_fraction=DEV_FRACTION, stratum=lambda q: q.qtype)
+    return dev if which == "dev" else test
 
 
 def stratified_sample(questions: list[Question], n: int, seed: int = 0) -> list[Question]:
@@ -411,12 +436,15 @@ def run_longmemeval(cfg, backends: list[str], args: argparse.Namespace) -> None:
         return
     questions, digest = load(path)
     scoreable = [q for q in questions if q.scoreable]
-    sample = stratified_sample(scoreable, args.lme_limit)  # sample only what can be scored
+    held = select_split(scoreable, args.lme_split)  # split first, so a sample never crosses the hold-out
+    sample = stratified_sample(held, args.lme_limit)  # sample only what can be scored
     for label, run_cfg, subset in distiller_runs(cfg, sample, args.lme_llm):
         _report(backends, label, run_cfg, subset, args.lme_out, args.lme_shipped)
     print(
-        f"  dataset {path.name} sha256={digest}: {len(sample)} of {len(scoreable)} scoreable questions "
-        f"(stratified; {len(questions) - len(scoreable)} abstention questions have no evidence to score)"
+        f"  dataset {path.name} sha256={digest}: {len(sample)} of {len(held)} questions in split "
+        f"'{args.lme_split}' ({len(scoreable)} scoreable; dev {DEV_FRACTION:.0%} / test {1 - DEV_FRACTION:.0%} "
+        f"by question id, stratified by type; {len(questions) - len(scoreable)} abstention questions have no "
+        f"evidence to score)"
     )
 
 

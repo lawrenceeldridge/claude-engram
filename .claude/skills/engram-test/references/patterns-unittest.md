@@ -27,7 +27,7 @@ from core.store import Store             # noqa: E402
 
 ---
 
-## Pure function (`core/scoring.py`, `core/quantize.py`, `core/chunking.py`)
+## Pure function (`core/domain/scoring.py`, `core/domain/quantize.py`, `core/index/chunking.py`)
 
 No fixtures. Test a known pair, a boundary, and an invariant.
 
@@ -111,7 +111,7 @@ class CaptureTests(unittest.TestCase):
 
 ---
 
-## Recall / search (`core/recall.py`, `core/fusion.py`)
+## Recall / search (`core/recall/`, `core/domain/fusion.py`)
 
 Test agreement, tie-breaks, and the empty case. Fusion is pure over channels:
 
@@ -137,7 +137,7 @@ The context gate must suppress a below-threshold match — assert recall returns
 
 ---
 
-## Adapter behind a port + fail-open (`core/distill.py`, `core/embedding.py`)
+## Adapter behind a port + fail-open (`core/ports/distill.py`, `core/ports/embedding.py`)
 
 Test the zero-dep implementation directly; assert the fallback path explicitly.
 

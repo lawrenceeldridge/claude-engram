@@ -94,7 +94,7 @@ the read side, and they are deliberately separate modules on separate hooks.
 | Side | File | Entry functions |
 |------|------|-----------------|
 | Write (capture) | `core/service.py` | `add_records`, `add_facts`, `capture_text`, `capture_transcript`, `maybe_capture_summary`, `recover_pending` |
-| Read (recall) | `core/recall.py` | `search`, `search_fused`, `render_block` |
+| Read (recall) | `core/recall/` | `search`, `search_fused`, `render_block` |
 | Read (recall, composed) | `core/service.py` | `recall_prompt_block`, `recall_core_block`, `orientation_block`, `recall_structured` |
 
 Each is a **function-style handler**: it takes the `Store` (Repository), the
@@ -118,7 +118,7 @@ LLM / the `claude` CLI — and translates it into the port's interface.
 **Cosmic taxonomy.** Repository, Gateway.
 
 **Ports** are declared as ABCs next to the consumer: `EmbeddingGateway` in
-`core/embedding.py`, `Distiller` in `core/distill.py`. The core imports the ABC, never the
+`core/ports/embedding.py`, `Distiller` in `core/ports/distill.py`. The core imports the ABC, never the
 concrete adapter.
 
 **claude-engram files.**
@@ -126,12 +126,12 @@ concrete adapter.
 | Cosmic concept | claude-engram instance |
 |----------------|---------------------|
 | Repository / Data Mapper | `core/store.py::Store` — the collection-like query surface over hand-written `sqlite3` SQL (see `catalog/05-or-metadata.md`, `catalog/02-data-source.md`) |
-| Gateway (embeddings) | `core/embedding.py::HashEmbedding` (zero-dep) and `core/adapters/fastembed_gw.py` (heavy dep, lazy import) |
-| Gateway (distillation) | `core/distill.py::HeuristicDistiller` (zero-dep), `ClaudeCliDistiller` (subprocess), `HTTPDistiller` (urllib) |
+| Gateway (embeddings) | `core/ports/embedding.py::HashEmbedding` (zero-dep) and `core/adapters/fastembed_gw.py` (heavy dep, lazy import) |
+| Gateway (distillation) | `core/ports/distill.py::HeuristicDistiller` (zero-dep), `core/adapters/llm_distillers.py::ClaudeCliDistiller` (subprocess) / `::HTTPDistiller` (urllib) |
 | Remote Facade (embedder) | `core/daemon_client.py` — thin client over the resident `bin/daemon.py`, fail-open in-process fallback |
 | Service Stub (tests) | `HashEmbedding` / `HeuristicDistiller` double as the deterministic test fakes |
 
-**Forbidden in this layer.** Importing from `core/service.py` or `core/recall.py` (a
+**Forbidden in this layer.** Importing from `core/service.py` or `core/recall/` (a
 circular dependency back to the orchestration layer). An adapter only knows about its port
 and its concrete external system. A Gateway with no fail-open fallback.
 

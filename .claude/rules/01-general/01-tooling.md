@@ -15,10 +15,13 @@ synchronous, sub-10ms cosine scan.
 **`plugins/engram/core/**` must import and run with the Python standard library
 alone.** This is the project's defining constraint, not a nicety:
 
-- The default `embedding=hash` (lexical stub) and `distiller=heuristic` (line
-  extraction) are **zero-dependency** — the plugin works out of the box with no pip
-  install and no network.
-- Real semantic recall (`fastembed`) and LLM distillation are **opt-in adapters**.
+- The default `embedding=hash` (lexical stub) is **zero-dependency**, and so is the
+  `heuristic` distiller (line extraction) — the fallback whenever the default `claude`
+  distiller (headless `claude -p`, Haiku, detached) is unavailable, and the distiller every
+  test pins. The plugin works out of the box with no pip install; `distiller=heuristic` also
+  removes the one network call.
+- Real semantic recall (`fastembed`) is an **opt-in adapter**; the LLM distillers sit
+  behind the Distiller interface on the stdlib alone (a subprocess / HTTP call).
   `fastembed` is imported lazily inside `core/adapters/fastembed_gw.py`, never at
   core import time. `tree-sitter-language-pack` is optional too — code indexing
   falls back to stdlib `ast` for Python when it is absent.

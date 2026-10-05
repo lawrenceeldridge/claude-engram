@@ -21,8 +21,8 @@ claude-engram leans on these **heavily** — they are the plumbing of its stdlib
 
 **claude-engram applicability.** ✅ **Default.** Every door to a heavy/optional dep or a subprocess is a Gateway:
 
-- **`EmbeddingGateway`** (`core/embedding.py`) — the door to the embedding model. The core never imports `fastembed`; the concrete `core/adapters/fastembed_gw.py` does, behind the Gateway.
-- **The `Distiller` interface** (`core/distill.py`) — the door to distillation. `ClaudeCliDistiller` shells out to the `claude` CLI; `HTTPDistiller` POSTs to an OpenAI-compatible endpoint. The core never spawns a subprocess or opens a socket directly — it calls the `Distiller`.
+- **`EmbeddingGateway`** (`core/ports/embedding.py`) — the door to the embedding model. The core never imports `fastembed`; the concrete `core/adapters/fastembed_gw.py` does, behind the Gateway.
+- **The `Distiller` interface** (`core/ports/distill.py`) — the door to distillation. `ClaudeCliDistiller` shells out to the `claude` CLI; `HTTPDistiller` POSTs to an OpenAI-compatible endpoint. The core never spawns a subprocess or opens a socket directly — it calls the `Distiller`.
 
 The core stays free of heavy deps and I/O; the Gateway does the talking.
 
@@ -39,7 +39,7 @@ The core stays free of heavy deps and I/O; the Gateway does the talking.
 
 **Required pairings.** Gateway + Separated Interface — the stub implements the interface; production code uses the Gateway via the interface.
 
-**claude-engram applicability.** ✅ **Default — and it doubles as the zero-dep default.** `HashEmbedding` (a lexical embedding stub, `core/embedding.py`) and `HeuristicDistiller` (line-extraction distillation, `core/distill.py`) are **both** the local-first defaults **and** the test fakes. They need no network and no model download, so the core is testable on the standard library with no mocks — the same object that ships as the fallback is the object the tests run against.
+**claude-engram applicability.** ✅ **Default — and it doubles as the zero-dep fallback.** `HashEmbedding` (a lexical embedding stub, `core/ports/embedding.py` — the shipped embedding default) and `HeuristicDistiller` (line-extraction distillation, `core/ports/distill.py` — the fallback for the default `claude` distiller) are **both** always available **and** the test fakes. They need no network and no model download, so the core is testable on the standard library with no mocks — the same object that ships as the fallback is the object the tests run against.
 
 ---
 
@@ -67,8 +67,8 @@ The core stays free of heavy deps and I/O; the Gateway does the talking.
 
 **claude-engram applicability.** ✅ Two clear uses:
 
-- **Row ↔ dict shaping** — the functions in `core/store.py` and `core/recall.py` that turn a `sqlite3.Row` into the dict/DTO callers see (and back) are Mappers in this general sense. Neither side carries knowledge of the other.
-- **`quantize` (`core/quantize.py`)** — maps a float vector ↔ its int8 / binary sign-bit representation. It is a Mapper between two representations of the same value; nothing on either side needs to know how the other is laid out.
+- **Row ↔ dict shaping** — the functions in `core/store.py` and `core/recall/` that turn a `sqlite3.Row` into the dict/DTO callers see (and back) are Mappers in this general sense. Neither side carries knowledge of the other.
+- **`quantize` (`core/domain/quantize.py`)** — maps a float vector ↔ its int8 / binary sign-bit representation. It is a Mapper between two representations of the same value; nothing on either side needs to know how the other is laid out.
 
 ---
 
@@ -81,7 +81,7 @@ The core stays free of heavy deps and I/O; the Gateway does the talking.
 
 **When to use.** When several types in the same layer share non-trivial behaviour or a common contract.
 
-**claude-engram applicability.** ✅ The **`EmbeddingGateway` ABC** (`core/embedding.py`) and the **`Distiller` ABC** (`core/distill.py`) are the layer supertypes for their adapters — every concrete embedder / distiller derives from them and honours their contract. There is **no ORM base model** (the store holds plain rows, not mapped entities — see `references/engram-defaults.md` § Data Source), so the only supertypes are the two Gateway ABCs.
+**claude-engram applicability.** ✅ The **`EmbeddingGateway` ABC** (`core/ports/embedding.py`) and the **`Distiller` ABC** (`core/ports/distill.py`) are the layer supertypes for their adapters — every concrete embedder / distiller derives from them and honours their contract. There is **no ORM base model** (the store holds plain rows, not mapped entities — see `references/engram-defaults.md` § Data Source), so the only supertypes are the two Gateway ABCs.
 
 ---
 
@@ -96,7 +96,7 @@ The core stays free of heavy deps and I/O; the Gateway does the talking.
 
 **Required pairings.** Often pairs with **Gateway**, **Plugin**, **Service Stub**.
 
-**claude-engram applicability.** ✅ **Default.** `EmbeddingGateway(ABC)` (`core/embedding.py`) and `Distiller(ABC)` (`core/distill.py`) are the separated interfaces. `core/` imports the ABC; the concrete impls live behind it — `core/adapters/fastembed_gw.py`, and the distiller classes (`HeuristicDistiller`, `ClaudeCliDistiller`, `HTTPDistiller`). This is the seam that keeps heavy deps out of the core: the inward code sees only the interface.
+**claude-engram applicability.** ✅ **Default.** `EmbeddingGateway(ABC)` (`core/ports/embedding.py`) and `Distiller(ABC)` (`core/ports/distill.py`) are the separated interfaces. `core/` imports the ABC; the concrete impls live behind it — `core/adapters/fastembed_gw.py`, and the distillers: `HeuristicDistiller` (the zero-dep stub, beside the port) and the LLM transports `ClaudeCliDistiller` / `HTTPDistiller` (`core/adapters/llm_distillers.py`, which supply only the I/O of the port's `LLMDistiller` template). This is the seam that keeps heavy deps out of the core: the inward code sees only the interface.
 
 ---
 
@@ -128,7 +128,7 @@ The core stays free of heavy deps and I/O; the Gateway does the talking.
 
 **Terminology trap.** Different from DTO. The early-Java "Value Object" meaning *is* the modern DTO. Fowler's Value Object is **identity-by-value**, **immutable**, often small. See `references/catalog/07-distribution.md` § DTO.
 
-**claude-engram applicability.** ✅ **Default.** `DistilledFact` and `Observation` (`core/distill.py`), `Hit` (`core/recall.py`), and the frozen `Config` (`core/config.py`) are immutable value carriers compared by content, not by reference. The `Config` in particular is a frozen value object of resolved settings — passed inward, never mutated.
+**claude-engram applicability.** ✅ **Default.** `DistilledFact` and `Observation` (`core/ports/distill.py`), `Hit` (`core/recall/`), and the frozen `Config` (`core/config.py`) are immutable value carriers compared by content, not by reference. The `Config` in particular is a frozen value object of resolved settings — passed inward, never mutated.
 
 **Cosmic Python citation.** Percival & Gregory 2020, Chapter 1 — Domain Modeling, draws the "value vs entity" line: entities have identity; value objects don't, and are compared by value. claude-engram follows this with `@dataclass(frozen=True)` (or an equivalently frozen carrier) for `DistilledFact`, `Observation`, `Hit`, and `Config` — immutable, value-equal, no `id`. A `DistilledFact` is *content* (a short string plus bookkeeping); a stored fact's *identity* is the content hash `Store.fact_id(project_key, text)`, which lives in the Data Source (see `references/engram-defaults.md` § O-R Structural), not on the value object.
 
@@ -158,7 +158,7 @@ The core stays free of heavy deps and I/O; the Gateway does the talking.
 
 **Anti-pattern guard.** Special Cases that lie (returning a fake value for a missing measurement) are worse than `None`. The Special Case must be honest about being special.
 
-**claude-engram applicability.** ✅ **The Null Object here is load-bearing.** `recall.render_block` returns `""` on empty recall (`core/recall.py`) — inject nothing, never a placeholder and never an error. Because the empty case renders to an empty string, an irrelevant turn costs **zero tokens** and the hook stays silent. This is the honest Null Object: "nothing to say" is represented by "" and consumed transparently by the hook that injects it.
+**claude-engram applicability.** ✅ **The Null Object here is load-bearing.** `recall.render_block` returns `""` on empty recall (`core/recall/`) — inject nothing, never a placeholder and never an error. Because the empty case renders to an empty string, an irrelevant turn costs **zero tokens** and the hook stays silent. This is the honest Null Object: "nothing to say" is represented by "" and consumed transparently by the hook that injects it.
 
 ---
 

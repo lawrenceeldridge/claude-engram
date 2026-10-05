@@ -217,7 +217,7 @@ When auditing code, run this list against the target:
 - [ ] Is an injected/returned payload called a "Value Object", or a real VO mutable? (DTO/VO trap)
 
 **claude-engram–specific checks**
-- [ ] Does any `core/` file outside `core/adapters/` import `fastembed`, spawn `claude`, or open the daemon socket? (Heavy dep in core)
+- [ ] Does any `core/` file outside `core/adapters/` import `fastembed`, spawn `claude`, call an HTTP model, or open the daemon socket — other than the two designated shells, `core/daemon_client.py` (the daemon's thin client) and `core/provision.py` (builds the managed venv)? (Heavy dep in core)
 - [ ] Does a pure function in `scoring/distill/quantize/fusion/confidence/lexical` do I/O, read the clock, or use randomness? (Leaky core)
 - [ ] Does recall load a model synchronously on `UserPromptSubmit`/`SessionStart` without the daemon-with-fallback path? (Hot-path embedding)
 - [ ] Does capture run inline instead of a detached, single-flight worker? (Capture on the interactive path / worker pileup)

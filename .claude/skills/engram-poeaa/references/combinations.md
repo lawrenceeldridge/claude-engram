@@ -52,9 +52,9 @@ pattern in a bundle without confirming the rest are present.
 ### Testability / swappable-backend bundle (embeddings + distillers)
 
 ```
-Separated Interface (EmbeddingGateway ABC / Distiller ABC)   ← core/embedding.py, core/distill.py
+Separated Interface (EmbeddingGateway ABC / Distiller ABC)   ← core/ports/embedding.py, core/ports/distill.py
     ├─ Gateway (real impl: fastembed_gw, ClaudeCliDistiller, HTTPDistiller)
-    ├─ Service Stub (zero-dep default AND test fake: HashEmbedding, HeuristicDistiller)
+    ├─ Service Stub (zero-dep fallback AND test fake: HashEmbedding, HeuristicDistiller)
     └─ Plugin (get_embedder(cfg) / get_distiller(cfg) — runtime selection)
         └─ Composition Root (bin/* picks the impl from config/env; ENGRAM_DAEMON toggles daemon)
             └─ fail-open contract (fastembed→hash, daemon→in-process, LLM→heuristic)

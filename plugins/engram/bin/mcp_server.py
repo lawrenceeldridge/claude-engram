@@ -30,7 +30,17 @@ reexec_if_pinned()
 ROOT = plugin_root()
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "engram-memory", "version": "0.6.0"}
+
+
+def _plugin_version() -> str:
+    """The plugin's version from its manifest — the one source of truth (bumped once per release)."""
+    try:
+        return str(json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"])
+    except (OSError, ValueError, KeyError):
+        return "unknown"  # fail-open: the handshake still answers
+
+
+SERVER_INFO = {"name": "engram-memory", "version": _plugin_version()}
 
 # Surfaced to the model at initialize (MCP servers may return `instructions` that clients
 # inject as always-present guidance). A soft, zero-cost nudge that complements the hook-based
@@ -99,7 +109,10 @@ TOOLS = [
             "turn + the answer, redacted) or browser page `snapshots`. Use when a `recall` fact is too "
             "terse and you need the exact wording, numbers or reasoning behind it. Returns ranked "
             "outlines (date + first line + anchor), not bodies; then `get_doc_section` on an anchor. "
-            "Pass a fact's `episode` (from `recall`) to search only the conversation it came from."
+            "Pass a fact's `episode` (from `recall`) to search only the conversation it came from. "
+            'If the question names a time ("last week", "in March"), translate it into `after` / '
+            "`before` ISO dates: conversations inside that window rank first (a strong match outside it "
+            "can still appear)."
         ),
         "inputSchema": {
             "type": "object",
@@ -113,6 +126,14 @@ TOOLS = [
                 "episode": {
                     "type": "string",
                     "description": "Optional `episode` from a recall fact — scope to that conversation.",
+                },
+                "after": {
+                    "type": "string",
+                    "description": "Optional ISO date (YYYY-MM-DD) or date-time — rank sessions from then on first.",
+                },
+                "before": {
+                    "type": "string",
+                    "description": "Optional ISO date (YYYY-MM-DD, the whole day) or date-time — rank sessions up to then first.",
                 },
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
                 "k": {"type": "integer", "description": "Max results to return (default 10)."},
@@ -303,6 +324,39 @@ _CACHE_MAX = 128
 _HISTORY_KINDS = {"exchanges": "exchange", "snapshots": "snapshot"}
 
 
+def _epoch(value, *, end_of_day: bool) -> float:
+    """An ISO date or date-time as epoch seconds (local time when it carries no zone). A bare date
+    covers its whole day: its first instant for `after`, its last for `before`."""
+    from datetime import date, datetime, timedelta
+
+    text = str(value).strip()
+    try:
+        day = date.fromisoformat(text)
+    except ValueError:
+        return datetime.fromisoformat(text).timestamp()
+    start = datetime(day.year, day.month, day.day)
+    return (start + timedelta(days=1) - timedelta(microseconds=1) if end_of_day else start).timestamp()
+
+
+def _time_window(args: dict):
+    """``search_history``'s ``after`` / ``before`` as a ``TimeWindow`` — parsed here, at the edge.
+    Returns ``(window, note)``: ``(None, None)`` when neither is given; on input that isn't an ISO
+    date, ``(None, note)`` — the search still runs, unwindowed (fail-open), and says why."""
+    after, before = args.get("after"), args.get("before")
+    if not after and not before:
+        return None, None
+    from core.domain.temporal import TimeWindow
+
+    try:
+        window = TimeWindow(
+            _epoch(after, end_of_day=False) if after else None,
+            _epoch(before, end_of_day=True) if before else None,
+        )
+    except ValueError as exc:
+        return None, f"after/before ignored ({exc}); pass ISO dates such as 2026-09-28"
+    return window, None
+
+
 class _Engine:
     """Lazily-initialised, process-lifetime store + embedder (warm across calls).
 
@@ -442,7 +496,8 @@ class _Engine:
         if kind is None:
             return {"error": f"unknown kind {args.get('kind')!r}; use one of {sorted(_HISTORY_KINDS)}", "results": []}
         project = self._project(args.get("project"))
-        return search_index(
+        window, note = _time_window(args)
+        result = search_index(
             self.store,
             self.embedder,
             self.cfg,
@@ -451,7 +506,11 @@ class _Engine:
             k=args.get("k"),
             kind=kind,
             source_path=args.get("episode") or None,
+            window=window,
         )
+        if note:
+            result["window_ignored"] = note
+        return result
 
     def get_doc_section(self, args: dict) -> dict:
         self._init()

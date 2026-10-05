@@ -11,7 +11,8 @@ adapters when they are installed.
 ## The stdlib-purity rule
 
 Tests for `core/**` **must run without `fastembed` and without the network.** The
-default `hash` embedding + `heuristic` distiller make this possible; it is the
+`hash` embedding + `heuristic` distiller make this possible (pin `distiller="heuristic"` —
+the shipped default is `claude`, which would spawn `claude -p`); it is the
 promise the whole design rests on (see
 [`.claude/rules/00-quality/02-testing.md`](../../../rules/00-quality/02-testing.md)).
 

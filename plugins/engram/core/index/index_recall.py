@@ -6,6 +6,10 @@ Rank Fusion used for fact recall, then greedy-packs the winners under a characte
 budget with a per-file diversity cap (score decays ``0.5^n`` per repeat from one
 file) so a result set is never flooded with near-adjacent sections of one document.
 
+A search given a ``TimeWindow`` (``search_history``'s ``after`` / ``before``) boosts each fused
+candidate by its proximity to the window (``core.domain.temporal``). It re-orders the candidates
+the query already retrieved; it never admits a chunk the query didn't match.
+
 Search returns outline rows (anchor/title/summary/freshness), never bodies — the
 token-saving move. A follow-up ``get_chunk`` fetches one section's body and verifies
 it section-precisely against the live file. Freshness is file-level in search (one
@@ -20,6 +24,7 @@ from pathlib import Path
 
 from core.config import Config
 from core.domain.fusion import Channel, fuse
+from core.domain.temporal import TimeWindow, boost_by_window
 from core.ports.embedding import EmbeddingGateway
 from core.ports.scorer import DIM_MISMATCH, get_scorer
 from core.project import Project
@@ -112,12 +117,14 @@ def search_index(
     max_chars: int | None = None,
     kind: str | None = None,
     source_path: str | None = None,
+    window: TimeWindow | None = None,
 ) -> dict:
     """Hybrid keyword+semantic search over indexed chunks. Returns outline rows only.
 
     ``kind`` scopes the search to one chunk kind (``doc_section`` / ``code_symbol`` / ``snapshot`` /
     ``exchange``); None searches the whole index. ``source_path`` scopes it to one source (a file,
-    a snapshot URL, or an episode), which also lifts the per-source diversity cap.
+    a snapshot URL, or an episode), which also lifts the per-source diversity cap. ``window`` boosts
+    chunks indexed inside or near it (soft — see the module docstring); None leaves ranking as is.
     """
     k = k or 10
     max_chars = cfg.recall_max_chars if max_chars is None else max_chars
@@ -133,6 +140,9 @@ def search_index(
         [Channel("fts", fts_ids), Channel("similarity", cos_ids)],
         weights=_FRESH_WEIGHTS,
     )
+    if window is not None:
+        stamps = {f.fact_id: rows[f.fact_id]["indexed_at"] for f in fused if f.fact_id in rows}
+        fused = boost_by_window(fused, stamps, window)
     packed = _diverse_pack(fused, rows, max_chars, diverse=source_path is None)[:k]
 
     now = time.time()

@@ -109,7 +109,7 @@ class _StubDistiller:
     def __init__(self, records):
         self._records = records
 
-    def distill(self, text, existing):           # matches core/distill.py
+    def distill(self, text, existing):           # matches core/ports/distill.py
         return [DistilledFact(**r) for r in self._records]
 
     def summarize(self, text):
@@ -124,16 +124,16 @@ test double" anti-pattern below.
 
 ## What to test per code type
 
-### Pure function (`core/scoring.py`, `core/quantize.py`, `core/chunking.py`)
+### Pure function (`core/domain/scoring.py`, `core/domain/quantize.py`, `core/index/chunking.py`)
 Minimum 3: a known input/output pair, a boundary (empty / zero / max), and any
 invariant (idempotence, monotonicity, round-trip fidelity). No fixtures needed.
 
-### Store-touching component (`core/service.py`, `core/store.py`, `core/recall.py`)
+### Store-touching component (`core/service.py`, `core/store.py`, `core/recall/`)
 Tempdir + `ENGRAM_DATA_DIR` fixture. Test: the happy write→read round-trip, the empty
 / no-match case (recall returns nothing, not an error), consolidation/supersession
 where relevant, and status filtering (`active` vs `superseded`/`expired`).
 
-### Adapter behind a port (`core/embedding.py`, `core/distill.py`)
+### Adapter behind a port (`core/ports/embedding.py`, `core/ports/distill.py`)
 Test the zero-dep implementation directly (`HashEmbedding`, `HeuristicDistiller`).
 Gate the real implementation (`FastEmbedGateway`, `ClaudeCliDistiller`) behind
 `@unittest.skipUnless`. **Test the fail-open path:** a broken/unavailable backend

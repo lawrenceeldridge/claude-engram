@@ -49,6 +49,11 @@ class McpInitializeTests(unittest.TestCase):
         self.assertIn("search_code", text)
         self.assertIn("FIRST", text)
 
+    def test_server_reports_the_plugin_version(self):
+        resp = _rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        manifest = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+        self.assertEqual(resp[0]["result"]["serverInfo"]["version"], manifest["version"])
+
     def test_tools_list_includes_recall_and_search_code(self):
         resp = _rpc(
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},

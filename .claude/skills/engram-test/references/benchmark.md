@@ -34,7 +34,7 @@ python3 bin/engram eval --backends "hash,fastembed" --confidence  # recall-verdi
 `bin/engram eval` and `bench/run_eval.py` share one flag definition
 (`run_eval.add_eval_arguments`), so every scenario flag works from both: `--stm`,
 `--antipatterns`, `--integrate`, `--confidence` (+ `--ok-precision`), `--aged`, `--longmemeval`
-(+ `--lme-path` / `--lme-download` / `--lme-limit` / `--lme-out` / `--lme-shipped` / `--lme-llm`); `--distractors`,
+(+ `--lme-path` / `--lme-download` / `--lme-split` / `--lme-limit` / `--lme-out` / `--lme-shipped` / `--lme-llm`); `--distractors`,
 `--distractor-project`, `--distractor-db` pad the store for `--confidence` / `--aged`.
 
 ### Backend spec: `name[@model][%dim][+float]`
@@ -104,6 +104,24 @@ frozen for reproducibility of earlier published figures.
 
 ---
 
+## Tune on dev, report on test
+
+A number tuned on the rows it is reported on overstates itself. The harnesses that **fit or
+choose** something therefore share one fixed hold-out split, `bench/stats.py::stable_split`:
+within each stratum the items with the lowest salted SHA-256 of their key go to dev, the rest to
+test. Membership depends only on the keys (not on order, not on a seed), each stratum keeps its
+share exactly, and an added item moves at most one existing item across the boundary. The salt
+(`SPLIT_SALT`) is pinned by a known-value test — changing it re-deals every hold-out.
+
+| Harness | Key · stratum | Dev / test | Fitted or chosen on dev | Reported on test |
+|---|---|---|---|---|
+| `--confidence` | query text · answerable | 50 / 50 | Platt `(a, b)` (the `platt (a, b) [dev]` column) | every other column, incl. the shipped gate |
+| `--longmemeval` | question id · question type | 20 / 80 (93 / 377 of 470) | anything a change tunes (`--lme-split dev`, the default) | once, `--lme-split test` |
+
+Tune with as many dev runs as you like; run test **once** per decision and report it as measured.
+`--lme-split all` reproduces the earlier full-set figures. The 244-query paraphrase set is a
+regression gate: a change must hold parity on it, never be tuned to it.
+
 ## Recall-verdict calibration (`--confidence`)
 
 Measures whether the `recall` tool's `ok` verdict means "the returned facts contain the
@@ -115,11 +133,17 @@ or never-`ok` for the `hash` stub; `top1` / `pool_z` / `topk_z` are the raw sign
 
 | Output | Meaning |
 |---|---|
-| AUROC [CI], ΔAUROC vs current [paired CI] | discrimination — rank-based, invariant to rescaling |
-| Brier, ECE | calibration of 2-fold cross-fitted Platt probabilities |
-| ok precision / recall at p ≥ `--ok-precision` | the gate at a cross-fitted Platt probability (default 0.90) |
-| platt (a, b) | the full-sample Platt fit — where a shipped `Calibration`'s constants come from |
-| shipped gate | production's `is_trusted(current, recall_min_confidence)` — the verdict as it ships |
+| AUROC [CI], ΔAUROC vs current [paired CI] | discrimination — rank-based, invariant to rescaling (test) |
+| Brier, ECE | calibration of the dev-fitted Platt probabilities (test) |
+| ok precision / recall at p ≥ `--ok-precision` | the gate at a dev-fitted Platt probability (default 0.90; test) |
+| platt (a, b) [dev] | the dev Platt fit — where a shipped `Calibration`'s constants come from |
+| shipped gate | production's `is_trusted(current, recall_min_confidence)` — the verdict as it ships (test) |
+
+`--confidence-out` records carry `answerable`, so an offline fit or threshold sweep can reuse the
+same split (`split()` keys on `q` and stratifies on `answerable`). Only the `ok` boundary
+`z* = (logit(threshold) − b) / a` decides the verdict; `a` and `b` individually are poorly
+identified at this sample size (a held-out re-check found half-size fits spread `a` over
+0.39–0.90 while `z*` stayed centred on the shipped 4.52).
 
 Density matters (the failure mode is many near-neighbours), so `--distractors N
 --distractor-project <key|label>` pads the store with facts mined **at runtime** from a
@@ -157,8 +181,9 @@ verbatim exchanges prepared exactly as capture stores them (`core/domain/episode
 split → redact → length gate; `indexer.exchange_chunk_units`) through engram's hybrid chunk search;
 **D** facts distilled per session through the `recall` tool path; **H** rank fusion of V and D
 units. Metrics are LongMemEval's own at session level (recall_any@k, recall_all@5, NDCG@5, per
-question type) plus engram's token axis (chars in the top-5 units). The sample is stratified over
-*scoreable* questions (abstention questions have no evidence). **D always uses the offline
+question type) plus engram's token axis (chars in the top-5 units). `--lme-split` picks the hold-out
+first (see *Tune on dev, report on test*), then `--lme-limit` samples within it, stratified over
+*scoreable* questions (abstention questions have no evidence) — a sample never crosses the split. **D always uses the offline
 heuristic distiller** — never the configured one, which may be an LLM; an LLM-distilled run needs
 explicit `--lme-llm N` (external calls, capped to N questions). ~40 s/question on fastembed.
 Session ids are replaced by neutral per-question ordinals at parse time: LongMemEval's own ids

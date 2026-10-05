@@ -67,7 +67,7 @@ design — the "model" is data, the logic is pure functions. Do not add persiste
 behaviour methods to the row/dataclass types to "un-anemic" them.
 
 **Citations.** `DESIGN.md` § Distillation, § Memory lifecycle; `core/service.py`,
-`core/distill.py`, `core/scoring.py`.
+`core/ports/distill.py`, `core/domain/scoring.py`.
 
 ---
 
@@ -138,7 +138,7 @@ the pattern set". The absence is the design.
 surrogate keys where a content hash gives idempotency for free.
 
 **Citations.** `DESIGN.md` § Compact storage, § Cross-project; `core/store.py`,
-`core/quantize.py`.
+`core/domain/quantize.py`.
 
 ---
 
@@ -161,7 +161,7 @@ ten-positional-argument function instead of extending the query/config object.
 appears, add a named `Store` method — don't hand a cursor to the caller.
 
 **Citations.** `DESIGN.md` § Memory lifecycle (hybrid re-rank), § Code & docs index
-(hybrid ranking / RRF); `core/recall.py`, `core/fusion.py`, `core/store.py`.
+(hybrid ranking / RRF); `core/recall/`, `core/domain/fusion.py`, `core/store.py`.
 
 ---
 
@@ -187,7 +187,8 @@ to **Distribution** (tool-call boundary), not Web Presentation.
 claude-engram crosses three boundaries, and a **DTO** carries data across each; there is
 **no Event system / pub-sub**. A **durable Command queue is permitted** — the `WorkQueue`
 Separated Interface, a single stdlib `inproc` SQLite backend — for detached per-memory
-processing (capture, re-distil, consolidation). See § Offline Concurrency and the
+processing (today the detached capture worker's `rescue` re-distil and the `exchange_format`
+stored-exchange rewrite; consolidation runs inline at the checkpoint, not on the queue). See § Offline Concurrency and the
 `stm-ltm-membus` design (`docs/generated/designs/`). The distinction is load-bearing:
 these are **Commands** (one handler, failures retry/dead-letter), *not* Events (pub-sub,
 many handlers, log-and-skip). Making the existing Command/Handler durable is not adding
@@ -215,7 +216,7 @@ boundary. A durable *Command* queue behind `WorkQueue` is **not** in this list �
 job-claim substrate (see § Offline Concurrency), not pub-sub.
 
 **Citations.** `DESIGN.md` § Token efficiency, § Latency efficiency (detached capture,
-warm daemon, fail-open); `core/recall.py::render_block`, `core/daemon_client.py`,
+warm daemon, fail-open); `core/recall/__init__.py::render_block`, `core/daemon_client.py`,
 `bin/mcp_server.py`.
 
 ---
@@ -276,9 +277,9 @@ a smell.
 | Pattern | Status | claude-engram use |
 |---|---|---|
 | **Gateway** | ✅ default | `EmbeddingGateway` (embeddings), the `Distiller` interface (distillation) — the only doors to heavy/optional deps and subprocesses |
-| **Separated Interface** | ✅ default | `EmbeddingGateway(ABC)` in `core/embedding.py`; `Distiller(ABC)` in `core/distill.py`. Concrete impls (`fastembed_gw`, `ClaudeCliDistiller`, `HTTPDistiller`) live behind them; the core imports the ABC, never the impl |
+| **Separated Interface** | ✅ default | `EmbeddingGateway(ABC)` in `core/ports/embedding.py`; `Distiller(ABC)` in `core/ports/distill.py`. Concrete impls (`core/adapters/fastembed_gw.py`; `core/adapters/llm_distillers.py` — `ClaudeCliDistiller`, `HTTPDistiller`) live behind them; the core imports the ABC, never the impl |
 | **Plugin** | ✅ default | `get_embedder(cfg)` / `get_distiller(cfg)` select the implementation from config at runtime; `ENGRAM_DAEMON` selects daemon-vs-in-process. This is Plugin selection, one place per Composition Root |
-| **Service Stub** | ✅ default | `HashEmbedding` (lexical, zero-dep) and `HeuristicDistiller` (line extraction, zero-dep) are the local-first defaults **and** the test fakes — no network, no model download |
+| **Service Stub** | ✅ default | `HashEmbedding` (lexical, zero-dep — the shipped embedding default) and `HeuristicDistiller` (line extraction, zero-dep — the fallback for the default `claude` distiller) are the always-available implementations **and** the test fakes — no network, no model download |
 | **Special Case / Null Object** | ✅ default | `render_block` returns `""` on empty recall — inject nothing, never a placeholder or an error. Irrelevant turns cost zero tokens |
 | **Value Object** | ✅ default | `DistilledFact`, `Observation`, `Hit`, and the frozen `Config` are immutable value carriers compared by content |
 | **Layer Supertype** | ✅ default | the `EmbeddingGateway` / `Distiller` ABCs are the layer supertypes for their adapters |
@@ -292,7 +293,7 @@ fastembed → hash, daemon → in-process, LLM distiller → heuristic. A missin
 never breaks capture or recall.
 
 **Citations.** `DESIGN.md` § Embedding backend, § Distillation, § Risks (fail-open);
-`core/embedding.py`, `core/distill.py`, `core/daemon_client.py`, `core/provision.py`.
+`core/ports/embedding.py`, `core/ports/distill.py`, `core/daemon_client.py`, `core/provision.py`.
 
 ---
 
