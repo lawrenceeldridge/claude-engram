@@ -51,6 +51,7 @@ core to Claude Code.
 | `adapters/fastembed_gw.py` | fastembed Gateway adapter (opt-in, real semantic model). |
 | `adapters/__init__.py` | Adapter package init. |
 | `domain/episodes.py` | Pure episodic pipeline: `exchange_units` (user turn + the assistant turns answering it, verbatim, ~800-char split; its tool actions folded into one `action_footer` on the first part — grouped by verb, capped at 1,024 chars; an exchange of actions alone forms no unit), `should_keep_exchange` (length gate), `prepare_exchanges` (redact → gate; shared by capture and the LongMemEval bench), `refold_exchanges` / `legacy_turns` (the one-off rewrite of pre-footer exchanges), `episode_key` (the `<session>:<delta start>` key shared by a delta's exchanges and the `facts.episode` provenance link). |
+| `domain/temporal.py` | Pure `TimeWindow` VO (epoch bounds, either open) with `distance` / `boost` (×1.4 inside, halving every 7 days outside) and `boost_by_window` (re-scores fused results; never adds or drops one) — `search_history`'s `after` / `before`, parsed from ISO dates in `bin/mcp_server.py`. |
 | `domain/privacy.py` | Pure `redact` (credentials, emails, non-project paths → `«redacted»`) for verbatim storage, and `privacy_flags` (the bench's human-gate detector). |
 | `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`) for the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
 | `quantize.py` | int8 (primary search rep) + binary sign-bit quantisation. |
@@ -65,7 +66,7 @@ core to Claude Code.
 | `code_symbols.py` | Python symbol extraction via stdlib `ast`. |
 | `treesitter_symbols.py` | TS/JS symbol extraction via `tree-sitter-language-pack`. |
 | `chunking.py` | Markdown/doc chunking by heading structure. |
-| `index_recall.py` | Ranked index search backing `search_code` / `search_docs` / `search_history` (scoped by kind and optionally one source/episode; cosine via the shared `VectorScorer`). |
+| `index_recall.py` | Ranked index search backing `search_code` / `search_docs` / `search_history` (scoped by kind and optionally one source/episode; cosine via the shared `VectorScorer`; an optional `TimeWindow` boosts candidates indexed in or near it). |
 | `fusion.py` | Reciprocal-rank fusion (FTS5 bm25 ⊕ cosine) + diversity-budget packing. |
 
 ### Shared

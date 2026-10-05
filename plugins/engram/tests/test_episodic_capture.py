@@ -394,8 +394,8 @@ class ExchangeFormatRewriteTests(unittest.TestCase):
             os.unlink(tf.name)
 
 
-class HistorySearchTests(unittest.TestCase):
-    """``search_index`` scoped to one source, and the ``search_history`` MCP tool over it."""
+class _HistoryCase(unittest.TestCase):
+    """A fresh MCP engine over two captured sessions (a, b) — shared by the history-search tests."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -424,6 +424,10 @@ class HistorySearchTests(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
         )
         return json.loads(resp["result"]["content"][0]["text"])
+
+
+class HistorySearchTests(_HistoryCase):
+    """``search_index`` scoped to one source, and the ``search_history`` MCP tool over it."""
 
     def test_unscoped_search_caps_each_episode_scoped_search_does_not(self):
         wide = search_index(self.store, self.embedder, self.cfg, self.project, "deploy question", kind="exchange")
@@ -458,6 +462,67 @@ class HistorySearchTests(unittest.TestCase):
         with mock.patch.object(self.store, "record_usage") as record:
             self._call("get_doc_section", {"ref": anchor})
         record.assert_not_called()
+
+
+class DateWindowSearchTests(_HistoryCase):
+    """``search_index(window=…)`` and ``search_history``'s ``after`` / ``before``: a soft channel."""
+
+    DAY = 86400.0
+
+    def setUp(self):
+        super().setUp()
+        for session, day in (("old", 10), ("new", 100)):  # the same conversation, captured on two days
+            delta = service.TranscriptDelta("", [], [("user", "which region hosts the staging cluster?")], 0, 1)
+            service.capture_episodes(
+                self.store, self.embedder, self.cfg, self.project, session, delta, now=day * self.DAY
+            )
+
+    def _sources(self, **kwargs) -> list[str]:
+        found = search_index(
+            self.store, self.embedder, self.cfg, self.project, "staging cluster region", kind="exchange", **kwargs
+        )
+        return [r["source_path"] for r in found["results"]]
+
+    def test_no_window_is_todays_ranking(self):
+        self.assertEqual(self._sources(window=None), self._sources())
+
+    def test_the_conversation_inside_the_window_ranks_first(self):
+        from core.domain.temporal import TimeWindow
+
+        self.assertEqual(self._sources(window=TimeWindow(95 * self.DAY, 105 * self.DAY))[0], "new:0")
+        self.assertEqual(self._sources(window=TimeWindow(before=20 * self.DAY))[0], "old:0")
+
+    def test_the_window_reorders_but_admits_nothing_new(self):
+        from core.domain.temporal import TimeWindow
+
+        base = search_index(self.store, self.embedder, self.cfg, self.project, "staging", kind="exchange", k=100)
+        windowed = search_index(
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "staging",
+            kind="exchange",
+            k=100,
+            window=TimeWindow(95 * self.DAY, 105 * self.DAY),
+        )
+        self.assertEqual(base["matched"], windowed["matched"])
+        self.assertEqual({r["anchor"] for r in base["results"]}, {r["anchor"] for r in windowed["results"]})
+
+    def test_search_history_after_before_rank_the_window_first(self):
+        import time
+
+        day = time.strftime("%Y-%m-%d", time.localtime(100 * self.DAY))
+        found = self._call("search_history", {"query": "staging cluster region", "after": day, "before": day})
+        self.assertEqual(found["results"][0]["source_path"], "new:0")
+        self.assertNotIn("window_ignored", found)
+
+    def test_bad_dates_are_ignored_and_say_so(self):
+        found = self._call("search_history", {"query": "staging cluster region", "after": "last week"})
+        self.assertTrue(found["results"])  # the search still ran, unwindowed
+        self.assertIn("after/before ignored", found["window_ignored"])
+        backwards = self._call("search_history", {"query": "staging", "after": "2026-09-28", "before": "2026-09-01"})
+        self.assertIn("window_ignored", backwards)
 
 
 class EpisodicIndexTests(unittest.TestCase):

@@ -165,7 +165,7 @@ index on demand (these are what the memory-first guard steers toward):
 | `code_outline` | Whole-file / project symbol outline. |
 | `search_docs` | Ranked doc-section outlines. |
 | `get_doc_section` | One doc section's body by anchor — or one past exchange / page snapshot from `search_history`. |
-| `search_history` | Ranked outlines of past sessions kept verbatim — conversation `exchanges` (default) or page `snapshots`; pass a fact's `episode` to search just that conversation. |
+| `search_history` | Ranked outlines of past sessions kept verbatim — conversation `exchanges` (default) or page `snapshots`; pass a fact's `episode` to search just that conversation, or `after` / `before` (ISO dates — the model translates "last week") to rank that window first (a soft boost, not a filter). |
 | `doc_outline` | Document/heading outline. |
 | `index_docs` | (Re)index the current project's code + docs. |
 | `list_projects` | Every project in the global store with its active-fact count. |

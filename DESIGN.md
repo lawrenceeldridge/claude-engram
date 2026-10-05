@@ -80,6 +80,12 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
    of facts, so it is a pull, not a push. (The harness neutralises LongMemEval's session ids,
    which label the answer; the leak was measured negligible — 0 of 250 paired fastembed questions
    changed R@5.)
+   An exchange is the conversation first — its tool actions fold into one footer line, so a long
+   tool run never fills a result of its own (114 real queries: bare-action result summaries 10% → 0%).
+   When a question names a time, the model passes `search_history` an `after` / `before` window and
+   candidates in or near it are boosted ×1.4 (halving per week outside) — a soft re-order, never a
+   filter, so a wrong window costs nothing: on LongMemEval's 37 held-out time-anchored questions it
+   gained 0–2 and lost none (the phrase-derived window missed the gold session in 32% of them).
 
 ## Cache efficiency
 
