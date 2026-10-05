@@ -39,7 +39,7 @@ The core stays free of heavy deps and I/O; the Gateway does the talking.
 
 **Required pairings.** Gateway + Separated Interface — the stub implements the interface; production code uses the Gateway via the interface.
 
-**claude-engram applicability.** ✅ **Default — and it doubles as the zero-dep default.** `HashEmbedding` (a lexical embedding stub, `core/embedding.py`) and `HeuristicDistiller` (line-extraction distillation, `core/distill.py`) are **both** the local-first defaults **and** the test fakes. They need no network and no model download, so the core is testable on the standard library with no mocks — the same object that ships as the fallback is the object the tests run against.
+**claude-engram applicability.** ✅ **Default — and it doubles as the zero-dep fallback.** `HashEmbedding` (a lexical embedding stub, `core/ports/embedding.py` — the shipped embedding default) and `HeuristicDistiller` (line-extraction distillation, `core/ports/distill.py` — the fallback for the default `claude` distiller) are **both** always available **and** the test fakes. They need no network and no model download, so the core is testable on the standard library with no mocks — the same object that ships as the fallback is the object the tests run against.
 
 ---
 

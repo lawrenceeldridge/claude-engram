@@ -13,9 +13,11 @@ path, distils atomic facts, embeds them compactly, and injects the *relevant* on
 back into context via hooks — while also indexing code/docs into ranked outlines so
 recall + `search_code`/`get_symbol` replace broad Grep/Glob/Read sweeps.
 
-**Local-first.** No API key and no network in the default configuration, no
-telemetry. The **core runs on the Python standard library alone**; semantic recall
-(`fastembed`), the index, and LLM distillation are opt-in.
+**Local-first.** Memory and the index stay on the user's machine, no API key, no
+telemetry. In the default configuration the only network use is distillation — a detached
+`claude -p` on Haiku through the user's own Claude Code login; `distiller=heuristic` makes it
+fully offline. The **core runs on the Python standard library alone**; semantic recall
+(`fastembed`) is opt-in.
 
 **This repo is the plugin's source, not an installed instance.** Work here maintains
 the plugin. `.claude/` + `CLAUDE.md` are dev-only and are never shipped; only

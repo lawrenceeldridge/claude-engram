@@ -226,6 +226,37 @@ class HeuristicBiasTests(unittest.TestCase):
         self.assertIn("search_code indexes TypeScript via tree-sitter.", facts)
 
 
+def _plain(n: int, start: int = 0) -> list[str]:
+    return [f"The module number {i} keeps its cache in memory." for i in range(start, start + n)]
+
+
+class SalienceSelectionTests(unittest.TestCase):
+    """The 12-fact cap keeps the most salient lines, not the first ones."""
+
+    def test_under_the_cap_everything_is_kept_in_order(self):
+        lines = ["Ran: npm run build", *_plain(3), "I prefer tabs over spaces in this repo."]
+        self.assertEqual(heuristic_facts("\n".join(lines)), lines)
+
+    def test_a_late_first_person_statement_beats_early_plain_lines(self):
+        late = "I usually run the full suite before pushing to main."
+        facts = heuristic_facts("\n".join([*_plain(20), late]))
+        self.assertEqual(len(facts), 12)
+        self.assertIn(late, facts)
+        self.assertEqual(facts[-1], late)  # original order is kept
+        self.assertEqual(facts[:11], _plain(11))  # the rest are the earliest plain lines
+
+    def test_actions_give_way_first_when_over_the_cap(self):
+        actions = [f"Ran: pytest -q tests/test_{i}.py" for i in range(6)]
+        facts = heuristic_facts("\n".join([*actions, *_plain(12)]))
+        self.assertEqual(facts, _plain(12))
+
+    def test_ties_keep_todays_first_twelve(self):
+        self.assertEqual(heuristic_facts("\n".join(_plain(30))), _plain(12))
+
+    def test_max_facts_is_respected(self):
+        self.assertEqual(len(heuristic_facts("\n".join(_plain(30)), max_facts=5)), 5)
+
+
 class ClipTests(unittest.TestCase):
     def test_small_input_unchanged(self):
         text = "a short delta"

@@ -9,10 +9,11 @@ lines and trivial user-prompt echoes.
 It also owns the **tool-action vocabulary** (``ACTION_VERBS``): the one definition of the
 action lines the transcript renderer writes for a tool call ("Edited auth.py", "Ran: just
 test"), which episodic exchanges fold into a footer and the distiller tells apart from
-conversation.
+conversation — and **line salience** (``line_salience``), the ranking the heuristic distiller
+keeps its capped facts by.
 
-Every function is a pure predicate (``str -> bool``), a pure stripper (``str -> str``) or a
-pure parser/formatter of action lines: no I/O, no clock, no ``Config`` read. Tuning thresholds
+Every function is a pure predicate (``str -> bool``), a pure stripper (``str -> str``), a
+pure parser/formatter of action lines, or a pure scorer (``str -> float``): no I/O, no clock, no ``Config`` read. Tuning thresholds
 are passed in as arguments. Every predicate and parser is **total** and **fail-open** — any
 non-``str`` / malformed input yields the keep-safe answer (``False`` for the "is this junk?"
 predicates, i.e. *keep* it; ``None`` / ``False`` for "is this an action?", i.e. treat it as
@@ -207,6 +208,44 @@ def parse_action(line: str, *, strict: bool = True) -> tuple[ActionVerb, str] | 
 def is_action_line(line: str) -> bool:
     """True if ``line`` reads as a rendered tool action (strict — see :func:`parse_action`)."""
     return parse_action(line) is not None
+
+
+# --- line salience -------------------------------------------------------------
+# Which of a delta's candidate lines a capped distiller should keep. A first-person statement of
+# a preference, habit, biographical detail, tool choice or decision is the durable memory a
+# session often carries once and in passing; a tool action is a trace of what was done, already
+# kept verbatim by the episodic layer. Coarse tiers on purpose: the cue list below was written
+# from general first-person phrasing (frozen before any measurement), not tuned to a benchmark.
+_SALIENT_CUES = re.compile(
+    r"\bI (?:really |strongly |generally )?(?:prefer|like|love|enjoy|hate|dislike|avoid)\b"
+    r"|\bI(?:'d| would) (?:prefer|rather)\b"
+    r"|\bmy (?:favou?rite|preferred|go-to)\b"
+    r"|\bI (?:always|usually|often|never|rarely|normally|typically|tend to)\b"
+    r"|\bI(?:'m| am) allergic\b"
+    r"|\bI (?:work|worked) (?:as|at|for)\b"
+    r"|\bI (?:live|lived|grew up) in\b"
+    r"|\bI (?:moved|relocated) to\b"
+    r"|\b(?:I|we) (?:use|rely on|switched to)\b"
+    r"|\b(?:I'm|I am|we're|we are) using\b"
+    r"|\bwe (?:decided|agreed|chose|settled on)\b"
+    r"|\b(?:we'll|we will) (?:use|go with|stick with)\b"
+    r"|\b(?:decided|chose|opted) to\b"
+    r"|\bthe decision (?:is|was)\b",
+    re.IGNORECASE,
+)
+SALIENT, PLAIN, ACTION = 2.0, 1.0, 0.0
+
+
+def line_salience(line: str) -> float:
+    """How strongly a candidate line deserves one of a capped distiller's slots: ``SALIENT`` for a
+    first-person preference / habit / biography / tool / decision statement, ``ACTION`` for a
+    rendered tool action, ``PLAIN`` otherwise. Total: non-``str`` → ``PLAIN`` (neither promoted
+    nor demoted, so a bad input can't change which facts are kept)."""
+    if not isinstance(line, str):
+        return PLAIN
+    if is_action_line(line):
+        return ACTION
+    return SALIENT if _SALIENT_CUES.search(line) else PLAIN
 
 
 # --- ephemeral CI / build / lint status ----------------------------------------

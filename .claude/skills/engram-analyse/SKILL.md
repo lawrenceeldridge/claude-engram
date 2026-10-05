@@ -346,8 +346,9 @@ hot-path, recall, or capture change.
 hot-path **latency** (embed + search — sub-10ms, capture detached). Every change
 states which it touches.
 
-**Key contracts:** core imports the standard library only (`fastembed` / LLM
-distillation are opt-in adapters); every hook fails open (exit 0, 5s ceiling); capture
+**Key contracts:** core imports the standard library only (`fastembed` is an opt-in
+adapter; the LLM distillers — default `claude` — sit behind the Distiller interface with a
+heuristic fallback); every hook fails open (exit 0, 5s ceiling); capture
 / distillation / embedding never run on the interactive path; memory access goes
 through `core/store.py` (Repository, not Active Record); retrieval changes are A/B'd
 with `engram eval` before shipping; project identity defaults to the workspace root

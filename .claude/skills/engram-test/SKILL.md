@@ -9,8 +9,8 @@ metadata:
 
 Operational depth for testing claude-engram. The suite is **stdlib `unittest`**
 (discoverable, also runs under `pytest`), all standard-library, no network — the
-default `hash` embedding + `heuristic` distiller keep the core testable with zero
-dependencies. This skill carries the depth the rule pointer at
+`hash` embedding + `heuristic` distiller keep the core testable with zero dependencies
+(tests pin `distiller="heuristic"`: the shipped default is `claude`). This skill carries the depth the rule pointer at
 [`.claude/rules/00-quality/02-testing.md`](../../rules/00-quality/02-testing.md)
 intentionally does not: how to structure a test, what to test per code type, how
 to keep the suite lean, and how to run and read the **recall-quality benchmark**.

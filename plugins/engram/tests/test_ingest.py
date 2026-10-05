@@ -206,6 +206,35 @@ class ActionVocabularyTests(unittest.TestCase):
             ingest.action_line("Deleted", "a.py")
 
 
+class LineSalienceTests(unittest.TestCase):
+    def test_first_person_statements_rank_highest(self):
+        for line in (
+            "I prefer tabs over spaces in this repo.",
+            "i'd rather avoid mocks in the store tests",
+            "My favourite editor is Helix.",
+            "I usually run the full suite before pushing.",
+            "I'm allergic to shellfish.",
+            "I work as a backend engineer at Acme.",
+            "We use pnpm, not npm, in this monorepo.",
+            "We decided to keep int8 vectors.",
+            "We'll go with SQLite for the queue.",
+            "The decision was to drop the daemon.",
+        ):
+            self.assertEqual(ingest.line_salience(line), ingest.SALIENT, line)
+
+    def test_actions_rank_lowest_and_the_rest_is_plain(self):
+        self.assertEqual(ingest.line_salience("Ran: pytest -q"), ingest.ACTION)
+        self.assertEqual(ingest.line_salience("Edited auth.py"), ingest.ACTION)
+        for line in ("The deploy target is fly.io.", "I used grep to find it.", "Myopia is common.", "Read the docs"):
+            self.assertEqual(ingest.line_salience(line), ingest.PLAIN, line)
+        self.assertGreater(ingest.SALIENT, ingest.PLAIN)
+        self.assertGreater(ingest.PLAIN, ingest.ACTION)
+
+    def test_total_on_bad_input(self):
+        for bad in (None, 3, b"I prefer x"):
+            self.assertEqual(ingest.line_salience(bad), ingest.PLAIN)
+
+
 class RealFactSurvivesEveryGateTests(unittest.TestCase):
     """The over-filtering guard: a genuine decision fact must clear every predicate."""
 

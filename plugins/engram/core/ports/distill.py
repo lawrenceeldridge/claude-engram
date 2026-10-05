@@ -29,7 +29,7 @@ import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from core.domain.ingest import is_ephemeral_status, is_narration, is_user_ask
+from core.domain.ingest import is_ephemeral_status, is_narration, is_user_ask, line_salience
 
 _NOISE_PREFIXES = ("http", "```", "|", ">", "<")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
@@ -179,7 +179,12 @@ def _candidates(text: str):
 
 
 def heuristic_facts(text: str, max_facts: int = 12, min_len: int = 14) -> list[str]:
-    facts: list[str] = []
+    """The heuristic distiller's facts: the candidate lines that pass the ingestion gates (no
+    asks, narration or ephemeral status; de-duplicated), of which the ``max_facts`` most salient
+    (``line_salience``) are kept — ties go to the earliest, so plain text keeps its first lines —
+    returned in their original order. Ranking rather than truncating stops a long delta from
+    losing a late "I prefer …" to its early chatter."""
+    lines: list[str] = []
     seen: set[str] = set()
     for line in _candidates(text):
         if not (min_len <= len(line) <= 240) or is_user_ask(line) or is_narration(line) or is_ephemeral_status(line):
@@ -188,10 +193,9 @@ def heuristic_facts(text: str, max_facts: int = 12, min_len: int = 14) -> list[s
         if key in seen:
             continue
         seen.add(key)
-        facts.append(line)
-        if len(facts) >= max_facts:
-            break
-    return facts
+        lines.append(line)
+    kept = sorted(range(len(lines)), key=lambda i: (-line_salience(lines[i]), i))[:max_facts]
+    return [lines[i] for i in sorted(kept)]
 
 
 class Distiller(ABC):

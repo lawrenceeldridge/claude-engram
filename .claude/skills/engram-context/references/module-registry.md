@@ -40,9 +40,9 @@ core to Claude Code.
 | `recall.py` | Read side — Query Object `search`, hybrid re-rank, `render_block` DTO (Null Object on empty). |
 | `scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`. |
 | `domain/confidence.py` | Pure score behind the `recall` verdict: `pool_stats` / `pool_z` (the best match against every fact scanned), `Calibration` VO + `calibrate` / `calibrated_confidence` (Platt), `sigmoid` (the one logistic — bench `platt_fit` uses it). A ranked score, not a probability; `core.recall.get_calibration` selects the calibration (`None` for the `hash` stub). |
-| `distill.py` | Distiller Strategy — heuristic (default) + Claude-CLI + HTTP/Ollama; atomic facts + `supersedes` links; heuristic fallback. |
+| `distill.py` | Distiller Strategy — Claude-CLI (default, Haiku) + HTTP/Ollama + heuristic (zero-dep fallback and test stub; salience-ranked `heuristic_facts`); atomic facts + `supersedes` links. |
 | `transcript.py` | Parse Claude Code transcripts into capturable text: typed lines (conversation `text` / tool `action`, rendered through `ingest.action_line`), the distiller's text, verbatim prompts, and `(role, text)` turns with each action its own `action` turn. |
-| `domain/ingest.py` | Pure capture-time policy: harness stripping, the ask / narration / status / trivial-prompt gates, and the tool-action vocabulary (`ACTION_VERBS`, `action_line`, strict `parse_action` / `is_action_line`, `ACTION_PREFIXES`). |
+| `domain/ingest.py` | Pure capture-time policy: harness stripping, the ask / narration / status / trivial-prompt gates, the tool-action vocabulary (`ACTION_VERBS`, `action_line`, strict `parse_action` / `is_action_line`, `ACTION_PREFIXES`), and `line_salience` (the tier the heuristic distiller's 12-fact cap ranks by: first-person cue > plain > action). |
 
 ### Embedding + storage layer
 | File | Role |

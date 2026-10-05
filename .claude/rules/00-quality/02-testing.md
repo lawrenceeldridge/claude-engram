@@ -17,8 +17,10 @@ harness) lives in the [`engram-test`](../../skills/engram-test/SKILL.md) skill.
 ## Rules
 
 1. **Core stays stdlib-testable.** Tests for `core/**` must run without `fastembed`
-   or any network. The default `hash` embedding + `heuristic` distiller make this
-   possible — keep it that way.
+   or any network. The `hash` embedding (the shipped default) + the `heuristic` distiller
+   make this possible — but the shipped distiller default is `claude`, so any test that can
+   reach a capture path **pins `distiller="heuristic"`** (and the developer env may set
+   `ENGRAM_DISTILLER=claude`). Keep it that way.
 2. **Measure retrieval changes.** Any change to embeddings, ranking, quantisation,
    fusion, or distillation is A/B'd with `engram eval` **before** it ships. Quantization
    loss, model choice, and fusion weights are all decisions the harness settled — see

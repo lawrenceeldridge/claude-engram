@@ -191,7 +191,9 @@ Reproduce: `engram eval --backends hash,fastembed --confidence [--distractors N
 Retrieval quality is capped by *what is stored*, so the distiller is the largest
 quality lever. Strategy pattern behind one interface:
 
-- **HeuristicDistiller** (default) — dependency-free line extraction. Cannot detect
+- **HeuristicDistiller** (`distiller=heuristic`; the zero-dependency fallback for the
+  LLM distillers, and the test stub) — dependency-free line extraction, keeping a delta's
+  most salient lines (`line_salience`) under its 12-fact cap. Cannot detect
   conflicts, so it leans on similarity-based supersession.
 - **ClaudeCliDistiller** (`distiller=claude`) — headless `claude -p`, defaulting to
   **Haiku** (the right tier for cheap extraction). Spawned inside a tight isolation
@@ -506,9 +508,10 @@ Done and measured:
 Remaining:
 - **No separate REM sleep *phase*** — all consolidation stages run in one checkpoint pass,
   not a distinct NREM-then-REM cycle. A deliberate simplification, not a missing capability.
-- **`hash`/heuristic remain the zero-dep defaults** — real recall needs
-  `embedding=fastembed` (and an LLM distiller for best quality); these cost a
-  dependency / tokens (or a local model), so they are opt-in.
+- **`hash` remains the zero-dep embedding default** — real recall needs
+  `embedding=fastembed`, which costs a dependency and a model download, so it is opt-in. The
+  distiller default is `claude` (Haiku, detached, a little of the user's usage); `heuristic`
+  is its zero-dep fallback and the fully-offline choice.
 - **STM ranking stays default tier-agnostic** — `stm_recall_weight=1.0`; the measurable
   lever exists (`engram eval --stm`) but flipping the default awaits eval tuning.
 - **Eval set** is 297 facts / 244 queries (+ the STM scenario) after the 2026-07 mining

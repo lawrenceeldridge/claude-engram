@@ -1,9 +1,12 @@
 # CLAUDE.md — claude-engram
 
 **claude-engram** = token-first, cross-project **long-term memory + code/docs index**
-for Claude Code, packaged as a plugin. Local-first: no API key and no network in
-the default configuration, no telemetry. The core runs on the Python **standard
-library alone**; real semantic recall, the index, and LLM distillation are opt-in.
+for Claude Code, packaged as a plugin. Local-first: memory and the index stay on your
+machine, no API key, no telemetry. In the default configuration the only network use is
+distillation — a detached `claude -p` on Haiku through your own Claude Code login (a little
+of your usage, never on the interactive path); `distiller=heuristic` makes it fully offline.
+The core runs on the Python **standard library alone**; real semantic recall (`fastembed`)
+is opt-in, and every backend sits behind an interface that falls back gracefully.
 
 This file governs work on **the plugin itself** (this repo). It is developer
 tooling — it is *not* shipped to anyone who installs the `engram` plugin. Only the
@@ -37,7 +40,7 @@ these are prose rules for now. Prefer fixing the cause over bypassing the guard.
 |---|-----------|-------------|-----------|
 | 1 | `git push` directly to `main` | Branch first, push the feature branch, open a PR. Recovery: `git branch <feat>; git reset --hard origin/main; git checkout <feat>; git push -u origin <feat>; gh pr create` | [`engram-git`](./.claude/skills/engram-git/SKILL.md) |
 | 2 | `git commit --no-verify` / `--no-gpg-sign` | Fix whatever the pre-commit / test step is complaining about | [01-general/02-commit-conventions.md](./.claude/rules/01-general/02-commit-conventions.md) |
-| 3 | Adding a hard third-party dependency to `plugins/engram/core/**` | The core is stdlib-only by contract; real embeddings / LLM distillation are **opt-in adapters** under `core/adapters/` and self-provision a venv (`core/provision.py`). Never `import fastembed` at core import time. | [02-architecture/00-overview.md](./.claude/rules/02-architecture/00-overview.md) |
+| 3 | Adding a hard third-party dependency to `plugins/engram/core/**` | The core is stdlib-only by contract; real embeddings are an **opt-in adapter** under `core/adapters/` that self-provisions a venv (`core/provision.py`), and the LLM distillers (`claude`, `ollama`) reach their model through a subprocess / HTTP on the stdlib alone. Never `import fastembed` at core import time. | [02-architecture/00-overview.md](./.claude/rules/02-architecture/00-overview.md) |
 | 4 | A hook that can raise into the interactive turn | Every hook **fails open** — exit 0 on any error and inject nothing. A broken hook must never break a turn. | [02-architecture/02-hooks-and-budgets.md](./.claude/rules/02-architecture/02-hooks-and-budgets.md) |
 | 5 | Doing capture / distillation / embedding **on the interactive path** | Capture is detached (spawned worker); recall is byte-capped + threshold-gated. Interactive-token cost must stay ~zero. | [02-architecture/02-hooks-and-budgets.md](./.claude/rules/02-architecture/02-hooks-and-budgets.md) |
 
@@ -88,8 +91,9 @@ Skills (invokable workflows) live in `.claude/skills/` and are prefixed `engram-
 
 1. **Check `.claude/rules/`** — architecture and quality standards live there, not here.
 2. **Stdlib-first core** — `plugins/engram/core/**` must import cleanly with the standard
-   library alone. Semantic embeddings (`fastembed`) and LLM distillation are opt-in
-   adapters behind interfaces; they self-provision a venv and fall back gracefully.
+   library alone. Semantic embeddings (`fastembed`) are an opt-in adapter that self-provisions
+   a venv; LLM distillation (the default `claude`, or `ollama`) sits behind the Distiller
+   interface on the stdlib alone. Both fall back gracefully (hash recall / heuristic facts).
 3. **Token-first, always detached where possible** — recall is threshold-gated and
    byte-capped; capture runs off the interactive path. State the budget impact of any change.
 4. **Hooks fail open** — exit 0 and inject nothing on any error. A 5s hook timeout is the ceiling.

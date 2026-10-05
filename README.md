@@ -6,9 +6,11 @@ them into atomic facts, embeds those compactly, and injects the *relevant* ones
 back into context — automatically, via hooks. Alongside memory it indexes your
 codebase and docs into ranked symbol/section outlines, so recall and a
 `search_code` / `get_symbol` lookup replace broad Grep/Glob/Read sweeps (measured
-~2/3 fewer tokens). Local-first: no API key and no network in the default
-configuration, no telemetry. The core runs on the Python standard library alone;
-real semantic recall, the index, and LLM distillation are opt-in.
+~2/3 fewer tokens). Local-first: memory and the index stay on your machine, no API key,
+no telemetry. In the default configuration the only network use is distillation — a
+detached `claude -p` on Haiku through your own Claude Code login (a little of your usage,
+never on the interactive path); `distiller=heuristic` makes it fully offline. The core runs
+on the Python standard library alone; real semantic recall (`fastembed`) is opt-in.
 
 ## Why it's efficient
 
@@ -435,7 +437,11 @@ export ENGRAM_DAEMON=1                     # recall hook uses the daemon, else i
 
 ## Better distillation (atomic facts + explicit supersedes)
 
-The heuristic distiller just splits lines. An LLM distiller produces genuinely
+The heuristic distiller splits lines and keeps the 12 most salient per capture — a
+first-person preference, habit, tool choice or decision first, a tool action last (measured on
+LongMemEval's held-out test split: facts-only R@5 0.894 → 0.907, evidence reached in preference
+sessions 12% → 25%; on real coding deltas, action lines in the kept facts 29.5% → 6.0%). An LLM
+distiller produces genuinely
 atomic facts and explicit `supersedes` links (the fix for vocabulary-disjoint
 conflicts). It runs in the detached capture worker — off the interactive path —
 and falls back to the heuristic on any failure (flagging the fact for later
