@@ -32,6 +32,7 @@ Stop/SessionEnd/PreCompact ─► spawn detached capture worker   ← fire & for
                index chunks: docs · code · snapshots · exchanges)
                               ▲
        durable WorkQueue (inproc SQLite) ─► rescue: re-distil degraded deltas
+                                         ─► exchange_format: rewrite pre-footer exchanges (one-off)
 ```
 
 **Durable capture queue (built).** Detached capture publishes work items to a durable
@@ -53,7 +54,7 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
 | Memory access + STM/LTM tiers | Repository over Data Mapper (never Active Record); tiers = a `tier` column + `Store` methods, **not** a second Repository | `core/store.py` |
 | Query params | Query Object | `core/recall.py::search` |
 | Embedding provider | Gateway + Separated Interface | `core/ports/embedding.py`, `core/adapters/` |
-| Durable per-memory work (rescue/consolidate) | Command queue (`WorkQueue`) behind a Separated Interface — **not** Events; single stdlib `inproc` backend; port retained for future backends | `core/ports/workqueue.py`, `core/adapters/inproc_queue.py` |
+| Durable per-memory work (`rescue`, `exchange_format`) | Command queue (`WorkQueue`) behind a Separated Interface — **not** Events; single stdlib `inproc` backend; port retained for future backends | `core/ports/workqueue.py`, `core/adapters/inproc_queue.py` |
 | Injected payload | DTO (deliberately one line/fact) | `core/recall.py::render_block` |
 | Empty recall | Special Case / Null Object (inject nothing) | `render_block` returns `""` |
 | Wiring | Composition Root | `bin/*` entry points |
@@ -425,7 +426,8 @@ choices, called out so the mapping isn't over-claimed:
   (ASCH). Earlier revisions of this doc used "consolidation" for the inline boost —
   corrected above.
 
-Full design + the durable `WorkQueue` that carries rescue/consolidate work items:
+Full design + the durable `WorkQueue` (it carries the `rescue` and `exchange_format` Commands;
+consolidation itself runs inline at the checkpoint):
 [`docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md`](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
 
 ## Cross-project

@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable
 
 from core.config import Config
 from core.domain.entities import extract_entities
-from core.domain.episodes import episode_key, prepare_exchanges
+from core.domain.episodes import episode_key, prepare_exchanges, refold_exchanges
 from core.domain.ingest import is_trivial_prompt
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.domain.scoring import salience_of
@@ -30,7 +30,7 @@ from core.ports.distill import (
 )
 from core.ports.embedding import EmbeddingGateway
 from core.ports.scorer import VectorScorer, get_scorer
-from core.ports.workqueue import WorkItem, get_queue
+from core.ports.workqueue import EXCHANGE_FORMAT, RESCUE, WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
 from core.recall import (
     best_match,
@@ -352,7 +352,7 @@ def capture_text(
         try:
             queue.publish(
                 WorkItem(
-                    stage="rescue",
+                    stage=RESCUE,
                     project_key=project["key"],
                     msg_id="rescue:" + store.fact_id(project["key"], text),
                     session_id=session_id,
@@ -381,7 +381,7 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
         distiller = get_distiller(cfg)
         scorer = get_scorer(cfg)
         recovered = 0
-        for lease in queue.pull("rescue", limit):
+        for lease in queue.pull(RESCUE, limit):
             try:
                 data = json.loads(lease.item.payload)
             except (ValueError, TypeError):
@@ -408,6 +408,51 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
             else:
                 lease.nak()  # still degraded — retry later; dead-letters past queue_max_deliver
         return recovered
+    finally:
+        queue.close()
+
+
+EXCHANGE_FORMAT_BATCH = 8  # episodes rewritten per capture run — bounds the detached re-embed work
+
+
+def reformat_exchanges(
+    store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int = EXCHANGE_FORMAT_BATCH
+) -> int:
+    """Drain the durable ``exchange_format`` Commands (published by store migration ``_v20``):
+    rewrite each episode's stored exchanges in the current format — tool actions folded into one
+    footer (``refold_exchanges``) — and re-embed them. The episode key is kept (facts stay linked),
+    and so are the title and ``indexed_at`` (retention ages an exchange from its capture, not from
+    this rewrite). Idempotent: an episode already current, or forgotten meanwhile, is acked
+    untouched; one left with no conversation unlinks its facts, as forgetting does. Runs at the
+    head of every incremental capture, beside ``rescue``; cheap when the queue is empty. A bad
+    anchor dead-letters its item; any other failure naks it for a later retry."""
+    from core.index.indexer import exchange_chunk_units, exchange_position, index_nonfile
+
+    queue = get_queue(cfg, store)
+    try:
+        rewritten = 0
+        for lease in queue.pull(EXCHANGE_FORMAT, limit):
+            key, episode = lease.item.project_key, lease.item.ref
+            rows = store.chunk_rows(key, "exchange", episode)
+            try:
+                stored = [(*exchange_position(row["anchor"]), row["body"]) for row in rows]
+            except ValueError:
+                lease.term()  # not an exchange anchor — never retry
+                continue
+            try:
+                exchanges = refold_exchanges(stored, cfg.episodic_min_chars)
+                if exchanges is not None:
+                    units = exchange_chunk_units(episode, exchanges, rows[0]["title"])
+                    stamp = min(row["indexed_at"] for row in rows)
+                    index_nonfile(store, embedder, store.project_meta(key), "exchange", episode, units, now=stamp)
+                    if not units:
+                        store.unlink_forgotten_episodes(key)
+                    rewritten += 1
+            except Exception:
+                lease.nak()
+                continue
+            lease.ack()
+        return rewritten
     finally:
         queue.close()
 
@@ -689,6 +734,7 @@ def capture_transcript_incremental(
     delta yields no facts, so nothing is reprocessed.
     """
     rescue(store, embedder, cfg)  # drain any heuristic-fallback backlog first (durable queue)
+    reformat_exchanges(store, embedder, cfg)  # and any stored exchanges still in the pre-footer format
     cursor_key = f"{project['key']}:{session_id or transcript_path}"
     start = store.get_capture_cursor(cursor_key)
     delta = extract_incremental_parts(transcript_path, start)

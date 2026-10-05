@@ -1,7 +1,9 @@
 """Capture-content tests — action-aware extraction + outcome-biased distillation.
 
 Guards the 0.6.0 fix: memory must record what the assistant *did* (tool actions),
-not just prompts, and must drop harness scaffolding and user questions.
+not just prompts, and must drop harness scaffolding and user questions. Also pins the
+renderer ↔ ``core.domain.ingest`` action-vocabulary contract and the typed turns that let
+episodic exchanges fold actions into a footer while the distiller's text stays as it was.
 
 Run: python3 -m unittest discover -s plugins/engram/tests
 """
@@ -17,8 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from core.domain.ingest import parse_action  # noqa: E402
 from core.ports.distill import _MAX_INPUT_CHARS, _clip, heuristic_facts  # noqa: E402
-from core.transcript import extract_text  # noqa: E402
+from core.transcript import _render_tool_use, extract_incremental_parts, extract_text  # noqa: E402
 
 
 def _write_transcript(entries: list[dict]) -> str:
@@ -99,6 +102,85 @@ class ExtractionTests(unittest.TestCase):
             )
         )
         self.assertEqual(text.strip(), "")
+
+
+# Every tool the renderer knows (plus an unknown one), with the verb and argument it must produce.
+TOOL_CASES = [
+    ("Edit", {"file_path": "/repo/src/auth.py"}, "Edited", "auth.py"),
+    ("MultiEdit", {"file_path": "/repo/a.py"}, "Edited", "a.py"),
+    ("NotebookEdit", {"file_path": "/repo/n.ipynb"}, "Edited", "n.ipynb"),
+    ("Write", {"file_path": "/repo/new.py"}, "Wrote", "new.py"),
+    ("Read", {"file_path": "/repo/README.md"}, "Read", "README.md"),
+    ("Bash", {"command": "just test"}, "Ran", "just test"),
+    ("Grep", {"pattern": "delete dialog"}, "Searched for", "delete dialog"),
+    ("Glob", {"pattern": "**/*.py"}, "Searched for", "**/*.py"),
+    ("WebSearch", {"query": "sqlite instr"}, "Searched for", "sqlite instr"),
+    ("Agent", {"description": "Trace exec paths", "prompt": "…"}, "Delegated task", "Trace exec paths"),
+    ("Task", {"description": "Old-style subagent"}, "Delegated task", "Old-style subagent"),
+    ("WebFetch", {"url": "https://example.org/x"}, "Fetched", "https://example.org/x"),
+    ("Skill", {"skill": "engram-plan", "args": "run x Phase 2"}, "Used skill", "engram-plan"),
+    ("mcp__plugin_engram_engram-memory__recall", {"query": "q"}, "Called", "mcp__plugin_engram_engram-memory__recall"),
+    ("TaskStop", {"task_id": "be4iapsb6"}, "Used", "TaskStop"),
+]
+
+
+class RendererContractTests(unittest.TestCase):
+    def test_every_rendered_action_is_the_domain_vocabulary(self):
+        for name, tool_input, verb, argument in TOOL_CASES:
+            parsed = parse_action(_render_tool_use(name, tool_input))  # strict: what salience/rewrite see
+            self.assertIsNotNone(parsed, name)
+            self.assertEqual((parsed[0].verb, parsed[1]), (verb, argument), name)
+
+    def test_an_unknown_tool_is_named_without_its_arguments(self):
+        self.assertEqual(_render_tool_use("TaskStop", {"task_id": "be4iapsb6"}), "Used TaskStop")
+        self.assertEqual(_render_tool_use("AskUserQuestion", {"questions": [{"q": "x"}]}), "Used AskUserQuestion")
+
+    def test_todowrite_renders_nothing(self):
+        self.assertEqual(_render_tool_use("TodoWrite", {"todos": []}), "")
+
+
+def _mixed_session() -> str:
+    return _write_transcript(
+        [
+            _user("Fix the failing auth test please."),
+            _assistant(
+                [
+                    {"type": "text", "text": "Looking at it."},
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "/repo/auth.py"}},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "pytest -q"}},
+                    {"type": "text", "text": "The expiry was compared in ms.\nFixed it."},
+                    {"type": "tool_use", "name": "Edit", "input": {"file_path": "/repo/auth.py"}},
+                ]
+            ),
+            _user([{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]),
+        ]
+    )
+
+
+class TypedLinesTests(unittest.TestCase):
+    def test_distiller_text_keeps_every_line_in_order(self):
+        # The distiller's input is unchanged by typing: conversation and actions, in order.
+        self.assertEqual(
+            extract_text(_mixed_session()),
+            "Fix the failing auth test please.\nLooking at it.\nRead auth.py\nRan: pytest -q\n"
+            "The expiry was compared in ms.\nFixed it.\nEdited auth.py",
+        )
+
+    def test_turns_carry_actions_as_their_own_role(self):
+        delta = extract_incremental_parts(_mixed_session(), 0)
+        self.assertEqual(
+            delta.turns,
+            [
+                ("user", "Fix the failing auth test please."),
+                ("assistant", "Looking at it."),
+                ("action", "Read auth.py"),
+                ("action", "Ran: pytest -q"),
+                ("assistant", "The expiry was compared in ms.\nFixed it."),
+                ("action", "Edited auth.py"),
+            ],
+        )
+        self.assertEqual(delta.prompts, ["Fix the failing auth test please."])  # actions never reach prompts
+        self.assertEqual(delta.text, extract_text(_mixed_session()))
 
 
 class HeuristicBiasTests(unittest.TestCase):

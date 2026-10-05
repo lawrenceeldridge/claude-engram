@@ -5,7 +5,9 @@ the episodic layer is on or off. Around it: exchanges are stored redacted, keyed
 idempotent on re-capture, never enter the facts recall surface, fail open, are forgotten by
 consolidation, and read as fresh through both index read paths. Then the surfaces: facts link to
 their episode only when it was stored, recall carries the link, consolidation unlinks a forgotten
-episode, and ``search_history`` finds exchanges / snapshots and scopes to one episode.
+episode, and ``search_history`` finds exchanges / snapshots and scopes to one episode. Last, the
+one-off rewrite of exchanges stored before actions were folded into a footer: migration ``_v20``
+publishes it once per old episode, and the ``exchange_format`` handler keeps every identity.
 Stdlib unittest, heuristic distiller, hash embedder, no network.
 """
 
@@ -27,11 +29,13 @@ sys.path.insert(0, str(ROOT / "bin"))
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.consolidation import consolidate  # noqa: E402
+from core.domain.episodes import Exchange  # noqa: E402
 from core.domain.privacy import REDACTED  # noqa: E402
 from core.index.index_recall import get_chunk, search_index  # noqa: E402
-from core.index.indexer import index_snapshot  # noqa: E402
+from core.index.indexer import exchange_chunk_units, index_nonfile, index_snapshot  # noqa: E402
 from core.ports.distill import DistilledFact  # noqa: E402
 from core.ports.embedding import HashEmbedding  # noqa: E402
+from core.ports.workqueue import EXCHANGE_FORMAT  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
@@ -263,6 +267,131 @@ class EpisodeLinkStoreTests(unittest.TestCase):
         self.store.close()
         self.store = Store(self.path)
         self.assertIn("episode", {r[1] for r in self.store.db.execute("PRAGMA table_info(facts)")})
+
+
+_OLD_FORMAT = [  # one exchange as stored before the footer: its tool run spilled into a part of its own
+    Exchange(0, 0, "User: run the suite and fix what fails\nAssistant: Running it now.\nRan: pytest -q"),
+    Exchange(0, 1, "Ran: pytest -q tests/test_a.py\nEdited a.py\nUsed TaskStop: {'task_id': 'b4'}"),
+    Exchange(0, 2, "Assistant: Fixed — the fixture leaked state between tests."),
+]
+
+
+class ExchangeFormatRewriteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "memory.db"
+        self.store = Store(self.path)
+        self.cfg = replace(get_config(), embedding="hash", distiller="heuristic")
+        self.embedder = HashEmbedding(dim=self.cfg.dim)
+        self.project = {"key": "proj", "path": self.tmp.name, "label": "proj"}
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def _store_exchanges(self, episode: str, exchanges: list[Exchange], stamp: float = 5000.0) -> None:
+        units = exchange_chunk_units(episode, exchanges, "2026-09-20 10:00")
+        index_nonfile(self.store, self.embedder, self.project, "exchange", episode, units, now=stamp)
+
+    def _replay_migrations(self) -> int:
+        """Reopen as a database stamped one step below head, so the ladder replays (as on upgrade)."""
+        self.store.db.execute("PRAGMA user_version = 19")
+        self.store.db.commit()
+        self.store.close()
+        self.store = Store(self.path)
+        return self.store.count_work(stage=EXCHANGE_FORMAT)
+
+    def _bodies(self, episode: str) -> dict[str, str]:
+        return {r["anchor"]: r["body"] for r in self.store.chunk_rows("proj", "exchange", episode)}
+
+    def test_migration_publishes_one_command_per_old_format_episode(self):
+        self._store_exchanges("s:0", _OLD_FORMAT)
+        current = [("user", "deploy it please"), ("assistant", "Deploying now."), ("action", "Ran: fly deploy")]
+        service.capture_episodes(
+            self.store, self.embedder, self.cfg, self.project, "s", service.TranscriptDelta("", [], current, 900, 901)
+        )
+        self._store_exchanges("s:1800", [Exchange(0, 0, "User: what is the deploy target?\nAssistant: fly.io")])
+        self.assertEqual(self._replay_migrations(), 1)  # only the old-format episode
+        (item,) = self.store.work_items("proj")
+        self.assertEqual((item["stage"], item["ref"]), (EXCHANGE_FORMAT, "s:0"))
+        self.assertEqual(self._replay_migrations(), 1)  # republishing is idempotent on msg_id
+
+    def test_the_rewrite_refolds_and_keeps_episode_title_and_age(self):
+        self._store_exchanges("s:0", _OLD_FORMAT, stamp=5000.0)
+        fact = self.store.fact_id("proj", "the fixture leaked state")
+        service.add_records(
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s",
+            [DistilledFact("the fixture leaked state")],
+            episode="s:0",
+        )
+        self._replay_migrations()
+        self.assertEqual(service.reformat_exchanges(self.store, self.embedder, self.cfg), 1)
+        rows = self.store.chunk_rows("proj", "exchange", "s:0")
+        self.assertEqual(
+            [r["body"] for r in rows],
+            [
+                "User: run the suite and fix what fails\nAssistant: Running it now.\n"
+                "Assistant: Fixed — the fixture leaked state between tests.\n"
+                "Actions: Ran 2: pytest -q; pytest -q tests/test_a.py · Edited a.py · Used TaskStop"
+            ],
+        )
+        self.assertEqual([r["anchor"] for r in rows], ["s:0:0.0"])
+        self.assertEqual({(r["title"], r["indexed_at"]) for r in rows}, {("2026-09-20 10:00", 5000.0)})
+        self.assertEqual(self.store.get(fact)["episode"], "s:0")  # the link holds
+        self.assertEqual(self.store.count_work(stage=EXCHANGE_FORMAT), 0)  # acked
+        self.assertEqual(self._replay_migrations(), 0)  # self-limiting: nothing old is left to publish
+
+    def test_an_episode_left_with_no_conversation_is_removed_and_unlinked(self):
+        self._store_exchanges("s:0", [Exchange(0, 1, "Ran: ls\nRan: pwd\nEdited a.py")])
+        fact = self.store.fact_id("proj", "listed the repo")
+        service.add_records(
+            self.store, self.embedder, self.cfg, self.project, "s", [DistilledFact("listed the repo")], episode="s:0"
+        )
+        self._replay_migrations()
+        service.reformat_exchanges(self.store, self.embedder, self.cfg)
+        self.assertEqual(self._bodies("s:0"), {})
+        self.assertIsNone(self.store.get(fact)["episode"])
+
+    def test_a_current_or_forgotten_episode_is_acked_untouched(self):
+        self._store_exchanges("s:1800", [Exchange(0, 0, "User: what is the deploy target?\nAssistant: fly.io")])
+        before = self._bodies("s:1800")
+        for episode in ("s:1800", "gone:0"):
+            self.store.enqueue_work(msg_id=f"x:{episode}", stage=EXCHANGE_FORMAT, project_key="proj", ref=episode)
+        self.assertEqual(service.reformat_exchanges(self.store, self.embedder, self.cfg), 0)
+        self.assertEqual(self._bodies("s:1800"), before)
+        self.assertEqual(self.store.count_work(stage=EXCHANGE_FORMAT), 0)
+
+    def test_a_malformed_item_is_dead_lettered_not_retried(self):
+        units = exchange_chunk_units("bad:0", [Exchange(0, 0, "User: hello there\nRan: ls")], "t")
+        units[0]["anchor"] = "not-an-exchange-anchor"
+        index_nonfile(self.store, self.embedder, self.project, "exchange", "bad:0", units)
+        self.store.enqueue_work(msg_id="x:bad", stage=EXCHANGE_FORMAT, project_key="proj", ref="bad:0")
+        self.assertEqual(service.reformat_exchanges(self.store, self.embedder, self.cfg), 0)
+        self.assertEqual(self.store.count_work(stage=EXCHANGE_FORMAT, status="dead"), 1)
+
+    def test_a_failing_rewrite_is_retried_later(self):
+        self._store_exchanges("s:0", _OLD_FORMAT)
+        self._replay_migrations()
+        with mock.patch("core.index.indexer.index_nonfile", side_effect=RuntimeError("embedder down")):
+            self.assertEqual(service.reformat_exchanges(self.store, self.embedder, self.cfg), 0)
+        self.assertEqual(self.store.count_work(stage=EXCHANGE_FORMAT, status="pending"), 1)  # nak'd, not lost
+        self.assertEqual(len(self._bodies("s:0")), 3)  # untouched
+
+    def test_capture_drains_the_rewrite_queue(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as tf:
+            tf.write(_TRANSCRIPT)
+        try:
+            with mock.patch.object(service, "reformat_exchanges") as drain:
+                service.capture_transcript_incremental(
+                    self.store, self.embedder, self.cfg, self.project, "sess-9", tf.name
+                )
+            drain.assert_called_once()
+        finally:
+            os.unlink(tf.name)
 
 
 class HistorySearchTests(unittest.TestCase):

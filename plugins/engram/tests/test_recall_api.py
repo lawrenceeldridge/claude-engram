@@ -578,8 +578,9 @@ class DistillStructuredTests(unittest.TestCase):
             self.assertEqual(delta.prompts, ["Fix the timezone bug please."])
             self.assertIn("Edited serve.py", delta.text)
             self.assertEqual(
-                delta.turns, [("user", "Fix the timezone bug please."), ("assistant", "Done.\nEdited serve.py")]
-            )  # the tool_result-only user message carries no text, so it is not a turn
+                delta.turns,
+                [("user", "Fix the timezone bug please."), ("assistant", "Done."), ("action", "Edited serve.py")],
+            )  # the action is its own turn; the tool_result-only user message carries no text, so it is not one
         finally:
             os.unlink(path)
 

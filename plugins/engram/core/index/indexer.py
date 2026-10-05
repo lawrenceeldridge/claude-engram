@@ -182,12 +182,26 @@ def _snapshot_summary(text: str) -> str:
     return first[:200]
 
 
+def exchange_anchor(episode: str, turn: int, part: int) -> str:
+    """An exchange chunk's anchor — ``<episode>:<turn>.<part>`` (the episode key holds a ``:`` too)."""
+    return f"{episode}:{turn}.{part}"
+
+
+def exchange_position(anchor: str) -> tuple[int, int]:
+    """``(turn, part)`` back from an exchange anchor; ``ValueError`` when it isn't one."""
+    _episode, sep, position = anchor.rpartition(":")
+    turn, dot, part = position.partition(".")
+    if not (sep and dot):
+        raise ValueError(f"not an exchange anchor: {anchor!r}")
+    return int(turn), int(part)
+
+
 def exchange_chunk_units(episode: str, exchanges: list[Exchange], title: str) -> list[dict]:
     """Index units for one episode's verbatim exchanges — the shape both capture and the LongMemEval
-    benchmark store, so what is measured is what ships. Anchors are ``<episode>:<turn>.<part>``."""
+    benchmark store, so what is measured is what ships. Anchors are ``exchange_anchor``'s."""
     return [
         {
-            "anchor": f"{episode}:{ex.turn}.{ex.part}",
+            "anchor": exchange_anchor(episode, ex.turn, ex.part),
             "kind": "exchange",
             "title": title,
             "heading_path": episode,

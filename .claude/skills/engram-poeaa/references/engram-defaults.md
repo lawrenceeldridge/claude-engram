@@ -187,7 +187,8 @@ to **Distribution** (tool-call boundary), not Web Presentation.
 claude-engram crosses three boundaries, and a **DTO** carries data across each; there is
 **no Event system / pub-sub**. A **durable Command queue is permitted** — the `WorkQueue`
 Separated Interface, a single stdlib `inproc` SQLite backend — for detached per-memory
-processing (capture, re-distil, consolidation). See § Offline Concurrency and the
+processing (today the detached capture worker's `rescue` re-distil and the `exchange_format`
+stored-exchange rewrite; consolidation runs inline at the checkpoint, not on the queue). See § Offline Concurrency and the
 `stm-ltm-membus` design (`docs/generated/designs/`). The distinction is load-bearing:
 these are **Commands** (one handler, failures retry/dead-letter), *not* Events (pub-sub,
 many handlers, log-and-skip). Making the existing Command/Handler durable is not adding

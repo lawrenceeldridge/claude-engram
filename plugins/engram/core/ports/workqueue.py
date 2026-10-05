@@ -18,6 +18,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+# The Commands this queue carries — one stage per Command, one handler each (core/service.py).
+RESCUE = "rescue"  # re-distil a delta whose LLM distillation degraded to the heuristic
+EXCHANGE_FORMAT = "exchange_format"  # rewrite one episode's stored exchanges in the current format
+
 
 @dataclass(frozen=True)
 class WorkItem:

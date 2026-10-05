@@ -36,12 +36,13 @@ core to Claude Code.
 | File | Role |
 |---|---|
 | `store.py` | Repository / Data Mapper over the SQLite store (facts + int8/binary embeddings, rows tagged by project); `reinforce`, `supersede`. |
-| `service.py` | Capture Command/Handler — `add_facts`, consolidation, `_find_superseded`; idempotent per fact. |
+| `service.py` | Capture Command/Handler — `add_facts`, consolidation, `_find_superseded`; idempotent per fact. Durable-queue handlers `rescue` (re-distil a degraded delta) and `reformat_exchanges` (the `exchange_format` rewrite of pre-footer exchanges), both drained at the head of incremental capture. |
 | `recall.py` | Read side — Query Object `search`, hybrid re-rank, `render_block` DTO (Null Object on empty). |
 | `scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`. |
 | `domain/confidence.py` | Pure score behind the `recall` verdict: `pool_stats` / `pool_z` (the best match against every fact scanned), `Calibration` VO + `calibrate` / `calibrated_confidence` (Platt), `sigmoid` (the one logistic — bench `platt_fit` uses it). A ranked score, not a probability; `core.recall.get_calibration` selects the calibration (`None` for the `hash` stub). |
 | `distill.py` | Distiller Strategy — heuristic (default) + Claude-CLI + HTTP/Ollama; atomic facts + `supersedes` links; heuristic fallback. |
-| `transcript.py` | Parse Claude Code transcripts into capturable text. |
+| `transcript.py` | Parse Claude Code transcripts into capturable text: typed lines (conversation `text` / tool `action`, rendered through `ingest.action_line`), the distiller's text, verbatim prompts, and `(role, text)` turns with each action its own `action` turn. |
+| `domain/ingest.py` | Pure capture-time policy: harness stripping, the ask / narration / status / trivial-prompt gates, and the tool-action vocabulary (`ACTION_VERBS`, `action_line`, strict `parse_action` / `is_action_line`, `ACTION_PREFIXES`). |
 
 ### Embedding + storage layer
 | File | Role |
@@ -49,7 +50,7 @@ core to Claude Code.
 | `embedding.py` | Gateway + Separated Interface for embedding providers. |
 | `adapters/fastembed_gw.py` | fastembed Gateway adapter (opt-in, real semantic model). |
 | `adapters/__init__.py` | Adapter package init. |
-| `domain/episodes.py` | Pure episodic pipeline: `exchange_units` (user turn + the assistant turns answering it, verbatim, ~800-char split), `should_keep_exchange` (length gate), `prepare_exchanges` (redact → gate; shared by capture and the LongMemEval bench), `episode_key` (the `<session>:<delta start>` key shared by a delta's exchanges and the `facts.episode` provenance link). |
+| `domain/episodes.py` | Pure episodic pipeline: `exchange_units` (user turn + the assistant turns answering it, verbatim, ~800-char split; its tool actions folded into one `action_footer` on the first part — grouped by verb, capped at 1,024 chars; an exchange of actions alone forms no unit), `should_keep_exchange` (length gate), `prepare_exchanges` (redact → gate; shared by capture and the LongMemEval bench), `refold_exchanges` / `legacy_turns` (the one-off rewrite of pre-footer exchanges), `episode_key` (the `<session>:<delta start>` key shared by a delta's exchanges and the `facts.episode` provenance link). |
 | `domain/privacy.py` | Pure `redact` (credentials, emails, non-project paths → `«redacted»`) for verbatim storage, and `privacy_flags` (the bench's human-gate detector). |
 | `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`) for the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
 | `quantize.py` | int8 (primary search rep) + binary sign-bit quantisation. |
@@ -60,7 +61,7 @@ core to Claude Code.
 ### Code & docs index
 | File | Role |
 |---|---|
-| `indexer.py` | Parses source→symbols and docs→sections, embeds, persists; freshness tracking. |
+| `indexer.py` | Parses source→symbols and docs→sections, embeds, persists; freshness tracking. `index_nonfile` / `exchange_chunk_units` (with `exchange_anchor` / `exchange_position`, the `<episode>:<turn>.<part>` anchor and its inverse) for snapshots and exchanges. |
 | `code_symbols.py` | Python symbol extraction via stdlib `ast`. |
 | `treesitter_symbols.py` | TS/JS symbol extraction via `tree-sitter-language-pack`. |
 | `chunking.py` | Markdown/doc chunking by heading structure. |

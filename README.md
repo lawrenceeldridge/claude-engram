@@ -376,8 +376,11 @@ separate, capacity- and TTL-bounded table that never touches recall. Set via `us
 
 Distilled facts are the compact layer injected into prompts; alongside them engram can keep
 each conversation **exchange** (a user turn plus the assistant turns answering it) verbatim, so
-detail a fact dropped can be fetched on demand — never injected per prompt. Exchanges are
-redacted (credentials, emails, non-project paths) before they are stored, written in the
+detail a fact dropped can be fetched on demand — never injected per prompt. An exchange is
+the conversation first: the tool actions it triggered are folded into one footer line on its
+first part, grouped by verb (`Actions: Edited a.py, b.py · Ran 12: pytest -q; git status; ruff
+check . (+9)`, capped at 1,024 characters), so a long tool run never fills a result of its own.
+Exchanges are redacted (credentials, emails, non-project paths) before they are stored, written in the
 detached capture worker, and forgotten by the consolidation pass past the retention limits.
 Find them with the `search_history` MCP tool, then read one with `get_doc_section`. Each fact
 captured from a conversation records its `episode` (returned by `recall`), so
@@ -389,14 +392,17 @@ verbatim exchanges 0.983; through the shipped tools end to end (hash): `recall` 
 | Key | Default | Meaning |
 |---|---|---|
 | `episodic_enabled` | `true` | keep redacted verbatim exchanges in the index (kind `exchange`) |
-| `episodic_min_chars` | `24` | shorter exchanges, role labels included (one-line trivia like a lone "thanks"), are not kept |
+| `episodic_min_chars` | `24` | shorter exchanges, role labels and actions footer included (one-line trivia like a lone "thanks"), are not kept |
 | `episodic_ttl_days` | `180` | exchanges older than this are forgotten (0 = no age limit) |
 | `episodic_max_chunks` | `20000` | per-project cap; the oldest beyond it are forgotten (0 = no cap) |
 
 ### Durable work queue — WorkQueue
 
-Detached capture and recovery run through a durable **Command** queue (one handler per
-item, at-least-once with retry + dead-letter) — **not** an event bus. It is a
+The detached capture worker's retry-able work runs through a durable **Command** queue (one
+handler per item, at-least-once with retry + dead-letter) — **not** an event bus: `rescue`
+re-distils a delta whose LLM distillation fell back to the heuristic, and `exchange_format`
+rewrites exchanges stored before tool actions were folded into a footer (published once per
+such episode on upgrade). It is a
 zero-dependency SQLite queue (`work_queue`): idempotent publish, retry + backoff,
 dead-letter past `queue_max_deliver`, and crash recovery via lease expiry. It never runs
 on the recall hot path. Inspect it with `engram queue`. Tune via `userConfig` (or

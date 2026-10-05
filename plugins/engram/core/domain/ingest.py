@@ -6,12 +6,18 @@ is the single home for the capture-time filtering that used to be scattered acro
 narration gating), plus the gates the pipeline lacked: ephemeral CI/build status
 lines and trivial user-prompt echoes.
 
-Every function is a pure predicate (``str -> bool``) or a pure stripper
-(``str -> str``): no I/O, no clock, no ``Config`` read. Tuning thresholds are passed
-in as arguments. Every function is **total** and **fail-open** — any non-``str`` /
-malformed input yields the keep-safe answer (``False`` for the "is this junk?"
-predicates, i.e. *keep* it; the input unchanged for the stripper) — so a policy bug
-can never make capture silently drop real content.
+It also owns the **tool-action vocabulary** (``ACTION_VERBS``): the one definition of the
+action lines the transcript renderer writes for a tool call ("Edited auth.py", "Ran: just
+test"), which episodic exchanges fold into a footer and the distiller tells apart from
+conversation.
+
+Every function is a pure predicate (``str -> bool``), a pure stripper (``str -> str``) or a
+pure parser/formatter of action lines: no I/O, no clock, no ``Config`` read. Tuning thresholds
+are passed in as arguments. Every predicate and parser is **total** and **fail-open** — any
+non-``str`` / malformed input yields the keep-safe answer (``False`` for the "is this junk?"
+predicates, i.e. *keep* it; ``None`` / ``False`` for "is this an action?", i.e. treat it as
+conversation; the input unchanged for the stripper) — so a policy bug can never make capture
+silently drop real content.
 
 Called from the imperative shell (``transcript.py``, ``distill.py``, ``service.py``),
 never the other way round.
@@ -20,6 +26,7 @@ never the other way round.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 # --- harness scaffolding -------------------------------------------------------
 # Paired XML-ish blocks the harness injects into the transcript stream — stripped
@@ -136,6 +143,70 @@ def is_narration(line: str) -> bool:
     if not isinstance(line, str):
         return False
     return line.endswith(":") or line.lower().startswith(_NARRATION_OPENERS)
+
+
+# --- tool actions --------------------------------------------------------------
+# An assistant tool call is rendered (core/transcript.py) as one past-tense line,
+# "<verb><separator><argument>". A *listed* verb names a thing — a file, a tool — so an
+# exchange footer lists each once; a *counted* verb carries free text — a command, a query — so
+# the footer counts them and shows the first few. Order matters: the first matching prefix wins,
+# so "Used skill " precedes "Used ".
+@dataclass(frozen=True)
+class ActionVerb:
+    verb: str
+    separator: str
+    listed: bool
+
+    @property
+    def prefix(self) -> str:
+        return self.verb + self.separator
+
+
+ACTION_VERBS = (
+    ActionVerb("Edited", " ", listed=True),
+    ActionVerb("Wrote", " ", listed=True),
+    ActionVerb("Read", " ", listed=True),
+    ActionVerb("Called", " ", listed=True),
+    ActionVerb("Used skill", " ", listed=True),
+    ActionVerb("Used", " ", listed=True),
+    ActionVerb("Ran", ": ", listed=False),
+    ActionVerb("Searched for", " ", listed=False),
+    ActionVerb("Delegated task", ": ", listed=False),
+    ActionVerb("Fetched", " ", listed=False),
+)
+ACTION_PREFIXES = tuple(v.prefix for v in ACTION_VERBS)
+_ACTION_BY_VERB = {v.verb: v for v in ACTION_VERBS}
+
+
+def action_line(verb: str, argument: str) -> str:
+    """The rendered line for one tool call. ``verb`` is an ``ACTION_VERBS`` verb (a constant at
+    every call site — an unknown one is a programming error and raises ``KeyError``)."""
+    return _ACTION_BY_VERB[verb].prefix + argument
+
+
+def parse_action(line: str, *, strict: bool = True) -> tuple[ActionVerb, str] | None:
+    """``(verb, argument)`` when ``line`` reads as a rendered action line, else ``None``.
+
+    ``strict`` (the default) is for text whose origin is unknown — a listed verb's argument must
+    be one whitespace-free name ("Read auth.py" is an action, "Read the docs first" is prose)
+    and every argument non-empty. ``strict=False`` only matches the verb, for lines already known
+    to be actions (the renderer's own output). Total: non-``str`` → ``None``.
+    """
+    if not isinstance(line, str):
+        return None
+    for verb in ACTION_VERBS:
+        if line.startswith(verb.prefix):
+            argument = line[len(verb.prefix) :]
+            if not strict:
+                return verb, argument
+            if argument.strip() and not (verb.listed and any(ch.isspace() for ch in argument)):
+                return verb, argument
+    return None
+
+
+def is_action_line(line: str) -> bool:
+    """True if ``line`` reads as a rendered tool action (strict — see :func:`parse_action`)."""
+    return parse_action(line) is not None
 
 
 # --- ephemeral CI / build / lint status ----------------------------------------

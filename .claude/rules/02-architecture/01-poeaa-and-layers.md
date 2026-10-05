@@ -68,9 +68,10 @@ persistence + cross-cutting modules at the root (the fastapi-best-practices conv
 5. **New pattern? Invoke [`/engram-poeaa`](../../skills/engram-poeaa/SKILL.md) first** — it
    carries the catalogue, decision trees, anti-patterns, and this project's defaults.
 6. **Durable per-memory processing is a Command queue, not an Event bus.** claude-engram has
-   **no** Events / pub-sub. A durable job-claim queue (`WorkQueue`) carries detached
-   capture / re-distil / consolidation — behind a Separated Interface, with a single stdlib
-   `inproc` backend (SQLite `work_queue`). The port is retained so a future out-of-process
+   **no** Events / pub-sub. A durable job-claim queue (`WorkQueue`) carries the detached capture
+   worker's retry-able Commands — `rescue` (re-distil a degraded delta) and `exchange_format`
+   (the one-off rewrite of pre-footer exchanges); stage names live in the port — behind a
+   Separated Interface, with a single stdlib `inproc` backend (SQLite `work_queue`). The port is retained so a future out-of-process
    backend could attach without touching the core. It extends single-flight + idempotent
    capture; it never touches the recall hot path. See [DESIGN.md](../../../DESIGN.md) and
    the `stm-ltm-membus` design.
