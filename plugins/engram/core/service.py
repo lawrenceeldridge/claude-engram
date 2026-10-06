@@ -801,6 +801,11 @@ def capture_episodes(
     return len(records)
 
 
+# The headers of the two blocks the UserPromptSubmit hook injects (memory, then index).
+PROMPT_MEMORY_HEADER = "Relevant memory from this project:"
+PROMPT_INDEX_HEADER = "Relevant indexed code/docs (use `search_code` / `get_symbol` for full source):"
+
+
 def index_prompt_block(
     store: Store,
     embedder: EmbeddingGateway,
@@ -841,7 +846,7 @@ def index_prompt_block(
 
 def _render_index_block(scored: list[tuple[float, sqlite3.Row]], max_chars: int) -> str:
     """One compact line per hit (path › title — summary); `get_symbol` fetches the body."""
-    lines = ["Relevant indexed code/docs (use `search_code` / `get_symbol` for full source):"]
+    lines = [PROMPT_INDEX_HEADER]
     used = 0
     for _sim, row in scored:
         label = row["title"] or row["anchor"] or ""
@@ -865,7 +870,7 @@ def recall_prompt_block(
     prompt: str,
 ) -> str:
     hits = search(store, embedder, project, prompt, cfg)
-    memory, injected_ids = render_block("Relevant memory from this project:", hits, cfg.max_chars)
+    memory, injected_ids = render_block(PROMPT_MEMORY_HEADER, hits, cfg.max_chars)
     index = index_prompt_block(store, embedder, cfg, project, prompt)
     block = "\n\n".join(part for part in (memory, index) if part)
     if block:  # ledger: cost side — bytes this injects into the turn (runs once per prompt)

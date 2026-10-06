@@ -19,6 +19,7 @@ from _harness import temp_data_dir
 from bench import latency_eval
 from bench.latency_eval import (
     CONSOLIDATION_STAGES,
+    INDEX_PATHS,
     PATHS,
     SCORERS,
     PreEmbedded,
@@ -30,7 +31,10 @@ from bench.latency_eval import (
 from bench.snapshot import snapshot_project
 from bench.stores import build_store
 from core.config import get_config
+from core.index.indexer import index_project
 from core.ports.embedding import HashEmbedding
+from core.recall import render_block, search
+from core.service import PROMPT_MEMORY_HEADER
 
 FACTS = [
     "The deploy pipeline runs on GitHub Actions and ships to AWS Lambda.",
@@ -40,6 +44,12 @@ FACTS = [
     "Consolidation runs at SessionEnd and PreCompact, like sleep.",
 ]
 QUESTIONS = ["how do we deploy", "where does recall inject", "why int8 vectors"]
+# The project's indexed tree: one code symbol and two doc sections the questions reach.
+SOURCES = {
+    "deploy.py": 'def deploy_pipeline():\n    """How do we deploy: GitHub Actions ships to AWS Lambda."""\n',
+    "NOTES.md": "# Notes\n\n## Where recall injects\n\nRecall injects facts on UserPromptSubmit.\n\n"
+    "## Why int8 vectors\n\nInt8 vectors keep the store compact.\n",
+}
 
 
 def _available_scorers() -> list[str]:
@@ -47,16 +57,20 @@ def _available_scorers() -> list[str]:
 
 
 class LatencyFixture(unittest.TestCase):
-    """A source DB with one project's facts and answered ledger questions, outside the data dir."""
+    """A source DB with one project's facts, its indexed code/docs and answered ledger questions,
+    outside the data dir."""
 
     def setUp(self):
         temp_data_dir(self)
-        self.cfg = replace(get_config(), distiller="heuristic")
+        # The index gate off, so the index block's output doesn't hinge on hash-cosine tuning.
+        self.cfg = replace(get_config(), distiller="heuristic", index_min_sim=-1.0)
         src = tempfile.TemporaryDirectory()
         self.addCleanup(src.cleanup)
-        store, _project = build_store(
-            HashEmbedding(dim=self.cfg.dim), self.cfg, [(t, None) for t in FACTS], Path(src.name), "proj"
-        )
+        embedder = HashEmbedding(dim=self.cfg.dim)
+        store, project = build_store(embedder, self.cfg, [(t, None) for t in FACTS], Path(src.name), "proj")
+        for name, text in SOURCES.items():
+            (Path(src.name) / name).write_text(text, encoding="utf-8")
+        index_project(store, embedder, self.cfg, project, src.name)
         self.source = Path(store.path)
         for i, question in enumerate(QUESTIONS):
             store.log_recall("proj", question, returned=1, top_sim=0.5, confidence=0.5, verdict="ok", now=100.0 + i)
@@ -83,9 +97,13 @@ class LatencyFixture(unittest.TestCase):
 
 
 class EvaluateLatencyTests(LatencyFixture):
-    def _run(self) -> dict:
+    def _run(self, *, unindexed: bool = False) -> dict:
         with snapshot_project(self.source, "proj") as (store, project):
-            return evaluate_latency(store, project, HashEmbedding(dim=self.cfg.dim), self.cfg, 40, 2)
+            if unindexed:  # the snapshot only — the source keeps its chunks
+                with store.db:
+                    store.db.execute("DELETE FROM chunks")
+            with redirect_stdout(io.StringIO()):
+                return evaluate_latency(store, project, HashEmbedding(dim=self.cfg.dim), self.cfg, 40, 2)
 
     def test_every_path_and_available_scorer_is_timed(self):
         summary = self._run()
@@ -108,14 +126,51 @@ class EvaluateLatencyTests(LatencyFixture):
         summary = self._run()
         self.assertEqual(summary["stages_scorer"], _available_scorers()[0])
         self.assertEqual(set(summary["stages"]), set(PATHS))
-        self.assertTrue({"load", "scan", "rank", "other"} <= set(summary["stages"]["hook"]))
-        self.assertTrue({"load", "scan", "lexical", "fts", "pool", "fusion"} <= set(summary["stages"]["tool"]))
+        stages = summary["stages"]
+        self.assertTrue({"load", "scan", "rank", "other"} <= set(stages["hook"]))
+        self.assertTrue({"load", "scan", "lexical", "fts", "pool", "fusion"} <= set(stages["tool"]))
+        self.assertTrue({"index_fts", "index_load"} <= set(stages["index"]))
+        for path in ("code", "docs"):
+            self.assertTrue({"index_load", "index_fts", "scan", "fusion", "freshness"} <= set(stages[path]), path)
+
+    def test_a_stage_a_path_never_reaches_stays_out_of_its_row(self):
+        stages = self._run()["stages"]
+        self.assertFalse({"index_fts", "index_load", "freshness"} & set(stages["hook"]))
+        self.assertFalse({"load", "fts", "pool"} & set(stages["code"]))
 
     def test_the_parity_digest_is_stable_across_runs_of_one_db(self):
         first = {(r["path"], r["scorer"]): r["digest"] for r in self._run()["results"]}
         second = {(r["path"], r["scorer"]): r["digest"] for r in self._run()["results"]}
         self.assertEqual(first, second)
-        self.assertEqual(len(set(first.values())), len(first))  # the paths' outputs differ
+        for scorer in _available_scorers():  # each path's output differs from every other's
+            per_path = [digest for (_path, s), digest in first.items() if s == scorer]
+            self.assertEqual(len(set(per_path)), len(PATHS), scorer)
+
+    def test_the_hook_paths_report_what_they_inject(self):
+        results = {(r["path"], r["scorer"]): r for r in self._run()["results"]}
+        scorer = _available_scorers()[0]
+        with snapshot_project(self.source, "proj") as (store, project):
+            now = latency_eval._pinned_now(store, project)
+            asked = [q for _k, q in store.recent_recall_queries(40, project_key="proj")]
+            asked = asked[: results["hook", scorer]["queries"]]  # the pure-Python scorer runs a prefix
+            embedder = PreEmbedded(HashEmbedding(dim=self.cfg.dim), asked)
+            cfg = replace(self.cfg, scorer=scorer)
+            blocks = [
+                render_block(PROMPT_MEMORY_HEADER, search(store, embedder, project, q, cfg, now=now), cfg.max_chars)[0]
+                for q in asked
+            ]
+        self.assertAlmostEqual(results["hook", scorer]["mean_chars"], sum(map(len, blocks)) / len(blocks))
+        self.assertGreater(results["index", scorer]["mean_chars"], 0)  # the questions reach the indexed tree
+        for path in ("tool", "code", "docs"):  # a tool's reply is requested, not injected
+            self.assertIsNone(results[path, scorer]["mean_chars"], path)
+        for row in results.values():
+            self.assertTrue(0 <= row["hit_pct"] <= 100)
+        self.assertEqual(results["code", scorer]["hit_pct"], 100)  # the code path answers every question
+
+    def test_a_project_with_nothing_indexed_skips_the_index_paths(self):
+        summary = self._run(unindexed=True)
+        self.assertEqual({r["path"] for r in summary["results"]}, set(PATHS) - INDEX_PATHS)
+        self.assertEqual(set(summary["stages"]), set(PATHS) - INDEX_PATHS)
 
     def test_a_project_with_no_answered_questions_is_refused(self):
         with snapshot_project(self.source, "proj") as (store, project):
@@ -151,6 +206,7 @@ class RunLatencyTests(LatencyFixture):
         code, printed = self._quiet(self._args(latency_out=out, latency_consolidation=True))
         self.assertEqual(code, 0)
         self.assertIn("digest hook/", printed)
+        self.assertIn("digest index/", printed)
         report = json.loads(out.read_text())
         self.assertEqual(set(report["backends"]["hash"]), {"latency", "consolidation"})
 
@@ -187,6 +243,7 @@ class HelperTests(unittest.TestCase):
         inner = HashEmbedding(dim=32)
         embedder = PreEmbedded(inner, ["q"])
         self.assertEqual(embedder.embed_query("q"), inner.embed_query("q"))
+        self.assertEqual(embedder.embed_one("q"), inner.embed_one("q"))  # the index paths' way
         self.assertEqual((embedder.dim, embedder.semantic), (inner.dim, inner.semantic))
         with self.assertRaises(NotImplementedError):
             embedder.embed(["anything"])

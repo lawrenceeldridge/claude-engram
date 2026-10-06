@@ -119,8 +119,10 @@ This is why recall is a **hybrid**: cache-friendly core + relevance-driven JIT.
   only for the hits), an exact bounded top-k for the hook (`scoring.top_by_priority`), exact
   lexical overlap (`lexical.overlap_counts`) and top-k fusion (`fuse(limit=)`) took the 144k
   hook from 1.28 s and the tool from 2.68 s with byte-identical rankings (parity digests). The
-  tool's keyword channel is the remaining floor: `facts_fts` is not project-scoped, so each
-  `MATCH` scores the whole store's matches (~0.2–0.4 s at any project size).
+  tool's keyword channel is the remaining floor (~0.2–0.4 s at any project size): `facts_fts`
+  covers the whole store, and each `MATCH` reads every store-wide match's full fact row just to
+  filter it to the project (#69). The hook's index block adds ~30 ms on a 2.8k-fact project and
+  ~0.3 s at 144k (chunk FTS, then one candidate fetch at a time).
 - Without numpy (a `hash` install on a bare interpreter) the scan is pure Python, ~106 ns per
   vector element — 11.6 s at 144k × 768 dims, past the 5 s hook ceiling; `engram doctor`, the
   viewer and `engram import` warn once the estimate reaches 2 s (`core/health.py`).

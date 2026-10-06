@@ -176,24 +176,32 @@ A typical `UserPromptSubmit` recall:
 1. Claude Code fires UserPromptSubmit with the user's prompt
    (Primary adapter — bin/recall_prompt.py)
 
-2. The hook reads config, picks the embedder (get_embedder → daemon or in-process)
-   and opens the Store  (Composition Root — bin/_bootstrap.py)
+2. The hook reads config, resolves the project and asks the resident daemon for the block
+   ({"op": "recall"} over its socket — core/daemon_client.py, a thin Remote Facade, fail-open);
+   with no live daemon it opens the Store (INTERACTIVE_BUSY_MS) and the embedder
+   (get_embedder) in-process        (Composition Root — bin/recall_prompt.py, bin/daemon.py)
 
-3. embed_query(prompt) via the EmbeddingGateway / daemon_client
-   (Secondary adapter — Gateway / Remote Facade, fail-open)
+3. service.recall_prompt_block(store, embedder, cfg, project, prompt)
+   (Service Layer — read side — core/service.py) composes the hook's two blocks:
 
-4. recall.search(store, query_vec, cfg, min_sim, top_k)
-   (Service Layer — read side — recall.py)
+   a. recall.search(store, embedder, project, prompt, cfg): embed_query(prompt) through the
+      EmbeddingGateway (Secondary adapter — Gateway + Separated Interface), an exact scan of
+      the project's int8 vectors (VectorScorer), the min_sim gate, then a priority score
+      sim·Ws + decay·Wr + freq·Wf over the survivors (Functional Core — domain/scoring.py).
+      No FTS or rank fusion here: that is the `recall` tool's search_fused_with_stats.
+   b. index_prompt_block(...): an FTS prefilter over the indexed chunks (Store), a cosine
+      re-rank of the candidates (it embeds the prompt a second time, with embed_one) and the
+      index_min_sim gate.
 
-5. Candidates cleared by the similarity gate get a priority score
-   sim·Ws + decay·Wr + freq·Wf   (Functional Core — scoring.py)
-   fused with lexical FTS via RRF (Functional Core — fusion.py)
+4. render_block(PROMPT_MEMORY_HEADER, hits, max_chars) → capped, one-line-per-fact DTO; the
+   index block renders one line per chunk the same way; nothing → "" (Null Object)
+   (DTO — core/recall/, core/service.py)
 
-6. render_block(header, hits, max_chars) → capped, one-line-per-fact DTO
-   (Service Layer / DTO — recall.py); empty hits → "" (Null Object)
+5. Read-side bookkeeping, fail-open: the ledger's inject_prompt row and recall attribution
+   for the facts actually injected (Store)
 
-7. The hook injects the block as additionalContext, exits 0
-   (Primary adapter)
+6. The hook emits the block through _bootstrap.emit (hookSpecificOutput.additionalContext)
+   and exits 0                       (Primary adapter)
 ```
 
 Every layer transition is explicit; every cross-layer call to infrastructure goes through
