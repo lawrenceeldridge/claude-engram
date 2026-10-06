@@ -144,7 +144,7 @@ END;
 # mixed into `facts`, so recall of learned memory is never polluted by raw source
 # chunks. Vectors live inline (dim/scale/vec_int8) exactly as facts store them, and
 # `chunk_sources` records a per-file hash+mtime so re-indexing skips unchanged files.
-# Run only by _v7_index (a released slot, so left as written); _v21 adds the (project_key, kind) and
+# Run only by _v7_index (a released slot: its effect stays as written); _v21 adds the (project_key, kind) and
 # (project_key, anchor) lookup indexes.
 _CHUNK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -237,14 +237,32 @@ def _v2_structured(db: sqlite3.Connection) -> None:
     _add_columns(db, [("title", "title TEXT"), ("narrative", "narrative TEXT"), ("files", "files TEXT")])
 
 
+# The FTS indexes and the content tables they index — the pairs fts_coverage / repair_fts check.
+_FTS_INDEXES = (("facts_fts", "facts"), ("chunks_fts", "chunks"))
+
+
+def _fts_built(db: sqlite3.Connection, ddl: str, fts_table: str) -> None:
+    """Run FTS DDL and the 'rebuild' that backfills it as ONE transaction.
+
+    External-content FTS5 is populated with the 'rebuild' command (a manual INSERT...SELECT creates
+    rows that don't match). Committed apart, an interrupted run — a hook cancelled at its ceiling, a
+    process stopped — leaves an index that exists but is empty while its triggers keep writing: the
+    keyword channel goes blind and an update can fail as 'database disk image is malformed'. As one
+    transaction, an interrupted run leaves the store as it was."""
+    try:
+        db.executescript(f"BEGIN; {ddl}; INSERT INTO {fts_table}({fts_table}) VALUES ('rebuild'); COMMIT;")
+    except BaseException:
+        if db.in_transaction:
+            db.rollback()
+        raise
+
+
 def _v3_fts(db: sqlite3.Connection) -> None:
     existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_fts'").fetchone()
-    db.executescript(_FTS_SCHEMA)
-    if not existed:
-        # External-content FTS5 is populated with the 'rebuild' command (a manual
-        # INSERT...SELECT creates rows that don't match); run it once, when the index
-        # is first created, to backfill facts written before it existed.
-        db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
+    if existed:
+        db.executescript(_FTS_SCHEMA)  # idempotent: the triggers, if any were missing
+    else:
+        _fts_built(db, _FTS_SCHEMA, "facts_fts")  # backfill facts written before the index existed
 
 
 def _v4_observations(db: sqlite3.Connection) -> None:
@@ -261,13 +279,14 @@ def _v5_subtitle(db: sqlite3.Connection) -> None:
 def _v6_fts_widen(db: sqlite3.Connection) -> None:
     # FTS5 can't ALTER-add columns, so drop and rebuild the index over the widened
     # column set (now including subtitle + files). Facts (the content table) are
-    # untouched; 'rebuild' repopulates the index from them.
-    db.executescript(
+    # untouched; 'rebuild' repopulates the index from them — in the same transaction as the drop,
+    # so an interrupted replay can't leave the index empty (see _fts_built).
+    _fts_built(
+        db,
         "DROP TRIGGER IF EXISTS facts_ai; DROP TRIGGER IF EXISTS facts_ad;"
-        "DROP TRIGGER IF EXISTS facts_au; DROP TABLE IF EXISTS facts_fts;"
+        "DROP TRIGGER IF EXISTS facts_au; DROP TABLE IF EXISTS facts_fts;" + _FTS_SCHEMA,
+        "facts_fts",
     )
-    db.executescript(_FTS_SCHEMA)
-    db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
 
 
 def _v8_redistill(db: sqlite3.Connection) -> None:
@@ -294,9 +313,10 @@ def _v7_index(db: sqlite3.Connection) -> None:
     # untouched. 'rebuild' backfills the FTS from any chunks written before it existed.
     existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts'").fetchone()
     db.executescript(_CHUNK_SCHEMA)
-    db.executescript(_CHUNK_FTS_SCHEMA)
-    if not existed:
-        db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+    if existed:
+        db.executescript(_CHUNK_FTS_SCHEMA)
+    else:
+        _fts_built(db, _CHUNK_FTS_SCHEMA, "chunks_fts")
 
 
 def _v9_stm(db: sqlite3.Connection) -> None:
@@ -545,7 +565,8 @@ def _v21_chunk_lookup_indexes(db: sqlite3.Connection) -> None:
 # step is also individually idempotent (ADD COLUMN only if missing, CREATE … IF NOT EXISTS, rebuild
 # only on first creation), so a store below _LADDER_FLOOR — fresh, or the legacy FTS flag of 1 that
 # predates the ladder — converges by replaying every step. A step that must re-run on stores already
-# stamped past it gets a new slot of its own (see _v17_sensory_schema); a released slot never changes.
+# stamped past it gets a new slot of its own (see _v17_sensory_schema); a released slot's effect never
+# changes, though its implementation may get safer (the FTS builds became atomic — _fts_built).
 _MIGRATIONS = [
     _v1_lifecycle,
     _v2_structured,
@@ -1691,6 +1712,32 @@ class Store:
             "FROM chunks c LEFT JOIN index_meta m ON m.project_key = c.project_key "
             "GROUP BY c.project_key ORDER BY last DESC"
         ).fetchall()
+
+    def fts_coverage(self) -> dict[str, tuple[int, int]]:
+        """Per FTS index, ``(rows it indexes, rows in its content table)`` — equal on a healthy store.
+
+        Counted from FTS5's own per-document table, so it is cheap (a few ms at 10⁵ rows) and
+        catches an index emptied by an interrupted migration while its triggers kept writing (an
+        older build's ladder replay did exactly that). It can't see stale tokens on a counted row."""
+        return {
+            fts: tuple(
+                self.db.execute(
+                    f"SELECT (SELECT count(*) FROM {fts}_docsize), (SELECT count(*) FROM {content})"
+                ).fetchone()
+            )
+            for fts, content in _FTS_INDEXES
+        }
+
+    def repair_fts(self) -> list[tuple[str, int, int]]:
+        """Rebuild every FTS index whose coverage is off; ``[(index, indexed, rows)]`` for each one
+        rebuilt (empty — and nothing written — on a healthy store). A write-side, detached job."""
+        rebuilt = []
+        for fts, (indexed, rows) in self.fts_coverage().items():
+            if indexed != rows:
+                with self.db:
+                    self.db.execute(f"INSERT INTO {fts}({fts}) VALUES ('rebuild')")
+                rebuilt.append((fts, indexed, rows))
+        return rebuilt
 
     def chunk_count(self, project_key: str) -> int:
         return self.db.execute("SELECT COUNT(*) FROM chunks WHERE project_key = ?", (project_key,)).fetchone()[0]

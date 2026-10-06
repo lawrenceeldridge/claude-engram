@@ -96,7 +96,8 @@ class ScanCheckTests(unittest.TestCase):
         self.addCleanup(store.close)
         names = [check.name for check in health.checks(self.python_cfg, store)]
         self.assertEqual(
-            names, ["queue", "embedding", "distiller", "scan", "store", "capture", "consolidation", "errors", "wal"]
+            names,
+            ["queue", "embedding", "distiller", "scan", "store", "capture", "consolidation", "errors", "wal", "fts"],
         )
 
 

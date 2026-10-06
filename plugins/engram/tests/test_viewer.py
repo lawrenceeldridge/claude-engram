@@ -61,7 +61,7 @@ class HealthPayloadTests(unittest.TestCase):
         payload = _health_payload(replace(get_config(), embedding="hash", distiller="heuristic"))
         self.assertEqual(
             set(payload),
-            {"queue", "embedding", "distiller", "scan", "store", "capture", "consolidation", "errors", "wal"},
+            {"queue", "embedding", "distiller", "scan", "store", "capture", "consolidation", "errors", "wal", "fts"},
         )
         for chip in payload.values():
             self.assertEqual(set(chip), {"backend", "state", "detail"})
