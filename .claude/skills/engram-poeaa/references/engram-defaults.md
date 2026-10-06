@@ -188,7 +188,7 @@ claude-engram crosses three boundaries, and a **DTO** carries data across each; 
 **no Event system / pub-sub**. A **durable Command queue is permitted** — the `WorkQueue`
 Separated Interface, a single stdlib `inproc` SQLite backend — for detached per-memory
 processing (today the detached capture worker's `rescue` re-distil and the `exchange_format`
-stored-exchange rewrite; consolidation runs inline at the checkpoint, not on the queue). See § Offline Concurrency and the
+stored-exchange rewrite; consolidation runs at the checkpoint in the same worker, under its own single-flight lock, not on the queue). See § Offline Concurrency and the
 `stm-ltm-membus` design (`docs/generated/designs/`). The distinction is load-bearing:
 these are **Commands** (one handler, failures retry/dead-letter), *not* Events (pub-sub,
 many handlers, log-and-skip). Making the existing Command/Handler durable is not adding
@@ -231,7 +231,9 @@ capture workers piling up, and (b) stale facts accumulating.
 - **Single-flight capture.** The capture hook spawns *one* detached worker/daemon and
   returns; a second capture for the same session does not stack a second worker. This is
   the concurrency primitive that matters (it replaced a worker/daemon pileup — see the
-  commit history).
+  commit history). One `core/singleflight.py` serves every job; consolidation takes its own
+  lock after capture releases the capture lock, so it can never block a capture, and the
+  status writes it races with capture on are guard clauses (`AND status = 'active'`).
 - **Idempotent-per-fact capture.** `fact_id` content-hash + `Store.exists` /
   `Store.reinforce` make re-processing the same transcript a no-op-or-reinforce, never a
   duplicate. Re-running capture is always safe (the batch-worker analogue of the
@@ -278,7 +280,7 @@ a smell.
 |---|---|---|
 | **Gateway** | ✅ default | `EmbeddingGateway` (embeddings), the `Distiller` interface (distillation) — the only doors to heavy/optional deps and subprocesses |
 | **Separated Interface** | ✅ default | `EmbeddingGateway(ABC)` in `core/ports/embedding.py`; `Distiller(ABC)` in `core/ports/distill.py`. Concrete impls (`core/adapters/fastembed_gw.py`; `core/adapters/llm_distillers.py` — `ClaudeCliDistiller`, `HTTPDistiller`) live behind them; the core imports the ABC, never the impl |
-| **Plugin** | ✅ default | `get_embedder(cfg)` / `get_distiller(cfg)` select the implementation from config at runtime; `ENGRAM_DAEMON` selects daemon-vs-in-process. This is Plugin selection, one place per Composition Root |
+| **Plugin** | ✅ default | `get_embedder(cfg)` / `get_distiller(cfg)` select the implementation from config at runtime; a reachable daemon serves recall, else it runs in-process. This is Plugin selection, one place per Composition Root |
 | **Service Stub** | ✅ default | `HashEmbedding` (lexical, zero-dep — the shipped embedding default) and `HeuristicDistiller` (line extraction, zero-dep — the fallback for the default `claude` distiller) are the always-available implementations **and** the test fakes — no network, no model download |
 | **Special Case / Null Object** | ✅ default | `render_block` returns `""` on empty recall — inject nothing, never a placeholder or an error. Irrelevant turns cost zero tokens |
 | **Value Object** | ✅ default | `DistilledFact`, `Observation`, `Hit`, and the frozen `Config` are immutable value carriers compared by content |

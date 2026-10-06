@@ -30,13 +30,25 @@ into, block, or slow the interactive turn:
 - Optional infrastructure (the resident daemon, `fastembed`, an LLM distiller) may be
   absent or dead — the hook **falls back in-process / to the heuristic**, never errors.
 - The memory-first guard is fail-open by design: any error in it lets the tool through.
+- **Fail open, but leave a record.** A swallowed failure in the detached workers (capture,
+  consolidation) or a stray transaction in a long-lived process is appended to the bounded
+  `errors.log` (`core/errlog.py`, never raises); `engram doctor`, the viewer and a SessionStart
+  `systemMessage` (shown to the user, never model context; only when unhealthy) surface it.
+- **Hook output goes through `_bootstrap.emit`** — the documented envelope (`hookSpecificOutput`
+  + `hookEventName`). Claude Code ignores a top-level `additionalContext`: engram's recall hooks
+  printed that for months and none of it reached the model. Tests pin the envelope.
+- **An interactive hook never waits on another writer.** It opens its `Store` with
+  `INTERACTIVE_BUSY_MS` (250 ms): its writes are telemetry and fail fast, and a current store
+  opens without taking the write lock. A 5 s busy wait is a 5 s cancelled hook.
 
 ## Detached-capture rule
 
 Capture (transcript read → distil → embed → persist, plus the verbatim exchanges → index) is
 heavy and latency-tolerant,
 so it **never runs inline**. The Stop/SessionEnd/PreCompact hook spawns a worker and
-returns immediately (single-flight, so worker/daemon pileup can't happen). LLM
+returns immediately (single-flight, so worker/daemon pileup can't happen). At SessionEnd /
+PreCompact the same worker then consolidates — under its own lock, after releasing the capture
+lock, each stage deadline-bounded — so a slow consolidation can never hold up a capture. LLM
 distillation, when enabled, runs *inside* that detached worker — off the interactive
 path — and falls back to the heuristic on failure, flagging the fact for later
 re-distillation. Never move distillation or embedding onto the interactive path.

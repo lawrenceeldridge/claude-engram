@@ -18,14 +18,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import ROOT, temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.distill import DistilledFact  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.distill import DistilledFact
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 
 class _StubSummarizer:
@@ -40,8 +39,7 @@ class _StubSummarizer:
 
 class SummaryThrottleTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -50,8 +48,6 @@ class SummaryThrottleTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _write(self, nbytes: int) -> None:
         msg = {
@@ -86,8 +82,7 @@ class SummaryThrottleTests(unittest.TestCase):
 
 class OrientationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -95,8 +90,6 @@ class OrientationTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_empty_when_no_summary(self):
         self.assertEqual(service.orientation_block(self.store, self.project), "")
@@ -130,13 +123,10 @@ class PreToolUseGuardTests(unittest.TestCase):
     def setUp(self):
         self.sess = f"test-{os.getpid()}"
         self.markers = []
-        # Isolate the data dir so the guard is tested against an empty store, not whatever
-        # anti-patterns happen to be in the developer's real store (which _data_dir() now
-        # adopts when the bare default is empty). A test may still set ENGRAM_DATA_DIR itself.
-        self._datadir = tempfile.TemporaryDirectory()
+        # An empty data dir per test, so the guard never sees another test's anti-patterns.
+        temp_data_dir(self)
 
     def tearDown(self):
-        self._datadir.cleanup()
         for tag in ("prefer", "readguard", "consulted"):
             (Path(tempfile.gettempdir()) / f"engram-{tag}-{self.sess}.seen").unlink(missing_ok=True)
 
@@ -152,8 +142,7 @@ class PreToolUseGuardTests(unittest.TestCase):
         )
 
     def _run(self, payload: dict, enforce: str = "advisory") -> str:
-        # Default to the isolated data dir, but let a test that sets ENGRAM_DATA_DIR win.
-        env = {"ENGRAM_DATA_DIR": self._datadir.name, **os.environ, "ENGRAM_ENFORCE": enforce}
+        env = {**os.environ, "ENGRAM_ENFORCE": enforce}
         payload.setdefault("session_id", self.sess)
         r = subprocess.run(
             [sys.executable, str(ROOT / "bin" / "prefer_memory.py")],
@@ -279,20 +268,16 @@ class PreToolUseGuardTests(unittest.TestCase):
         from core.ports.embedding import HashEmbedding
         from core.project import resolve_project
 
-        data, repo = tempfile.mkdtemp(), tempfile.mkdtemp()
+        repo = tempfile.mkdtemp()
         Path(repo, ".git").touch()  # marker so resolve_project keys consistently
         fp = Path(repo) / "big.py"
         fp.write_text("def f():\n    return 1\n" + "# pad line\n" * 2000, encoding="utf-8")
-        os.environ["ENGRAM_DATA_DIR"] = data
-        try:
-            cfg = get_config()
-            store = Store(cfg.db_path)
-            index_file(store, HashEmbedding(dim=cfg.dim), cfg, resolve_project(repo, cfg.markers), str(fp))
-            store.close()
-            out = self._run({"tool_name": "Read", "tool_input": {"file_path": str(fp)}}, enforce="strict")
-            self.assertIn('"permissionDecision": "deny"', out)
-        finally:
-            os.environ.pop("ENGRAM_DATA_DIR", None)
+        cfg = get_config()  # this test's data dir (setUp), shared with the hook subprocess
+        store = Store(cfg.db_path)
+        index_file(store, HashEmbedding(dim=cfg.dim), cfg, resolve_project(repo, cfg.markers), str(fp))
+        store.close()
+        out = self._run({"tool_name": "Read", "tool_input": {"file_path": str(fp)}}, enforce="strict")
+        self.assertIn('"permissionDecision": "deny"', out)
 
 
 class UninstallCommandTests(unittest.TestCase):
@@ -300,7 +285,7 @@ class UninstallCommandTests(unittest.TestCase):
 
     def _dry(self, *flags: str) -> str:
         with tempfile.TemporaryDirectory() as tmp:
-            env = {**os.environ, "ENGRAM_DATA_DIR": tmp, "ENGRAM_REEXECED": "1"}
+            env = {**os.environ, "ENGRAM_DATA_DIR": tmp}
             r = subprocess.run(
                 [sys.executable, str(ROOT / "bin" / "engram"), "uninstall", "--dry-run", *flags],
                 text=True,

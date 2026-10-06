@@ -461,7 +461,8 @@ def invalidate_facts(store: Store, project_key: str, fact_ids: list[str]) -> int
     """Retire facts from active recall — a reversible archive (``status='expired'``), never a
     delete. Project-scoped for safety (ids not owned by ``project_key`` are ignored). The
     direct-invalidation primitive behind ``engram forget`` / the ``invalidate_memory`` MCP tool
-    and the ``delete`` verdict of a review. Returns the number retired."""
+    and the ``delete`` verdict of a review. Returns the number retired — an id that was already
+    archived (superseded, merged, …) counts 0: it had already left recall, and keeps its status."""
     owned = _resolve_project_ids(store, project_key, list(dict.fromkeys(fact_ids)))
     return store.set_status(list(owned), "expired")
 

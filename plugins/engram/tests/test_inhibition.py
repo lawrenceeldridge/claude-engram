@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import _harness  # noqa: F401
+
 from core import service
 from core.config import get_config
 from core.consolidation.scoring import (

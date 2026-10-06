@@ -17,17 +17,15 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _harness import ROOT
 
-import index_snapshot as hook  # noqa: E402
+import index_snapshot as hook
 
-from core.config import get_config  # noqa: E402
-from core.domain.sensory import normalize_url  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.service import promote_visual_perceptions, record_visual_perception  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.config import get_config
+from core.domain.sensory import normalize_url
+from core.ports.embedding import HashEmbedding
+from core.service import promote_visual_perceptions, record_visual_perception
+from core.store import Store
 
 _A11Y = 'heading "Login"\ntextbox "Email"\nbutton "Sign in"'
 
@@ -146,8 +144,7 @@ class HookSubprocessTests(unittest.TestCase):
     """The hook run as a real subprocess (as Claude Code invokes it), with a clean env."""
 
     def _run(self, payload, data_dir):
-        env = {k: v for k, v in os.environ.items() if k != "ENGRAM_DISABLE"}
-        env.update({"ENGRAM_DATA_DIR": data_dir, "ENGRAM_EMBEDDING": "hash", "ENGRAM_SENSORY_ENABLED": "true"})
+        env = {**os.environ, "ENGRAM_DATA_DIR": data_dir, "ENGRAM_SENSORY_ENABLED": "true"}
         return subprocess.run(
             [sys.executable, str(ROOT / "bin" / "index_snapshot.py")],
             input=json.dumps(payload) if payload is not None else "not json",

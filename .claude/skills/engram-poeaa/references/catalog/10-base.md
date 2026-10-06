@@ -173,7 +173,7 @@ The core stays free of heavy deps and I/O; the Gateway does the talking.
 
 **Required pairings.** **Separated Interface** (the contract being plugged into).
 
-**claude-engram applicability.** ✅ `get_embedder(cfg)` / `get_distiller(cfg)` select the implementation from the frozen `Config` at runtime; the `ENGRAM_DAEMON` env var selects daemon-vs-in-process embedding. Every selection is **fail-open**: fastembed → hash, daemon → in-process, LLM distiller → heuristic. The Plugin choice is made once, in the `bin/*` Composition Root, behind the `EmbeddingGateway` / `Distiller` interfaces.
+**claude-engram applicability.** ✅ `get_embedder(cfg)` / `get_distiller(cfg)` select the implementation from the frozen `Config` at runtime; a reachable resident daemon serves recall, otherwise it runs in-process. Every selection is **fail-open**: fastembed → hash, daemon → in-process, LLM distiller → heuristic. The Plugin choice is made once, in the `bin/*` Composition Root, behind the `EmbeddingGateway` / `Distiller` interfaces.
 
 ---
 

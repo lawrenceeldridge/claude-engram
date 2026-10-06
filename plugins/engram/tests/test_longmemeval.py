@@ -9,20 +9,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from bench import longmemeval as lme  # noqa: E402
-from bench.cli_args import add_eval_arguments  # noqa: E402
-from core.config import get_config  # noqa: E402
+from bench import longmemeval as lme
+from bench.cli_args import add_eval_arguments
+from core.config import get_config
 
 
 def _entry(qid: str, qtype: str, question: str, sessions: dict[str, list[tuple[str, str]]], gold: list[str]) -> dict:
@@ -183,8 +180,7 @@ class RankingTests(unittest.TestCase):
 
 class EvaluateTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         # Hermetic whatever the developer's env (ENGRAM_DISTILLER=claude is common): the heuristic
         # distiller, and a hard guard — an LLM distiller fails open to the heuristic, so a stray call
         # would otherwise pass silently while spending external API calls.
@@ -193,10 +189,6 @@ class EvaluateTests(unittest.TestCase):
         self.llm_call = llm.start()
         self.addCleanup(llm.stop)
         self.addCleanup(lambda: self.assertFalse(self.llm_call.called, "a harness test reached an LLM distiller"))
-
-    def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_all_arms_run_and_abstention_is_excluded(self):
         result = lme.evaluate_longmemeval("hash", lme.parse(FIXTURE), self.cfg)

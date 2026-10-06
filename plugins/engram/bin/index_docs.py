@@ -28,37 +28,6 @@ plugin_root()
 _AUTO_MAX_FILES = 4000
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _acquire_lock(path) -> bool:
-    """Single-flight lock: only one index worker runs at a time (a dead holder is stolen)."""
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        try:
-            holder = int(path.read_text().strip() or 0)
-        except (OSError, ValueError):
-            holder = 0
-        if holder and _alive(holder):
-            return False  # another worker is already indexing — don't pile on
-        try:
-            path.unlink()
-        except OSError:
-            return False
-        return _acquire_lock(path)
-
-
 def _run_worker(payload_path: str) -> None:
     try:
         with open(payload_path, encoding="utf-8") as fh:
@@ -69,6 +38,7 @@ def _run_worker(payload_path: str) -> None:
         except OSError:
             pass
 
+    from core import singleflight
     from core.config import get_config
     from core.index.indexer import index_project, tree_signature
     from core.ports.embedding import get_embedder
@@ -76,10 +46,9 @@ def _run_worker(payload_path: str) -> None:
     from core.store import Store
 
     cfg = get_config()
-    lock = Path(cfg.data_dir) / ".index.lock"
-    if not _acquire_lock(lock):
-        return
-    try:
+    with singleflight.held(Path(cfg.data_dir) / ".index.lock") as mine:
+        if not mine:
+            return  # another worker is already indexing — don't pile on
         root = payload.get("cwd") or os.getcwd()
         project = resolve_project(root, cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
         index_root = project["path"] or root
@@ -95,11 +64,6 @@ def _run_worker(payload_path: str) -> None:
         index_project(store, embedder, cfg, project, index_root, max_files=_AUTO_MAX_FILES)
         store.set_capture_cursor(sig_key, sig)
         store.close()
-    finally:
-        try:
-            lock.unlink()
-        except OSError:
-            pass
 
 
 def main() -> int:

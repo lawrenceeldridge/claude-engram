@@ -5,23 +5,18 @@ Run: python3 -m unittest discover -s plugins/engram/tests
 
 from __future__ import annotations
 
-import os
-import sys
 import tempfile
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.domain.fusion import Channel, fuse  # noqa: E402
-from core.index.drift import check, pin  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.recall import search_fused  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.domain.fusion import Channel, fuse
+from core.index.drift import check, pin
+from core.ports.embedding import HashEmbedding
+from core.recall import search_fused
+from core.store import Store
 
 
 class FusionTests(unittest.TestCase):
@@ -46,8 +41,7 @@ class FusionTests(unittest.TestCase):
 
 class SearchFusedTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -55,8 +49,6 @@ class SearchFusedTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_lexical_overlap_rescues_below_similarity_gate(self):
         service.add_facts(
@@ -87,9 +79,6 @@ class DriftTests(unittest.TestCase):
         self.dir = self.tmp.name
         self.embedder = HashEmbedding(dim=128)
 
-    def tearDown(self):
-        self.tmp.cleanup()
-
     def test_unpinned_then_pinned_is_stable(self):
         self.assertEqual(check(self.embedder, self.dir, "hash:default:128")["status"], "unpinned")
         pin(self.embedder, self.dir, "hash:default:128")
@@ -105,8 +94,7 @@ class DriftTests(unittest.TestCase):
 
 class LedgerTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -114,8 +102,6 @@ class LedgerTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_recall_is_logged_to_ledger(self):
         service.add_facts(
@@ -130,16 +116,11 @@ class LedgerTests(unittest.TestCase):
 
 class McpCacheTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         import mcp_server
 
         self.mcp = mcp_server
         self.mcp.ENGINE = mcp_server._Engine()
-
-    def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_repeated_recall_is_served_from_cache(self):
         args = {"query": "anything at all", "project": None}

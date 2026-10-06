@@ -15,10 +15,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import ROOT
 
-from core.store import Store  # noqa: E402
+from core.store import Store
 
 # (id, kind, text, is_noise) — the seeded population. is_noise = should be archived by the sweep.
 _SEED = [
@@ -58,9 +57,6 @@ class PruneNoiseTests(unittest.TestCase):
         env = {
             **os.environ,
             "ENGRAM_DATA_DIR": self.data.name,
-            "ENGRAM_REEXECED": "1",
-            "ENGRAM_EMBEDDING": "hash",
-            "ENGRAM_DISTILLER": "heuristic",
         }
         return subprocess.run(
             [sys.executable, str(ROOT / "bin" / "engram"), "prune-noise", *args],

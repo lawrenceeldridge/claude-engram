@@ -7,32 +7,29 @@ Run: python3 -m unittest discover -s plugins/engram/tests  (from repo root)
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import allow_llm_transport, temp_data_dir
 
-from core import service  # noqa: E402
-from core.adapters.llm_distillers import ClaudeCliDistiller, HTTPDistiller  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.domain.quantize import cosine, dequantize_int8, hamming, pack_bits, quantize_int8  # noqa: E402
-from core.domain.scoring import frequency_boost, priority, recency_decay  # noqa: E402
-from core.ports.distill import (  # noqa: E402
+from core import service
+from core.adapters.llm_distillers import ClaudeCliDistiller, HTTPDistiller
+from core.config import get_config
+from core.domain.quantize import cosine, dequantize_int8, hamming, pack_bits, quantize_int8
+from core.domain.scoring import frequency_boost, priority, recency_decay
+from core.ports.distill import (
     DistilledFact,
     HeuristicDistiller,
     get_distiller,
     parse_records,
 )
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.project import resolve_project  # noqa: E402
-from core.recall import search  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.ports.embedding import HashEmbedding
+from core.project import resolve_project
+from core.recall import search
+from core.store import Store
 
 
 class QuantizeTests(unittest.TestCase):
@@ -66,10 +63,7 @@ class ScoringTests(unittest.TestCase):
         # Recency may break near-ties, never override relevance: at the shipped weights a fact
         # 0.1 more similar must outrank a fresh one even when it is 240 days old. (At the former
         # w_recency 0.3 it did not — 0.801 vs 1.000 — and the hook buried old memories.)
-        ranking_keys = tuple(f"_{k}" for k in ("W_SIM", "W_RECENCY", "W_FREQ", "HALF_LIFE_DAYS"))
-        shipped_env = {k: v for k, v in os.environ.items() if not k.upper().endswith(ranking_keys)}
-        with mock.patch.dict(os.environ, shipped_env, clear=True):  # code defaults, not ambient overrides
-            cfg = get_config()
+        cfg = get_config()  # the code defaults: the harness clears ambient ENGRAM_* overrides
         old = priority(0.80, recency_decay(240 * 86400, cfg.half_life_days), 0.0, cfg.w_sim, cfg.w_recency, cfg.w_freq)
         new = priority(0.70, recency_decay(0, cfg.half_life_days), 0.0, cfg.w_sim, cfg.w_recency, cfg.w_freq)
         self.assertGreater(old, new)
@@ -100,7 +94,8 @@ class DistillerTests(unittest.TestCase):
 
     def test_http_distiller_falls_back_when_unreachable(self):
         distiller = HTTPDistiller("http://127.0.0.1:1/v1", "any-model", timeout=1)
-        records = distiller.distill("we decided to adopt the repository pattern for data access", [])
+        with allow_llm_transport():  # a real HTTP attempt, on purpose: nothing listens on port 1
+            records = distiller.distill("we decided to adopt the repository pattern for data access", [])
         self.assertTrue(records)
         self.assertTrue(all(isinstance(r, DistilledFact) for r in records))
 
@@ -127,17 +122,10 @@ class ProvisionTests(unittest.TestCase):
         self.assertTrue(any("fastembed" in r for r in reqs))
 
     def test_reexec_is_noop_without_pin(self):
-        sys.path.insert(0, str(ROOT / "bin"))
         import _bootstrap
 
-        os.environ.pop("CLAUDE_PLUGIN_OPTION_python", None)
-        os.environ.pop("ENGRAM_PYTHON", None)
-        with tempfile.TemporaryDirectory() as tmp:
-            os.environ["ENGRAM_DATA_DIR"] = tmp  # no managed venv here
-            try:
-                _bootstrap.reexec_if_pinned()  # must return without exec/raise
-            finally:
-                os.environ.pop("ENGRAM_DATA_DIR", None)
+        temp_data_dir(self)  # no managed venv here, and the harness clears any python pin
+        _bootstrap.reexec_if_pinned()  # must return without exec/raise
 
 
 class ProjectTests(unittest.TestCase):
@@ -157,8 +145,7 @@ class ProjectTests(unittest.TestCase):
 
 class LoopTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -166,8 +153,6 @@ class LoopTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_capture_recall_and_reinforcement(self):
         text = "\n".join(

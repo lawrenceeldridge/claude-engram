@@ -102,12 +102,34 @@ This is why recall is a **hybrid**: cache-friendly core + relevance-driven JIT.
 
 ## Latency efficiency
 
-- Capture is fully **detached** — the hook spawns a worker and returns.
-- Recall is brute-force cosine over **int8** vectors — sub-10ms for a personal
-  store; no ANN index needed until ~500k facts.
+- Capture is fully **detached** — the hook spawns a worker and returns; consolidation runs in
+  that worker under its own lock, so it never delays a capture either.
+- Recall is an **exact** brute-force cosine over **int8** vectors (numpy-vectorised; the
+  calibrated confidence is defined over the whole scanned pool, so it stays exact — no ANN).
+  Measured with `engram eval --latency` (fastembed bge-base + numpy, real ledger questions,
+  query embedding excluded, median per query):
+
+  | store (active facts) | hook (`search`) | `recall` tool (`search_fused_with_stats`) |
+  |---|---|---|
+  | 2.8k (a personal project) | **11 ms** | 342 ms |
+  | 55k | 186 ms | 687 ms |
+  | 144k (a 10⁵ `engram import`) | **496 ms** | 1,432 ms (p90 2.1 s) |
+
+  Cost is linear in the project's facts: lean scan rows (`Store.scan_rows`, full rows re-read
+  only for the hits), an exact bounded top-k for the hook (`scoring.top_by_priority`), exact
+  lexical overlap (`lexical.overlap_counts`) and top-k fusion (`fuse(limit=)`) took the 144k
+  hook from 1.28 s and the tool from 2.68 s with byte-identical rankings (parity digests). The
+  tool's keyword channel is the remaining floor: `facts_fts` is not project-scoped, so each
+  `MATCH` scores the whole store's matches (~0.2–0.4 s at any project size).
+- Without numpy (a `hash` install on a bare interpreter) the scan is pure Python, ~106 ns per
+  vector element — 11.6 s at 144k × 768 dims, past the 5 s hook ceiling; `engram doctor`, the
+  viewer and `engram import` warn once the estimate reaches 2 s (`core/health.py`).
 - Hooks are **short-lived processes**, so a real embedding model would reload
   every turn. The optional **resident daemon** holds it warm; the hook is a thin
   client that **falls back to in-process** on any failure (fail-open).
+- An interactive hook never waits on another writer: a current store opens without the write
+  lock and its telemetry writes give up after 250 ms (`INTERACTIVE_BUSY_MS`) — when every open
+  took the write lock, a contended store cancelled the prompt hook at its 5 s ceiling.
 
 ## Embedding backend — measured, not assumed
 
@@ -195,7 +217,7 @@ barely moves between embedding models. Measured on `engram eval --confidence` (f
   is well determined; `a` and `b` individually are not (half-size fits spread `a` over 0.39–0.90).
 
 Reproduce: `engram eval --backends hash,fastembed --confidence [--distractors N
---distractor-project <key>] --confidence-out obs.jsonl` — Platt is fitted on the dev half (the
+--store-project <key>] --confidence-out obs.jsonl` — Platt is fitted on the dev half (the
 `platt (a, b) [dev]` column) and every other column is scored on the test half;
 `bench/replay_ledger.py` replays real ledger queries unlabelled.
 
@@ -363,7 +385,10 @@ transient, `Config`-tunable *control processes* over them.
 
 **Active Systems Consolidation Hypothesis + the Sequential Hypothesis** — an offline
 "sleep" pass (`core/consolidation/`) runs at session checkpoints (not every turn, like
-sleep itself), orchestrated by `consolidate()` and exposed as `engram consolidate`. Its
+sleep itself), orchestrated by `consolidate()` and exposed as `engram consolidate`. It runs in
+the detached capture worker *after* the capture lock is released, under its own single-flight
+lock, and each stage is deadline-bounded (`STAGE_DEADLINE_SECONDS`, rolled back and retried next
+pass if hit) — so a slow pass can delay the next consolidation, never a capture. Its
 stages run in order `replay → mature → displace → integrate → refine → invalidate → purge →
 forget` (the order `consolidate()` runs them); each maps to a mechanism and is individually gated
 — every stage but purge and forget archives reversibly:
@@ -442,7 +467,7 @@ choices, called out so the mapping isn't over-claimed:
   corrected above.
 
 Full design + the durable `WorkQueue` (it carries the `rescue` and `exchange_format` Commands;
-consolidation itself runs inline at the checkpoint):
+consolidation itself runs at the checkpoint in the capture worker, under its own lock):
 [`docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md`](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
 
 ## Cross-project
@@ -484,6 +509,10 @@ consolidate upward. In both modes an explicit `.engram-root` sentinel overrides 
 | Verbatim storage keeps secrets a distiller would drop | exchanges are redacted before storage (credentials, auth headers, token shapes, private keys, emails, non-project paths); local-only store; retention horizon; `episodic_enabled=false` turns the layer off |
 | Over-eager supersession retires a distinct fact | conservative default threshold (0.85); superseded rows are archived (reversible), not deleted |
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
+| A long-lived process holds the write lock (13 h on 2026-10-05) | every `Store` write commits or rolls back (`with self.db`); the MCP server and daemon roll back any stray transaction after each request and log it; interactive hooks never wait on a writer (`INTERACTIVE_BUSY_MS`) and open a current store without the write lock; doctor / the SessionStart notice report a write-locked store |
+| A slow consolidation stage stalls capture (a 13.5 h `refine`, #67) | consolidation holds its own lock, never the capture lock; each stage is deadline-bounded; a per-stage scale test fails any stage that issues SQL per fact |
+| A detached failure goes unseen | the bounded `errors.log`; `core/health` checks (store lock, capture progress, consolidation, errors, WAL) in doctor, the viewer and the SessionStart notice |
+| Hook output silently ignored | every hook emits through `_bootstrap.emit` (the documented envelope); tests parse the real hooks' output |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
 | Durable queue becomes a de-facto dependency | `WorkQueue` is a stdlib-only SQLite queue behind a Separated Interface; no external backend or broker; core stays importable with the standard library alone |
 | Consolidation prunes a still-useful fact | only `refine_keep_max` (a generous idempotent ceiling) ships on; the forgetting levers `refine_prune_percentile` and `refine_min_retention` are default-off; archival is a reversible status flip, not a delete; purge is default-off and only removes rows past a long cold horizon. (`engram eval` is recall-only, so it can't measure these — they're unit-tested instead.) |

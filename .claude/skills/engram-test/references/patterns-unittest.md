@@ -10,20 +10,19 @@ import from `core`:
 ```python
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))   # only if the test imports a hook / bench module
+from _harness import temp_data_dir  # first: import paths, hermetic env, LLM / live-store guards
 
-from core.config import get_config       # noqa: E402
-from core.embedding import HashEmbedding # noqa: E402
-from core.store import Store             # noqa: E402
+from core.config import get_config
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 ```
+
+`_harness` puts the plugin root and `bin/` on `sys.path` (so hook modules import by name),
+clears the developer's ambient `ENGRAM_*` env, and pins the heuristic distiller + a temp
+`ENGRAM_DATA_DIR`. A module that needs none of its helpers still imports it:
+`import _harness  # noqa: F401`. `test_harness` fails any module that doesn't.
 
 ---
 
@@ -32,8 +31,8 @@ from core.store import Store             # noqa: E402
 No fixtures. Test a known pair, a boundary, and an invariant.
 
 ```python
-from core.quantize import cosine, dequantize_int8, quantize_int8
-from core.scoring import frequency_boost, recency_decay
+from core.domain.quantize import cosine, dequantize_int8, quantize_int8
+from core.domain.scoring import frequency_boost, recency_decay
 
 
 class QuantizeTests(unittest.TestCase):
@@ -66,12 +65,12 @@ def test_recency_decay_curve(self):
 
 ## Store round-trip (`core/store.py`, `core/service.py`)
 
-Tempdir + `ENGRAM_DATA_DIR` fixture; a `HashEmbedding` and (usually) a stub distiller.
+`temp_data_dir` fixture; a `HashEmbedding` and (usually) a stub distiller.
 
 ```python
 from unittest import mock
 from core import service
-from core.distill import DistilledFact
+from core.ports.distill import DistilledFact
 
 
 class _StubDistiller:
@@ -87,8 +86,7 @@ class _StubDistiller:
 
 class CaptureTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -96,8 +94,6 @@ class CaptureTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_capture_then_recall_returns_the_fact(self):
         # Arrange
@@ -116,7 +112,7 @@ class CaptureTests(unittest.TestCase):
 Test agreement, tie-breaks, and the empty case. Fusion is pure over channels:
 
 ```python
-from core.fusion import Channel, fuse
+from core.domain.fusion import Channel, fuse
 
 
 class FusionTests(unittest.TestCase):
@@ -142,7 +138,7 @@ The context gate must suppress a below-threshold match — assert recall returns
 Test the zero-dep implementation directly; assert the fallback path explicitly.
 
 ```python
-from core.distill import HeuristicDistiller, get_distiller
+from core.ports.distill import HeuristicDistiller, get_distiller
 
 
 class DistillerFallbackTests(unittest.TestCase):
@@ -173,7 +169,11 @@ them as a real process and assert the fail-open contract.
 
 ```python
 import json
+import os
 import subprocess
+import sys
+
+from _harness import ROOT  # the child inherits the harness env: heuristic distiller, temp data dir
 
 
 class PreToolUseGuardTests(unittest.TestCase):

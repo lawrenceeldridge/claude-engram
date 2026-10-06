@@ -8,7 +8,8 @@ alwaysApply: true
 
 Python 3 with full type hints, `ruff` for linting/formatting, `unittest`/`pytest`
 for tests. No async requirement — hooks are short-lived processes and recall is a
-synchronous, sub-10ms cosine scan.
+synchronous, exact cosine scan (~11 ms per prompt on a personal project, ~0.5 s at 10⁵ facts —
+measure with `engram eval --latency`).
 
 ## The stdlib-first dependency contract
 
@@ -17,8 +18,8 @@ alone.** This is the project's defining constraint, not a nicety:
 
 - The default `embedding=hash` (lexical stub) is **zero-dependency**, and so is the
   `heuristic` distiller (line extraction) — the fallback whenever the default `claude`
-  distiller (headless `claude -p`, Haiku, detached) is unavailable, and the distiller every
-  test pins. The plugin works out of the box with no pip install; `distiller=heuristic` also
+  distiller (headless `claude -p`, Haiku, detached) is unavailable, and the distiller the test
+  harness (`tests/_harness.py`) forces. The plugin works out of the box with no pip install; `distiller=heuristic` also
   removes the one network call.
 - Real semantic recall (`fastembed`) is an **opt-in adapter**; the LLM distillers sit
   behind the Distiller interface on the stdlib alone (a subprocess / HTTP call).
@@ -43,7 +44,7 @@ All commands run from `plugins/engram/`:
 ```bash
 cd plugins/engram
 python3 -m unittest discover -s tests   # test suite (all stdlib)
-python3 bin/engram doctor                  # resolved config, project identity, counts
+python3 bin/engram doctor                  # resolved config, project identity, counts, service health
 python3 bin/engram demo                    # capture sample facts then recall (end-to-end)
 python3 bin/engram eval --backends hash    # recall-quality benchmark
 python3 bin/engram viewer                  # localhost memory/index viewer

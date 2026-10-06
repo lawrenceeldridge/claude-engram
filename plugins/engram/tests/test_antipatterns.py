@@ -14,24 +14,21 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _harness import ROOT, scoped_env, temp_data_dir
 
-import prefer_memory  # noqa: E402  (PreToolUse guard — Phase 3 anti-pattern warning)
+import prefer_memory  # PreToolUse guard — Phase 3 anti-pattern warning
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.consolidation import consolidate  # noqa: E402
-from core.consolidation.invalidate import invalidate_stale_antipatterns  # noqa: E402
-from core.consolidation.refine import refine  # noqa: E402
-from core.ports.distill import (  # noqa: E402
+from core import service
+from core.config import get_config
+from core.consolidation import consolidate
+from core.consolidation.invalidate import invalidate_stale_antipatterns
+from core.consolidation.refine import refine
+from core.ports.distill import (
     DistilledFact,
     HeuristicDistiller,
     _antipattern_text,
@@ -39,10 +36,10 @@ from core.ports.distill import (  # noqa: E402
     is_distiller_prompt,
     parse_antipatterns,
 )
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.project import GLOBAL_PROJECT_KEY, global_project  # noqa: E402
-from core.recall import _recall_rows, search_fused  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.ports.embedding import HashEmbedding
+from core.project import GLOBAL_PROJECT_KEY, global_project
+from core.recall import _recall_rows, search_fused
+from core.store import Store
 
 _CURL = {
     "title": "Bash Tool Parameter Injection",
@@ -166,8 +163,7 @@ class _StubDistiller:
 
 class CaptureAntipatternsTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -179,8 +175,6 @@ class CaptureAntipatternsTests(unittest.TestCase):
         service.get_distiller = self._saved_get_distiller
         service.extract_text = self._saved_extract_text
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _patch(self, records, text="I mistakenly used the wrong flag; let me fix that."):
         stub = _StubDistiller(records)
@@ -232,8 +226,7 @@ class CaptureAntipatternsTests(unittest.TestCase):
 
 class MaybeCaptureGateTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -247,8 +240,6 @@ class MaybeCaptureGateTests(unittest.TestCase):
         service.get_distiller = self._saved_get_distiller
         service.extract_text = self._saved_extract_text
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _patch(self, text):
         stub = _StubDistiller([DistilledFact(text="Never do the bad thing", type="antipattern", scope="project")])
@@ -287,8 +278,7 @@ class MaybeCaptureGateTests(unittest.TestCase):
 
 class RecallUnionTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -296,8 +286,6 @@ class RecallUnionTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add_global_antipattern(self):
         rec = DistilledFact(
@@ -331,8 +319,7 @@ class LifecycleTests(unittest.TestCase):
     """Phase 2 — anti-patterns are dormancy-exempt but still invalidatable."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic", supersede_threshold=0.85)
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -340,8 +327,6 @@ class LifecycleTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add_antipattern(self, text, **kw):
         rec = DistilledFact(text=text, type="antipattern", scope="project", **kw)
@@ -421,8 +406,7 @@ class Phase3PreToolUseTests(unittest.TestCase):
     """Phase 3 — the PreToolUse guard warns before an action that repeats a catalogued mistake."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic", antipatterns=True)
         store = Store(self.cfg.db_path)
         embedder = HashEmbedding(dim=self.cfg.dim)
@@ -433,10 +417,6 @@ class Phase3PreToolUseTests(unittest.TestCase):
         )
         service.add_records(store, embedder, self.cfg, global_project(), "s1", [rec], kind="antipattern", tier="ltm")
         store.close()
-
-    def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _sess(self):
         return f"ap3-{os.getpid()}-{self._testMethodName}"
@@ -462,17 +442,10 @@ class Phase3PreToolUseTests(unittest.TestCase):
         self.assertIsNone(prefer_memory._antipattern_warning(self._sess(), "Bash", {}))
 
     def test_disabled_by_config(self):
-        saved = os.environ.get("ENGRAM_ANTIPATTERNS")
-        os.environ["ENGRAM_ANTIPATTERNS"] = "false"
-        try:
-            self.assertIsNone(
-                prefer_memory._antipattern_warning(self._sess(), "Bash", {"command": "curl --sandbox disabled"})
-            )
-        finally:
-            if saved is None:
-                os.environ.pop("ENGRAM_ANTIPATTERNS", None)
-            else:
-                os.environ["ENGRAM_ANTIPATTERNS"] = saved
+        scoped_env(self, ENGRAM_ANTIPATTERNS="false")
+        self.assertIsNone(
+            prefer_memory._antipattern_warning(self._sess(), "Bash", {"command": "curl --sandbox disabled"})
+        )
 
     def test_hook_end_to_end_emits_context(self):
         # Drive bin/prefer_memory.py as a subprocess: a matching Bash command yields
@@ -483,7 +456,6 @@ class Phase3PreToolUseTests(unittest.TestCase):
             "ENGRAM_ANTIPATTERNS": "true",
             "ENGRAM_ENFORCE": "advisory",
         }
-        env.pop("ENGRAM_PYTHON", None)
         payload = json.dumps(
             {
                 "tool_name": "Bash",

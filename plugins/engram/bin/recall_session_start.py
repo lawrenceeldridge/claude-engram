@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-from _bootstrap import plugin_root, reexec_if_pinned
+from _bootstrap import emit, plugin_root, reexec_if_pinned
 
 reexec_if_pinned()
 ROOT = plugin_root()
@@ -41,10 +41,11 @@ def main() -> int:
     cwd = payload.get("cwd") or os.getcwd()
 
     try:
+        from core import health
         from core.config import get_config
         from core.project import resolve_project
         from core.service import orientation_block, recall_core_block
-        from core.store import Store
+        from core.store import INTERACTIVE_BUSY_MS, Store
 
         cfg = get_config()
         if cfg.viewer_autostart:
@@ -72,16 +73,18 @@ def main() -> int:
                     start_new_session=True,
                 )
         project = resolve_project(cwd, cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
-        store = Store(cfg.db_path)
+        store = Store(cfg.db_path, busy_timeout_ms=INTERACTIVE_BUSY_MS)
         orientation = orientation_block(store, project)
         block = recall_core_block(store, cfg, project) if cfg.core_size > 0 else ""
+        warnings = health.session_warnings(cfg, store)
         store.close()
         parts = [MEMORY_FIRST_POLICY]
         if orientation:
             parts.append(orientation)
         if block:
             parts.append(block)
-        print(json.dumps({"additionalContext": "\n\n".join(parts)}))
+        notice = f"engram: {'; '.join(warnings)} — run `engram doctor` for details" if warnings else ""
+        emit("SessionStart", additionalContext="\n\n".join(parts), system_message=notice)
     except Exception as exc:  # fail-open backstop
         print(f"[engram] core recall skipped: {exc}", file=sys.stderr)
     return 0

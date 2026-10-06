@@ -55,7 +55,7 @@ def main() -> int:
     try:
         from core.config import get_config
         from core.project import resolve_project
-        from core.store import Store
+        from core.store import INTERACTIVE_BUSY_MS, Store
 
         full = os.path.getsize(file_path)
         returned = _returned_bytes(payload.get("tool_response"))
@@ -70,7 +70,7 @@ def main() -> int:
             str(Path(real).parent), cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir
         )
         rel = os.path.relpath(real, project["path"])
-        store = Store(cfg.db_path)
+        store = Store(cfg.db_path, busy_timeout_ms=INTERACTIVE_BUSY_MS)
         try:
             if store.source_state(project["key"], rel) is not None:  # indexed only
                 store.record_usage(project["key"], "read_bounded", bytes_saved=full - returned)

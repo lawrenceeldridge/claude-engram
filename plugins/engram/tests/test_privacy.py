@@ -6,14 +6,11 @@ contains a trigger word ("token budget", "basic understanding") must survive unt
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.domain.privacy import REDACTED, privacy_flags, redact  # noqa: E402
+from core.domain.privacy import REDACTED, privacy_flags, redact
 
 R = REDACTED
 

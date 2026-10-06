@@ -56,7 +56,7 @@ Separated Interface (EmbeddingGateway ABC / Distiller ABC)   ← core/ports/embe
     ├─ Gateway (real impl: fastembed_gw, ClaudeCliDistiller, HTTPDistiller)
     ├─ Service Stub (zero-dep fallback AND test fake: HashEmbedding, HeuristicDistiller)
     └─ Plugin (get_embedder(cfg) / get_distiller(cfg) — runtime selection)
-        └─ Composition Root (bin/* picks the impl from config/env; ENGRAM_DAEMON toggles daemon)
+        └─ Composition Root (bin/* picks the impl from config/env; a reachable daemon serves recall)
             └─ fail-open contract (fastembed→hash, daemon→in-process, LLM→heuristic)
 ```
 

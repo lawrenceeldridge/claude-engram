@@ -28,16 +28,16 @@ def add_eval_arguments(parser: argparse.ArgumentParser) -> None:
         "--distractors",
         type=int,
         default=0,
-        help="--confidence/--aged: pad the store with N facts mined from a real store",
+        help="--confidence/--aged: pad the store with N facts mined from --store-project",
     )
     parser.add_argument(
-        "--distractor-project",
-        help="--confidence/--aged: project key or label to mine distractors from (required with N>0)",
+        "--store-project",
+        help="--distractors/--latency: the real project (key or label) to read, on a snapshot",
     )
     parser.add_argument(
-        "--distractor-db",
+        "--store-db",
         type=Path,
-        help="--confidence/--aged: engram DB to mine from (default: the configured store)",
+        help="--distractors/--latency: the engram DB to snapshot (default: the configured store)",
     )
     parser.add_argument(
         "--ok-precision", type=float, default=0.90, help="--confidence: how often an `ok` verdict must be right"
@@ -49,6 +49,26 @@ def add_eval_arguments(parser: argparse.ArgumentParser) -> None:
         "--longmemeval",
         action="store_true",
         help="also run LongMemEval session retrieval: parity / verbatim / distilled / hybrid arms",
+    )
+    parser.add_argument(
+        "--latency",
+        action="store_true",
+        help="also time recall's read path (hook + tool, numpy + pure-Python) on a snapshot of --store-project",
+    )
+    parser.add_argument(
+        "--latency-consolidation",
+        action="store_true",
+        help="also time one full consolidation pass, per stage, on a snapshot of --store-project",
+    )
+    parser.add_argument("--latency-n", type=int, default=40, help="--latency: distinct recent ledger questions to time")
+    parser.add_argument(
+        "--latency-python-n",
+        type=int,
+        default=3,
+        help="--latency: how many of them also run on the pure-Python scorer (seconds each at 10^5 facts)",
+    )
+    parser.add_argument(
+        "--latency-out", type=Path, help="--latency: write timings, stages and parity digests (JSON) here"
     )
     parser.add_argument("--lme-path", type=Path, help="--longmemeval: local longmemeval_s_cleaned.json")
     parser.add_argument(

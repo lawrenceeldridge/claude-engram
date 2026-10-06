@@ -15,13 +15,12 @@ from pathlib import Path
 
 def request(sock_path: Path | str, payload: dict, timeout: float = 2.0) -> dict | None:
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect(str(sock_path))
-        sock.sendall((json.dumps(payload) + "\n").encode())
-        with sock.makefile("r") as fh:
-            line = fh.readline()
-        sock.close()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:  # closed on every path, a refused connect too
+            sock.settimeout(timeout)
+            sock.connect(str(sock_path))
+            sock.sendall((json.dumps(payload) + "\n").encode())
+            with sock.makefile("r") as fh:
+                line = fh.readline()
         return json.loads(line) if line else None
     except (OSError, ValueError):
         return None

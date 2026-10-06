@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 import sqlite3
@@ -19,25 +22,27 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Iterator
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import ROOT, scoped_env, temp_data_dir
 
-from core.adapters.claude_mem_source import (  # noqa: E402
+from core import health
+from core.adapters.claude_mem_source import (
     ClaudeMemSource,
     _epoch_seconds,
     _json_str_list,
     _merge_files,
     resolve_db_path,
 )
-from core.config import get_config  # noqa: E402
-from core.migrate import import_memory_source  # noqa: E402
-from core.ports.distill import DistilledFact  # noqa: E402
-from core.ports.embedding import get_embedder  # noqa: E402
-from core.ports.memory_source import MemorySource, SourceRecord, get_memory_source  # noqa: E402
-from core.service import bulk_add_records  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.config import get_config
+from core.migrate import import_memory_source
+from core.ports.distill import DistilledFact
+from core.ports.embedding import get_embedder
+from core.ports.memory_source import MemorySource, SourceRecord, get_memory_source
+from core.service import bulk_add_records
+from core.store import Store
 
 
 def _make_claude_mem_db(path: Path, *, observations=(), summaries=()) -> None:
@@ -180,9 +185,6 @@ class AdapterMappingTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Path(self.tmp.name) / "claude-mem.db"
 
-    def tearDown(self):
-        self.tmp.cleanup()
-
     def _records(self, only_label=None, **kw):
         _make_claude_mem_db(self.db, **kw)
         src = ClaudeMemSource(db_path=self.db)
@@ -273,9 +275,6 @@ class AdapterAvailabilityTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
 
-    def tearDown(self):
-        self.tmp.cleanup()
-
     def test_absent_db_is_unavailable(self):
         src = ClaudeMemSource(db_path=Path(self.tmp.name) / "nope.db")
         self.assertFalse(src.available())
@@ -303,14 +302,8 @@ class AdapterAvailabilityTests(unittest.TestCase):
 class PathResolutionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self._saved = os.environ.pop("CLAUDE_MEM_DATA_DIR", None)
-
-    def tearDown(self):
-        if self._saved is not None:
-            os.environ["CLAUDE_MEM_DATA_DIR"] = self._saved
-        else:
-            os.environ.pop("CLAUDE_MEM_DATA_DIR", None)
-        self.tmp.cleanup()
+        self.addCleanup(self.tmp.cleanup)
+        scoped_env(self)  # the tests below set CLAUDE_MEM_DATA_DIR; restored at cleanup
 
     def test_explicit_path_wins(self):
         self.assertEqual(resolve_db_path("/tmp/x/claude-mem.db"), Path("/tmp/x/claude-mem.db"))
@@ -334,8 +327,7 @@ class BulkAddRecordsTests(unittest.TestCase):
     """The bulk writer: batched, idempotent, timestamp-preserving, supersede-free."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = get_embedder(self.cfg)
@@ -343,8 +335,6 @@ class BulkAddRecordsTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _pairs(self, *texts, ts=None):
         return [(DistilledFact(t), ts) for t in texts]
@@ -401,8 +391,7 @@ class ImportMemorySourceTests(unittest.TestCase):
     """The orchestrator: label→project resolution, dry-run, skip, only_label, unavailable."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = get_embedder(self.cfg)
@@ -410,8 +399,6 @@ class ImportMemorySourceTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _source(self, **kw):
         _make_claude_mem_db(self.db, **kw)
@@ -529,9 +516,6 @@ class ImportCLITests(unittest.TestCase):
         env = {
             **os.environ,
             "ENGRAM_DATA_DIR": self.data.name,
-            "ENGRAM_REEXECED": "1",  # don't re-exec into the fastembed venv
-            "ENGRAM_EMBEDDING": "hash",  # offline, fast, deterministic
-            "ENGRAM_DISTILLER": "heuristic",
         }
         return subprocess.run(
             [sys.executable, str(ROOT / "bin" / "engram"), *args],
@@ -557,6 +541,39 @@ class ImportCLITests(unittest.TestCase):
             except sqlite3.OperationalError:
                 continue
         return {}
+
+    def _import_in_process(self, **patches) -> str:
+        """``engram import`` run in this process (so ``core.health`` can be patched); returns stderr."""
+        loader = importlib.machinery.SourceFileLoader("engram_cli", str(ROOT / "bin" / "engram"))
+        cli = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(cli)
+        scoped_env(self, ENGRAM_DATA_DIR=self.data.name, ENGRAM_SCORER="python")  # a numpy-less recall scan
+        self._make(observations=[{"id": 1, "project": "ukh-world", "facts": json.dumps(["fact a", "fact b"])}])
+        argv = [
+            "engram",
+            "import",
+            "claude-mem",
+            "--db",
+            str(self.db),
+            "--map",
+            f"ukh-world={self._map_dir()}",
+            "--yes",
+        ]
+        err = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.multiple(health, **patches),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
+        ):
+            self.assertEqual(cli.main(), 0)
+        return err.getvalue()
+
+    def test_import_warns_when_the_project_is_too_large_to_scan_without_numpy(self):
+        self.assertIn("warning: recall scan — no numpy", self._import_in_process(SCAN_WARN_SECONDS=0.0))
+
+    def test_import_is_quiet_when_the_scan_keeps_up(self):
+        self.assertNotIn("warning: recall scan", self._import_in_process(SCAN_WARN_SECONDS=health.SCAN_WARN_SECONDS))
 
     def test_dry_run_reports_and_writes_nothing(self):
         self._make(observations=[{"id": 1, "project": "ukh-world", "facts": json.dumps(["x", "y"])}])

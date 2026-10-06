@@ -7,20 +7,17 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
-from core.transcript import extract_incremental_parts  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.embedding import HashEmbedding
+from core.store import Store
+from core.transcript import extract_incremental_parts
 
 
 def _turn(role: str, text: str) -> str:
@@ -66,14 +63,11 @@ class ExtractIncrementalTests(unittest.TestCase):
 
 class CursorTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.store = Store(get_config().db_path)
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_cursor_roundtrip_and_default_zero(self):
         self.assertEqual(self.store.get_capture_cursor("sess-x"), 0)
@@ -85,8 +79,7 @@ class CursorTests(unittest.TestCase):
 
 class IncrementalCaptureTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -95,8 +88,6 @@ class IncrementalCaptureTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
         os.unlink(self.tf.name)
 
     def _cap(self):

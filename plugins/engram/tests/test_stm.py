@@ -7,28 +7,23 @@ attribution, and that recall stays tier-agnostic by default (behaviour parity).
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import sys
-import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.recall import render_block, search  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.embedding import HashEmbedding
+from core.recall import render_block, search
+from core.store import Store
 
 
 class StmTierTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -36,8 +31,6 @@ class StmTierTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add(self, text: str, cfg=None) -> int:
         return service.add_facts(self.store, self.embedder, cfg or self.cfg, self.project, "s1", [text])

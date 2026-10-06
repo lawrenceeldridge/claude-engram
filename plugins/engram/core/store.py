@@ -14,6 +14,8 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from core.domain.ingest import ACTION_PREFIXES
@@ -35,6 +37,10 @@ def _fts_match_expr(query: str) -> str:
 def _now(now: float | None) -> float:
     """Resolve an optional caller-supplied timestamp to a concrete one (test seam)."""
     return now if now is not None else time.time()
+
+
+# What recall's scan and ranking read from a fact row (Store.scan_rows) — the rest stays on disk.
+_SCAN_COLUMNS = "id, dim, scale, vec_int8, created_at, last_seen, frequency, tier"
 
 
 def _placeholders(seq) -> str:
@@ -546,22 +552,42 @@ _MIGRATIONS = [
     _v20_exchange_format,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
+# Every table / index / trigger the base schema declares — a store missing one isn't current.
+_SCHEMA_OBJECTS = frozenset(
+    re.findall(r"CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(\w+)", _SCHEMA, re.I)
+)
+# How long a write waits out another writer's lock. Detached work (capture, consolidation,
+# indexing) can afford to wait; a hook on the interactive path cannot — its writes are telemetry
+# (the ledger, recall attribution), so it fails them fast rather than spend the 5 s hook ceiling.
+DEFAULT_BUSY_MS = 5000
+INTERACTIVE_BUSY_MS = 250
 
 
 class Store:
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, busy_timeout_ms: int = DEFAULT_BUSY_MS) -> None:
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, timeout=5.0)
+        self.db = sqlite3.connect(self.path, timeout=busy_timeout_ms / 1000)
         self.db.row_factory = sqlite3.Row
         # WAL lets concurrent hook processes (capture, per-edit reindex, recall, the
         # viewer) read while one writes; busy_timeout waits out a brief write lock
         # instead of raising; NORMAL sync is durable enough under WAL and much faster.
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA busy_timeout=5000")
+        self.db.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
         self.db.execute("PRAGMA synchronous=NORMAL")
-        self.db.executescript(_SCHEMA)
-        self._migrate()
+        # The DDL (`CREATE … IF NOT EXISTS`) takes the write lock even when everything exists, so
+        # every open used to queue behind any writer — the prompt hook timed out on it. A current
+        # store (stamped, every object present — both read-only checks) skips it; anything else
+        # still converges through the schema + migration ladder.
+        if not self._schema_current():
+            self.db.executescript(_SCHEMA)
+            self._migrate()
+
+    def _schema_current(self) -> bool:
+        if self.db.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
+            return False
+        present = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master")}
+        return _SCHEMA_OBJECTS <= present
 
     def _migrate(self) -> None:
         """Run the schema-migration ladder up to _SCHEMA_VERSION, then stamp it.
@@ -595,22 +621,22 @@ class Store:
         Returns the fact's new frequency so the caller can decide promotion
         (STM→LTM on rehearsal); 0 if the fact is absent.
         """
-        self.db.execute(
-            "UPDATE facts SET frequency = frequency + 1, last_seen = ?, status = 'active', "
-            "episode = COALESCE(?, episode) WHERE id = ?",
-            (_now(now), episode, fact_id),
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE facts SET frequency = frequency + 1, last_seen = ?, status = 'active', "
+                "episode = COALESCE(?, episode) WHERE id = ?",
+                (_now(now), episode, fact_id),
+            )
         row = self.db.execute("SELECT frequency FROM facts WHERE id = ?", (fact_id,)).fetchone()
         return int(row[0]) if row else 0
 
     def promote(self, fact_id: str, now: float | None = None) -> None:
         """Rehearsal transfer — move a short-term fact into the long-term store."""
-        self.db.execute(
-            "UPDATE facts SET tier = 'ltm', last_seen = ? WHERE id = ? AND tier = 'stm'",
-            (_now(now), fact_id),
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE facts SET tier = 'ltm', last_seen = ? WHERE id = ? AND tier = 'stm'",
+                (_now(now), fact_id),
+            )
 
     def mature_aged_stm(self, project_key: str, cutoff: float) -> int:
         """Age-based STM→LTM maturation — transfer active short-term facts captured before
@@ -623,12 +649,12 @@ class Store:
         ``created_at`` (capture time), not ``last_seen``. Idempotent (a matured row is no longer
         ``tier='stm'``) and reversible in spirit (a tier flip, never a delete). Returns the count.
         """
-        cur = self.db.execute(
-            "UPDATE facts SET tier = 'ltm' WHERE project_key = ? AND status = 'active' "
-            "AND tier = 'stm' AND created_at < ?",
-            (project_key, cutoff),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                "UPDATE facts SET tier = 'ltm' WHERE project_key = ? AND status = 'active' "
+                "AND tier = 'stm' AND created_at < ?",
+                (project_key, cutoff),
+            )
         return cur.rowcount
 
     def stm_rows(self, project_key: str, limit: int | None = None) -> list[sqlite3.Row]:
@@ -670,11 +696,11 @@ class Store:
         if not ids:
             return 0
         placeholders = _placeholders(ids)
-        cur = self.db.execute(
-            f"UPDATE facts SET status = 'displaced' WHERE id IN ({placeholders})",
-            ids,
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                f"UPDATE facts SET status = 'displaced' WHERE id IN ({placeholders}) AND status = 'active'",
+                ids,
+            )
         return cur.rowcount
 
     def mark_recalled(self, fact_ids: list[str], now: float | None = None) -> int:
@@ -688,11 +714,11 @@ class Store:
             return 0
         stamp = _now(now)
         placeholders = _placeholders(fact_ids)
-        cur = self.db.execute(
-            f"UPDATE facts SET recall_count = recall_count + 1, last_recalled = ? WHERE id IN ({placeholders})",
-            (stamp, *fact_ids),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                f"UPDATE facts SET recall_count = recall_count + 1, last_recalled = ? WHERE id IN ({placeholders})",
+                (stamp, *fact_ids),
+            )
         return cur.rowcount
 
     def mark_injected(self, fact_ids: list[str]) -> int:
@@ -704,11 +730,11 @@ class Store:
         """
         if not fact_ids:
             return 0
-        cur = self.db.execute(
-            f"UPDATE facts SET injected_count = injected_count + 1 WHERE id IN ({_placeholders(fact_ids)})",
-            tuple(fact_ids),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                f"UPDATE facts SET injected_count = injected_count + 1 WHERE id IN ({_placeholders(fact_ids)})",
+                tuple(fact_ids),
+            )
         return cur.rowcount
 
     def mark_used(self, fact_ids: list[str]) -> int:
@@ -720,11 +746,11 @@ class Store:
         """
         if not fact_ids:
             return 0
-        cur = self.db.execute(
-            f"UPDATE facts SET used_count = used_count + 1 WHERE id IN ({_placeholders(fact_ids)})",
-            tuple(fact_ids),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                f"UPDATE facts SET used_count = used_count + 1 WHERE id IN ({_placeholders(fact_ids)})",
+                tuple(fact_ids),
+            )
         return cur.rowcount
 
     def add_edges(self, edges: list[tuple[str, str, str, float]]) -> int:
@@ -736,12 +762,12 @@ class Store:
         """
         if not edges:
             return 0
-        self.db.executemany(
-            "INSERT INTO fact_edges (src_id, dst_id, kind, weight) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(src_id, dst_id, kind) DO UPDATE SET weight = weight + excluded.weight",
-            edges,
-        )
-        self.db.commit()
+        with self.db:
+            self.db.executemany(
+                "INSERT INTO fact_edges (src_id, dst_id, kind, weight) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(src_id, dst_id, kind) DO UPDATE SET weight = weight + excluded.weight",
+                edges,
+            )
         return len(edges)
 
     def neighbours(self, fact_ids: list[str], limit: int = 512) -> list[tuple[str, str, float]]:
@@ -766,14 +792,17 @@ class Store:
         return {fact_id: count for fact_id, count in rows}
 
     def set_status(self, fact_ids: list[str], status: str) -> int:
-        """Archive a set of facts under ``status`` (reversible; recall scans 'active' only)."""
+        """Archive the still-active facts of a set under ``status`` (reversible; recall scans 'active'
+        only). A fact already archived — superseded by a capture mid-consolidation, say — keeps
+        its status: capture and consolidation write concurrently, and the guard (the ``supersede``
+        idiom) stops one overwriting the other's verdict. Returns how many changed."""
         if not fact_ids:
             return 0
-        cur = self.db.execute(
-            f"UPDATE facts SET status = ? WHERE id IN ({_placeholders(fact_ids)})",
-            (status, *fact_ids),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                f"UPDATE facts SET status = ? WHERE id IN ({_placeholders(fact_ids)}) AND status = 'active'",
+                (status, *fact_ids),
+            )
         return cur.rowcount
 
     def purge(self, horizon_seconds: float, now: float | None = None) -> int:
@@ -784,12 +813,12 @@ class Store:
         The FTS index stays in sync via the delete trigger.
         """
         cutoff = _now(now) - horizon_seconds
-        cur = self.db.execute(
-            "DELETE FROM facts WHERE status IN ('superseded', 'displaced', 'merged', 'pruned', 'expired') "
-            "AND COALESCE(last_seen, created_at) < ?",
-            (cutoff,),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                "DELETE FROM facts WHERE status IN ('superseded', 'displaced', 'merged', 'pruned', 'expired') "
+                "AND COALESCE(last_seen, created_at) < ?",
+                (cutoff,),
+            )
         deleted = cur.rowcount
         if deleted:
             try:
@@ -803,12 +832,12 @@ class Store:
         if not fact_ids:
             return 0
         placeholders = _placeholders(fact_ids)
-        cur = self.db.execute(
-            f"UPDATE facts SET status = 'superseded', superseded_by = ? "
-            f"WHERE id IN ({placeholders}) AND status = 'active'",
-            (by_id, *fact_ids),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                f"UPDATE facts SET status = 'superseded', superseded_by = ? "
+                f"WHERE id IN ({placeholders}) AND status = 'active'",
+                (by_id, *fact_ids),
+            )
         return cur.rowcount
 
     def add(
@@ -835,39 +864,64 @@ class Store:
     ) -> bool:
         fid = self.fact_id(project["key"], text)
         stamp = created_at if created_at is not None else time.time()
-        cur = self.db.execute(
-            "INSERT OR IGNORE INTO facts "
-            "(id, project_key, project_label, project_path, session_id, kind, text, "
-            " title, subtitle, narrative, files, type, observation_id, created_at, last_seen, dim, scale, "
-            " vec_int8, vec_bits, importance, frequency, status, tier, episode) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)",
-            (
-                fid,
-                project["key"],
-                project["label"],
-                project["path"],
-                session_id,
-                kind,
-                text,
-                title or None,
-                subtitle or None,
-                narrative or None,
-                json.dumps(files) if files else None,
-                type or None,
-                observation_id or None,
-                stamp,
-                stamp,
-                dim,
-                scale,
-                vec_int8,
-                vec_bits,
-                importance,
-                tier,
-                episode,
-            ),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO facts "
+                "(id, project_key, project_label, project_path, session_id, kind, text, "
+                " title, subtitle, narrative, files, type, observation_id, created_at, last_seen, dim, scale, "
+                " vec_int8, vec_bits, importance, frequency, status, tier, episode) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)",
+                (
+                    fid,
+                    project["key"],
+                    project["label"],
+                    project["path"],
+                    session_id,
+                    kind,
+                    text,
+                    title or None,
+                    subtitle or None,
+                    narrative or None,
+                    json.dumps(files) if files else None,
+                    type or None,
+                    observation_id or None,
+                    stamp,
+                    stamp,
+                    dim,
+                    scale,
+                    vec_int8,
+                    vec_bits,
+                    importance,
+                    tier,
+                    episode,
+                ),
+            )
         return cur.rowcount > 0
+
+    @contextmanager
+    def deadline(self, seconds: float) -> Iterator[None]:
+        """Interrupt any statement still running ``seconds`` from now — it raises
+        ``sqlite3.OperationalError`` ("interrupted") and its write rolls back; the connection stays
+        usable. SQLite polls the clock every few thousand VM steps, so a stage that keeps issuing
+        statements is stopped at its next one past the deadline, and a single long one mid-run."""
+        end = time.monotonic() + seconds
+        self.db.set_progress_handler(lambda: time.monotonic() > end, 10_000)
+        try:
+            yield
+        finally:
+            self.db.set_progress_handler(None, 0)
+
+    def end_stray_transaction(self) -> bool:
+        """Roll back a transaction something left open; True when there was one.
+
+        Every write method commits or rolls back on its own (``with self.db``). This is the
+        backstop for the long-lived processes (the MCP server, the daemon): called after each
+        request, it means a connection can never sit on the write lock — or pin a WAL snapshot
+        that blocks checkpoints — between requests, as one MCP server did for 13 h."""
+        if not self.db.in_transaction:
+            return False
+        self.db.rollback()
+        return True
 
     def get(self, fact_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
@@ -884,6 +938,18 @@ class Store:
     def active_rows_for_project(self, project_key: str) -> list[sqlite3.Row]:
         return self.db.execute(
             "SELECT * FROM facts WHERE project_key = ? AND status = 'active'", (project_key,)
+        ).fetchall()
+
+    def scan_rows(self, project_key: str, *, kind: str | None = None, text: bool = False) -> list[sqlite3.Row]:
+        """A project's active facts with only the columns recall's scan and ranking read (plus
+        ``text`` for the lexical channel), in rowid order — the order the full-row query returns.
+        Recall re-reads the few rows it returns in full with ``get``; ``SELECT *`` over 10⁵ rows
+        (~2 KB each, the narrative and bit vector included) was a third of a recall."""
+        columns = _SCAN_COLUMNS + (", text" if text else "")
+        kind_clause, params = (" AND kind = ?", (project_key, kind)) if kind else ("", (project_key,))
+        return self.db.execute(
+            f"SELECT {columns} FROM facts WHERE project_key = ? AND status = 'active'{kind_clause} ORDER BY rowid",
+            params,
         ).fetchall()
 
     def active_antipatterns(self, project_key: str) -> list[sqlite3.Row]:
@@ -970,8 +1036,8 @@ class Store:
         if stage is not None:
             sql += " AND stage = ?"
             params.append(stage)
-        cur = self.db.execute(sql, params)
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(sql, params)
         return cur.rowcount
 
     def active_rows(self) -> list[sqlite3.Row]:
@@ -1037,13 +1103,13 @@ class Store:
         duplicating. Attention (which gates promotion) is set separately via ``mark_attended``.
         Returns the sensory id."""
         sid = _sensory_id(project_key, modality, url or "", text)
-        self.db.execute(
-            "INSERT INTO sensory (id, project_key, modality, observation_id, url, text, attended, created_at, decayed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL) "
-            "ON CONFLICT(id) DO UPDATE SET created_at = excluded.created_at, text = excluded.text, decayed_at = NULL",
-            (sid, project_key, modality, observation_id, url, text, _now(now)),
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "INSERT INTO sensory (id, project_key, modality, observation_id, url, text, attended, created_at, decayed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL) "
+                "ON CONFLICT(id) DO UPDATE SET created_at = excluded.created_at, text = excluded.text, decayed_at = NULL",
+                (sid, project_key, modality, observation_id, url, text, _now(now)),
+            )
         return sid
 
     def sensory_rows(
@@ -1066,8 +1132,8 @@ class Store:
         """Flag a perception as attended — the A-S selective read-out that gates promotion into
         the durable store. Set by the intake shell (visual: re-perception of the same page;
         verbal: distillation-worthiness), never by a rehearsal/frequency count."""
-        self.db.execute("UPDATE sensory SET attended = 1 WHERE id = ?", (sensory_id,))
-        self.db.commit()
+        with self.db:
+            self.db.execute("UPDATE sensory SET attended = 1 WHERE id = ?", (sensory_id,))
 
     def sweep_sensory(self, project_key: str, capacity: int, ttl_seconds: float, now: float | None = None) -> int:
         """Decay the register (A-S 'lost from SR'). Soft-tombstones (sets ``decayed_at``)
@@ -1077,28 +1143,28 @@ class Store:
         number newly tombstoned. A 0/None limit disables that limb."""
         t = _now(now)
         decayed = 0
-        if ttl_seconds and ttl_seconds > 0:
-            cur = self.db.execute(
-                "UPDATE sensory SET decayed_at = ? WHERE project_key = ? AND decayed_at IS NULL "
-                "AND attended = 0 AND created_at < ?",
-                (t, project_key, t - ttl_seconds),
-            )
-            decayed += cur.rowcount
-        if capacity and capacity > 0:
-            cur = self.db.execute(
-                "UPDATE sensory SET decayed_at = ? WHERE project_key = ? AND decayed_at IS NULL "
-                "AND attended = 0 AND id NOT IN ("
-                "SELECT id FROM sensory WHERE project_key = ? AND decayed_at IS NULL "
-                "ORDER BY created_at DESC, rowid DESC LIMIT ?)",
-                (t, project_key, project_key, capacity),
-            )
-            decayed += cur.rowcount
-        if ttl_seconds and ttl_seconds > 0:
-            self.db.execute(
-                "DELETE FROM sensory WHERE project_key = ? AND decayed_at IS NOT NULL AND decayed_at < ?",
-                (project_key, t - ttl_seconds),
-            )
-        self.db.commit()
+        with self.db:
+            if ttl_seconds and ttl_seconds > 0:
+                cur = self.db.execute(
+                    "UPDATE sensory SET decayed_at = ? WHERE project_key = ? AND decayed_at IS NULL "
+                    "AND attended = 0 AND created_at < ?",
+                    (t, project_key, t - ttl_seconds),
+                )
+                decayed += cur.rowcount
+            if capacity and capacity > 0:
+                cur = self.db.execute(
+                    "UPDATE sensory SET decayed_at = ? WHERE project_key = ? AND decayed_at IS NULL "
+                    "AND attended = 0 AND id NOT IN ("
+                    "SELECT id FROM sensory WHERE project_key = ? AND decayed_at IS NULL "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                    (t, project_key, project_key, capacity),
+                )
+                decayed += cur.rowcount
+            if ttl_seconds and ttl_seconds > 0:
+                self.db.execute(
+                    "DELETE FROM sensory WHERE project_key = ? AND decayed_at IS NOT NULL AND decayed_at < ?",
+                    (project_key, t - ttl_seconds),
+                )
         return decayed
 
     def sensory_counts(self) -> dict[str, int]:
@@ -1126,8 +1192,8 @@ class Store:
         """Hard-delete one perception by id (the viewer's Sensory-card trash). Returns rows removed."""
         if not sensory_id:
             return 0
-        cur = self.db.execute("DELETE FROM sensory WHERE id = ?", (sensory_id,))
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute("DELETE FROM sensory WHERE id = ?", (sensory_id,))
         return cur.rowcount
 
     @staticmethod
@@ -1143,11 +1209,11 @@ class Store:
     def mark_sensory_decayed(self, sensory_id: str, now: float | None = None) -> None:
         """Mark a perception as having left the live register — decayed OR promoted into the
         durable store. Sets ``decayed_at`` (once; a no-op on an already-departed row)."""
-        self.db.execute(
-            "UPDATE sensory SET decayed_at = ? WHERE id = ? AND decayed_at IS NULL",
-            (_now(now), sensory_id),
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE sensory SET decayed_at = ? WHERE id = ? AND decayed_at IS NULL",
+                (_now(now), sensory_id),
+            )
 
     def consolidation_counts(self) -> dict[str, int]:
         """Per-project count for the viewer's Consolidation panel: archived ('forgotten')
@@ -1183,11 +1249,11 @@ class Store:
 
     def clear_session_kind(self, project_key: str, session_id: str, kind: str) -> int:
         """Delete a session's facts of a given kind (used to replace its session summary)."""
-        cur = self.db.execute(
-            "DELETE FROM facts WHERE project_key = ? AND session_id = ? AND kind = ?",
-            (project_key, session_id, kind),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                "DELETE FROM facts WHERE project_key = ? AND session_id = ? AND kind = ?",
+                (project_key, session_id, kind),
+            )
         return cur.rowcount
 
     def fts_search(self, project_key: str, query: str, limit: int = 50) -> list[str]:
@@ -1226,13 +1292,13 @@ class Store:
         if project_key:
             sql += " AND project_key = ?"
             params.append(project_key)
-        cur = self.db.execute(sql, params)
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(sql, params)
         return cur.rowcount
 
     def prune_project(self, project_key: str) -> int:
-        cur = self.db.execute("DELETE FROM facts WHERE project_key = ?", (project_key,))
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute("DELETE FROM facts WHERE project_key = ?", (project_key,))
         return cur.rowcount
 
     def delete_project(self, project_key: str) -> dict[str, int]:
@@ -1278,12 +1344,12 @@ class Store:
     ) -> None:
         """Append one recall to the telemetry ledger (feeds stats and future tuning). Best-effort."""
         try:
-            self.db.execute(
-                "INSERT INTO recall_events (ts, project_key, query, returned, top_sim, confidence, verdict) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (_now(now), project_key, query, returned, top_sim, confidence, verdict),
-            )
-            self.db.commit()
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO recall_events (ts, project_key, query, returned, top_sim, confidence, verdict) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (_now(now), project_key, query, returned, top_sim, confidence, verdict),
+                )
         except sqlite3.Error:
             pass
 
@@ -1298,18 +1364,24 @@ class Store:
         return {"total": total, "by_verdict": {row["verdict"]: row["c"] for row in rows}}
 
     def recent_recall_queries(
-        self, limit: int, verdicts: tuple[str, ...] = ("ok", "low_confidence")
+        self,
+        limit: int,
+        verdicts: tuple[str, ...] = ("ok", "low_confidence"),
+        *,
+        project_key: str | None = None,
     ) -> list[tuple[str, str]]:
         """Distinct ``(project_key, query)`` pairs from the ledger, most recently asked first.
 
         Restricted to recalls that returned facts (``verdicts``), so a replay re-asks questions
-        memory could answer rather than empty-store or misconfigured ones.
+        memory could answer rather than empty-store or misconfigured ones; ``project_key``
+        narrows it to one project.
         """
         marks = ",".join("?" * len(verdicts))
+        scope, params = ("AND project_key = ? ", (project_key,)) if project_key else ("", ())
         rows = self.db.execute(
-            f"SELECT project_key, query FROM recall_events WHERE verdict IN ({marks}) "
+            f"SELECT project_key, query FROM recall_events WHERE verdict IN ({marks}) {scope}"
             "GROUP BY project_key, query ORDER BY MAX(ts) DESC LIMIT ?",
-            (*verdicts, limit),
+            (*verdicts, *params, limit),
         ).fetchall()
         return [(row["project_key"], row["query"]) for row in rows]
 
@@ -1319,11 +1391,11 @@ class Store:
         """Append one usage-ledger row (cost=bytes_in / saving=bytes_saved). Best-effort —
         a telemetry failure must never break recall, capture, or a pull."""
         try:
-            self.db.execute(
-                "INSERT INTO usage_events (ts, project_key, kind, bytes_in, bytes_saved) VALUES (?, ?, ?, ?, ?)",
-                (_now(now), project_key, kind, bytes_in, bytes_saved),
-            )
-            self.db.commit()
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO usage_events (ts, project_key, kind, bytes_in, bytes_saved) VALUES (?, ?, ?, ?, ?)",
+                    (_now(now), project_key, kind, bytes_in, bytes_saved),
+                )
         except sqlite3.Error:
             pass
 
@@ -1342,18 +1414,25 @@ class Store:
         """SQLite change counter — bumps on every commit by another connection (cache-invalidation signal)."""
         return self.db.execute("PRAGMA data_version").fetchone()[0]
 
+    def newest_capture_progress(self) -> float | None:
+        """When any session's capture cursor last advanced (the indexer's ``idxsig:`` keys aside)."""
+        row = self.db.execute(
+            "SELECT MAX(updated_at) FROM capture_cursors WHERE cursor_key NOT LIKE 'idxsig:%'"
+        ).fetchone()
+        return row[0]
+
     def get_capture_cursor(self, cursor_key: str) -> int:
         """Byte offset already distilled for this session, so incremental capture reads only new turns."""
         row = self.db.execute("SELECT offset FROM capture_cursors WHERE cursor_key = ?", (cursor_key,)).fetchone()
         return row["offset"] if row else 0
 
     def set_capture_cursor(self, cursor_key: str, offset: int, now: float | None = None) -> None:
-        self.db.execute(
-            "INSERT INTO capture_cursors (cursor_key, offset, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(cursor_key) DO UPDATE SET offset = excluded.offset, updated_at = excluded.updated_at",
-            (cursor_key, offset, _now(now)),
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "INSERT INTO capture_cursors (cursor_key, offset, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(cursor_key) DO UPDATE SET offset = excluded.offset, updated_at = excluded.updated_at",
+                (cursor_key, offset, _now(now)),
+            )
 
     # ---- Code/docs index (chunks) -------------------------------------------------
 
@@ -1547,13 +1626,13 @@ class Store:
     def set_index_meta(self, project: Project) -> None:
         """Record a project's human label/path for the index, so an index-only project
         (chunks but no memory facts) still shows a real name instead of its raw key."""
-        self.db.execute(
-            "INSERT INTO index_meta (project_key, label, path, updated_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(project_key) DO UPDATE SET "
-            "label = excluded.label, path = excluded.path, updated_at = excluded.updated_at",
-            (project["key"], project.get("label") or project["key"], project.get("path") or "", _now(None)),
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "INSERT INTO index_meta (project_key, label, path, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(project_key) DO UPDATE SET "
+                "label = excluded.label, path = excluded.path, updated_at = excluded.updated_at",
+                (project["key"], project.get("label") or project["key"], project.get("path") or "", _now(None)),
+            )
 
     def chunk_projects(self) -> list[sqlite3.Row]:
         return self.db.execute(
@@ -1603,8 +1682,8 @@ class Store:
         now: float | None = None,
     ) -> bool:
         """Publish a work item; idempotent on ``msg_id`` (INSERT OR IGNORE). True if new."""
-        cur = self.db.execute(_ENQUEUE_WORK, (msg_id, stage, project_key, session_id, ref, payload, _now(now)))
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(_ENQUEUE_WORK, (msg_id, stage, project_key, session_id, ref, payload, _now(now)))
         return cur.rowcount > 0
 
     def claim_work(
@@ -1617,53 +1696,53 @@ class Store:
         ``attempts`` so the delivery count survives across workers.
         """
         now = _now(now)
-        rows = self.db.execute(
-            "SELECT * FROM work_queue WHERE stage = ? AND next_retry_at <= ? AND "
-            "(status = 'pending' OR (status = 'in_progress' AND lease_expires < ?)) "
-            "ORDER BY enqueued_at ASC, rowid ASC LIMIT ?",
-            (stage, now, now, limit),
-        ).fetchall()
-        for row in rows:
-            self.db.execute(
-                "UPDATE work_queue SET status = 'in_progress', lease_owner = ?, lease_expires = ?, "
-                "attempts = attempts + 1 WHERE msg_id = ?",
-                (owner, now + lease_ttl, row["msg_id"]),
-            )
-        self.db.commit()
+        with self.db:
+            rows = self.db.execute(
+                "SELECT * FROM work_queue WHERE stage = ? AND next_retry_at <= ? AND "
+                "(status = 'pending' OR (status = 'in_progress' AND lease_expires < ?)) "
+                "ORDER BY enqueued_at ASC, rowid ASC LIMIT ?",
+                (stage, now, now, limit),
+            ).fetchall()
+            for row in rows:
+                self.db.execute(
+                    "UPDATE work_queue SET status = 'in_progress', lease_owner = ?, lease_expires = ?, "
+                    "attempts = attempts + 1 WHERE msg_id = ?",
+                    (owner, now + lease_ttl, row["msg_id"]),
+                )
         return rows
 
     def ack_work(self, msg_id: str) -> None:
         """Work done — remove it from the queue."""
-        self.db.execute("DELETE FROM work_queue WHERE msg_id = ?", (msg_id,))
-        self.db.commit()
+        with self.db:
+            self.db.execute("DELETE FROM work_queue WHERE msg_id = ?", (msg_id,))
 
     def nak_work(self, msg_id: str, delay: float = 0.0, now: float | None = None) -> None:
         """Return work for retry after ``delay`` seconds; clears the lease."""
         now = _now(now)
-        self.db.execute(
-            "UPDATE work_queue SET status = 'pending', next_retry_at = ?, lease_owner = NULL, lease_expires = 0 "
-            "WHERE msg_id = ?",
-            (now + delay, msg_id),
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE work_queue SET status = 'pending', next_retry_at = ?, lease_owner = NULL, lease_expires = 0 "
+                "WHERE msg_id = ?",
+                (now + delay, msg_id),
+            )
 
     def dead_work(self, msg_id: str) -> None:
         """Dead-letter — retries exhausted or terminally unprocessable. Kept for inspection."""
-        self.db.execute(
-            "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 WHERE msg_id = ?",
-            (msg_id,),
-        )
-        self.db.commit()
+        with self.db:
+            self.db.execute(
+                "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 WHERE msg_id = ?",
+                (msg_id,),
+            )
 
     def reclaim_expired(self, now: float | None = None) -> int:
         """Return interrupted (expired-lease) in_progress items to pending. Crash recovery."""
         now = _now(now)
-        cur = self.db.execute(
-            "UPDATE work_queue SET status = 'pending', lease_owner = NULL, lease_expires = 0 "
-            "WHERE status = 'in_progress' AND lease_expires < ?",
-            (now,),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                "UPDATE work_queue SET status = 'pending', lease_owner = NULL, lease_expires = 0 "
+                "WHERE status = 'in_progress' AND lease_expires < ?",
+                (now,),
+            )
         return cur.rowcount
 
     def dead_stale(self, horizon_seconds: float, now: float | None = None) -> int:
@@ -1673,12 +1752,12 @@ class Store:
         if horizon_seconds <= 0:
             return 0
         cutoff = _now(now) - horizon_seconds
-        cur = self.db.execute(
-            "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 "
-            "WHERE status = 'pending' AND enqueued_at < ?",
-            (cutoff,),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 "
+                "WHERE status = 'pending' AND enqueued_at < ?",
+                (cutoff,),
+            )
         return cur.rowcount
 
     def purge_dead(self, horizon_seconds: float, now: float | None = None) -> int:
@@ -1689,11 +1768,11 @@ class Store:
         if horizon_seconds <= 0:
             return 0
         cutoff = _now(now) - horizon_seconds
-        cur = self.db.execute(
-            "DELETE FROM work_queue WHERE status = 'dead' AND enqueued_at < ?",
-            (cutoff,),
-        )
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(
+                "DELETE FROM work_queue WHERE status = 'dead' AND enqueued_at < ?",
+                (cutoff,),
+            )
         return cur.rowcount
 
     def count_work(self, stage: str | None = None, status: str | None = None) -> int:
@@ -1713,8 +1792,8 @@ class Store:
         if not fact_ids:
             return 0
         placeholders = _placeholders(fact_ids)
-        cur = self.db.execute(f"DELETE FROM facts WHERE id IN ({placeholders})", tuple(fact_ids))
-        self.db.commit()
+        with self.db:
+            cur = self.db.execute(f"DELETE FROM facts WHERE id IN ({placeholders})", tuple(fact_ids))
         return cur.rowcount
 
     def delete_memory(self, key: str) -> int:

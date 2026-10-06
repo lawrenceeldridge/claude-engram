@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.domain.fusion import Fused  # noqa: E402
-from core.domain.temporal import WINDOW_BOOST, WINDOW_HALF_LIFE, TimeWindow, boost_by_window  # noqa: E402
+from core.domain.fusion import Fused
+from core.domain.temporal import WINDOW_BOOST, WINDOW_HALF_LIFE, TimeWindow, boost_by_window
 
 
 class TimeWindowTests(unittest.TestCase):

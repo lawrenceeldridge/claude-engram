@@ -15,19 +15,17 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import ROOT, temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 
 class UsageLedgerTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic", min_sim=-1.0)  # always inject a match
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -35,8 +33,6 @@ class UsageLedgerTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add(self, text: str) -> None:
         service.add_facts(self.store, self.embedder, self.cfg, self.project, "s", [text])
@@ -121,24 +117,14 @@ class CreditReadHookTests(unittest.TestCase):
     """bin/credit_read.py — books a bounded Read of an indexed file as a measured saving."""
 
     def setUp(self):
-        self.data = tempfile.TemporaryDirectory()
+        self.data = temp_data_dir(self)
         self.proj = tempfile.TemporaryDirectory()
         (Path(self.proj.name) / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
         self.file = Path(self.proj.name) / "mod.py"
         self.file.write_text("def foo():\n    return 1\n" * 60, encoding="utf-8")  # a sizable indexed file
-        os.environ["ENGRAM_DATA_DIR"] = self.data.name
-        self.env = {
-            **os.environ,
-            "ENGRAM_DATA_DIR": self.data.name,
-            "ENGRAM_EMBEDDING": "hash",
-            "ENGRAM_ENFORCE": "off",
-            "ENGRAM_BUS": "inproc",
-        }
-        self.env.pop("ENGRAM_PYTHON", None)
+        self.env = {**os.environ, "ENGRAM_ENFORCE": "off"}
 
     def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.data.cleanup()
         self.proj.cleanup()
 
     def _index(self) -> dict:

@@ -10,26 +10,22 @@ Run: python3 -m unittest discover -s plugins/engram/tests
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _harness import temp_data_dir
 
-from dataclasses import replace  # noqa: E402
-
-from core.config import get_config  # noqa: E402
-from core.index import treesitter_symbols  # noqa: E402
-from core.index.chunking import make_slug, split_markdown  # noqa: E402
-from core.index.code_symbols import extract_code_symbols, extract_symbols  # noqa: E402
-from core.index.index_recall import get_chunk, get_outline, search_index  # noqa: E402
-from core.index.indexer import index_file, index_project, tree_signature  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.service import index_prompt_block  # noqa: E402
-from core.store import _SCHEMA_VERSION, Store  # noqa: E402
+from core.config import get_config
+from core.index import treesitter_symbols
+from core.index.chunking import make_slug, split_markdown
+from core.index.code_symbols import extract_code_symbols, extract_symbols
+from core.index.index_recall import get_chunk, get_outline, search_index
+from core.index.indexer import index_file, index_project, tree_signature
+from core.ports.embedding import HashEmbedding
+from core.service import index_prompt_block
+from core.store import _SCHEMA_VERSION, Store
 
 
 class TreeSignatureTests(unittest.TestCase):
@@ -105,16 +101,13 @@ class ChunkingTests(unittest.TestCase):
 
 class ChunkStoreTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.pk = "proj"
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _chunk(self, anchor: str, title: str, body: str, summary: str = "") -> dict:
         return {
@@ -189,8 +182,7 @@ class ChunkStoreTests(unittest.TestCase):
 
 class IndexerAndRecallTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -203,8 +195,6 @@ class IndexerAndRecallTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
         self.repo.cleanup()
 
     def _write(self, rel: str, text: str) -> None:
@@ -376,8 +366,7 @@ class CodeSymbolTests(unittest.TestCase):
 
 class CodeIndexingTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -390,8 +379,6 @@ class CodeIndexingTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
         self.repo.cleanup()
 
     def _write(self, rel: str, text: str) -> None:
@@ -485,8 +472,7 @@ class TreeSitterTests(unittest.TestCase):
 @unittest.skipUnless(_has_treesitter(), "tree-sitter not provisioned")
 class TypeScriptIndexingTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -500,8 +486,6 @@ class TypeScriptIndexingTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
         self.repo.cleanup()
 
     def test_index_and_search_tsx(self):
@@ -518,8 +502,7 @@ class IndexInjectionTests(unittest.TestCase):
     """service.index_prompt_block — the passive per-prompt index nudge (hash embedder)."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -527,8 +510,6 @@ class IndexInjectionTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _index(self, name: str, body: str) -> None:
         p = Path(self.tmp.name) / name

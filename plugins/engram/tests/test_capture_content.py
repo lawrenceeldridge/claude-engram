@@ -11,17 +11,14 @@ Run: python3 -m unittest discover -s plugins/engram/tests
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.domain.ingest import parse_action  # noqa: E402
-from core.ports.distill import _MAX_INPUT_CHARS, _clip, heuristic_facts  # noqa: E402
-from core.transcript import _render_tool_use, extract_incremental_parts, extract_text  # noqa: E402
+from core.domain.ingest import parse_action
+from core.ports.distill import _MAX_INPUT_CHARS, _clip, heuristic_facts
+from core.transcript import _render_tool_use, extract_incremental_parts, extract_text
 
 
 def _write_transcript(entries: list[dict]) -> str:

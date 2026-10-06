@@ -16,24 +16,18 @@ Run: python3 -m unittest discover -s plugins/engram/tests
 
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.distill import DistilledFact  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.ports.scorer import get_scorer  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.distill import DistilledFact
+from core.ports.embedding import HashEmbedding
+from core.ports.scorer import get_scorer
+from core.store import Store
 
 _OLD = 1_000.0  # seeded age of the "aged" fact
 _NEW = 2_000.0  # seeded age of the newer facts that fill the recency window
@@ -61,8 +55,7 @@ class _BrokenEmbedder(HashEmbedding):
 
 class SupersedeCandidateTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         # LLM distiller so capture_text takes the similarity-candidate path; tiny budget so a
         # handful of seeded facts is enough to overflow the recency window.
         self.cfg = replace(get_config(), distiller="ollama", supersede_candidates=3, supersede_candidate_min_sim=0.3)
@@ -73,8 +66,6 @@ class SupersedeCandidateTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _seed(self, records: list[tuple[str, float]]) -> None:
         service.bulk_add_records(

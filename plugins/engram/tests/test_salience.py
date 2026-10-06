@@ -13,23 +13,18 @@ Run: python3 -m unittest discover -s plugins/engram/tests
 
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.consolidation.scoring import RetentionFeatures, features_from_row, retention  # noqa: E402
-from core.domain.scoring import _DEFAULT_SALIENCE, salience_of  # noqa: E402
-from core.ports.distill import DistilledFact  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.consolidation.scoring import RetentionFeatures, features_from_row, retention
+from core.domain.scoring import _DEFAULT_SALIENCE, salience_of
+from core.ports.distill import DistilledFact
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 NOW = 1_000_000.0
 HL = 30.0
@@ -66,8 +61,7 @@ class SalienceWiringTests(unittest.TestCase):
     """Capture stores type-based salience in `importance`, and features_from_row reads type."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), embedding="hash")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -75,8 +69,6 @@ class SalienceWiringTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add_typed(self, text: str, type_: str) -> str:
         service.add_records(

@@ -23,11 +23,13 @@ Two budgets are optimised separately (see [DESIGN.md](DESIGN.md)):
   The index returns outlines (qualname + signature + anchor), not file contents —
   you fetch one symbol's body on demand instead of reading whole files.
 - **Latency** — capture (and any LLM distillation) is fully detached: zero
-  interactive cost. Recall is a brute-force cosine over quantised (int8) vectors —
-  sub-10ms for a personal store, and **numpy-vectorised** (numpy ships with the
-  `fastembed` extra) so it stays within the recall hook's budget even on a 10⁵-fact
-  store; it falls back to a pure-Python scan when numpy is absent. An optional
-  resident daemon keeps the embedding model warm across the short-lived hook processes.
+  interactive cost. Recall is an exact brute-force cosine over quantised (int8) vectors,
+  **numpy-vectorised** (numpy ships with the `fastembed` extra): the per-prompt hook takes
+  ~11 ms on a 2.8k-fact project and ~0.5 s on a 144k-fact one (measured with
+  `engram eval --latency`), well inside the hook's 5 s budget. Without numpy the scan is pure
+  Python — fine for a few thousand facts; `engram doctor` warns when a project outgrows it.
+  An optional resident daemon keeps the embedding model warm across the short-lived hook
+  processes, and an interactive hook never waits on another writer.
 
 ## How memory behaves (cognitive model)
 
@@ -178,7 +180,7 @@ index on demand (these are what the memory-first guard steers toward):
 cd plugins/engram
 python3 -m unittest discover -s tests        # smoke tests (all stdlib)
 python3 bin/engram demo                         # capture sample facts, then recall
-python3 bin/engram doctor                       # show config, project, counts
+python3 bin/engram doctor                       # show config, project, counts, service health
 python3 bin/engram eval --backends hash         # recall-quality benchmark (add fastembed to compare)
 python3 bin/engram viewer                       # browse at http://127.0.0.1:7801/
 ```
@@ -204,7 +206,7 @@ session summary) at stop / session end / pre-compact.
 ## CLI
 
 ```
-engram doctor              show resolved config, project identity and fact count
+engram doctor              show resolved config, project identity, fact count and service health
 engram capture             capture memory from stdin / --file / --transcript
 engram recall <query>      run a just-in-time recall query for the current project
 engram core                show the stable session-start memory block
@@ -263,7 +265,10 @@ instead of duplicating. Facts land in **STM**; superseding and spread-activation
 deferred to `consolidate` (a raw import can be large — ~10⁵ facts — so the first
 consolidation is the expensive one; run it per-project first to bound blast radius). A store
 that large stays recallable within the hook budget via the numpy-vectorised scan (see
-`scorer` in [Configuration](#configuration)).
+`scorer` in [Configuration](#configuration)). Without numpy — a `hash` install on an
+interpreter that lacks it — the scan is pure Python (~106 ns per vector element, so 10⁵ facts
+take seconds per prompt); `engram import`, `engram doctor` and the viewer's `scan` chip warn
+once the estimate nears the hook's ceiling.
 
 > **TTL caveat.** Because original timestamps are preserved, if you have set `ttl_days > 0`
 > a `sweep` will archive imported facts older than that window immediately. `ttl_days` is
@@ -296,7 +301,7 @@ or `ENGRAM_*` env vars for standalone use:
 | `embedding` | `hash` | `hash` (lexical stub, zero deps) or `fastembed` (real semantic model, self-provisions a venv) |
 | `embedding_model` | *(blank)* | fastembed model id; blank = `BAAI/bge-base-en-v1.5` (best measured recall) |
 | `embedding_truncate_dim` | `0` | Matryoshka truncation: keep the first N dims and re-normalise (0 = off). Only for Matryoshka-trained models (e.g. `nomic-ai/nomic-embed-text-v1.5`); changing it invalidates stored vectors — re-capture/re-index |
-| `scorer` | `auto` | recall similarity-scan backend: `auto` (numpy if importable, else pure-Python) / `python` / `numpy`. numpy vectorises the cosine scan (~100× faster) so large stores stay under the recall-hook budget; ships with the `fastembed` extra. Ranking is identical to the pure-Python scan |
+| `scorer` | `auto` | recall similarity-scan backend: `auto` (numpy if importable, else pure-Python) / `python` / `numpy`. numpy vectorises the cosine scan (~100× faster) so large stores stay under the recall-hook budget; ships with the `fastembed` extra. Ranking is identical to the pure-Python scan; without numpy, `engram doctor` / the viewer warn when a project is too large to scan in pure Python |
 | `distiller` | `claude` | `claude` (headless `claude -p`, Haiku), `ollama` (local, zero-token), or `heuristic` (line extraction, no LLM) |
 | `distiller_model` | *(blank)* | claude: model alias (blank = `haiku`); ollama: model name (blank = `qwen2.5:3b`) |
 | `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller (ignored under `claude`) |
@@ -331,7 +336,6 @@ Env-only knobs (no `userConfig` entry):
 | Env var | Default | Meaning |
 |---|---|---|
 | `ENGRAM_ENFORCE` | `advisory` | memory-first guard strength — `off` / `advisory` / `strict` (see above) |
-| `ENGRAM_DAEMON` | *(unset)* | `1` makes the recall hook use the resident daemon instead of loading the model in-process |
 | `ENGRAM_PYTHON` / `python` userConfig | *(blank)* | pin an interpreter that already has fastembed; blank = auto-provisioned managed venv |
 
 Advanced ranking weights (`w_sim`, `w_recency`, `w_freq`) are tunable via `ENGRAM_*`
@@ -431,9 +435,10 @@ private venv** under the plugin data dir and downloads the model once — no man
 short-lived hook processes:
 
 ```bash
-python3 bin/engram daemon                 # keep the model warm
-export ENGRAM_DAEMON=1                     # recall hook uses the daemon, else in-process
+python3 bin/engram daemon                 # keep the model warm (SessionStart starts one when fastembed is provisioned)
 ```
+
+The recall hooks use a reachable daemon and fall back to in-process recall otherwise.
 
 ## Better distillation (atomic facts + explicit supersedes)
 
@@ -491,10 +496,15 @@ facts contain the answer": the answerable queries plus 89 unanswerable, near-top
 run through the real on-demand recall path, and each candidate confidence score is
 reported for discrimination (AUROC), calibration (Brier/ECE) and `ok` precision/recall —
 Platt fitted on a fixed dev half of the queries, every metric scored on the other half.
-`--distractors N --distractor-project <key|label>` pads the store with facts mined at
+`--distractors N --store-project <key|label>` pads the store with facts mined at
 runtime from a snapshot of a real store (filtered, never written to the repo) to
 reproduce real density; `bench/replay_ledger.py` replays real recall-ledger queries on a
-snapshot of the live store.
+snapshot of the live store. `--latency --store-project <key|label>` measures *cost* rather than
+quality: it re-asks that project's own recent ledger questions on a snapshot through the hook's
+and the `recall` tool's search paths, with the numpy and the pure-Python scorer (query embedding
+excluded), and prints per-query p50/p90/max, a per-stage breakdown and a parity digest that
+proves a hot-path refactor left rankings byte-identical; `--latency-consolidation` times one
+consolidation pass per stage on its own snapshot.
 
 Measured on the bundled set (297 facts, 244 paraphrased queries — mined from real
 sessions, with 58 untargeted hard-negative facts; the earlier 64/77 set is frozen as

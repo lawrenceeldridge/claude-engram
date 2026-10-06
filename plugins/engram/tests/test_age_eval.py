@@ -8,18 +8,15 @@ production paths, and the fusion-weight override is scoped (never leaks into lat
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from bench.age_eval import (  # noqa: E402
+from bench.age_eval import (
     DAY,
     NEW_DAYS,
     OLD_DAYS,
@@ -29,13 +26,13 @@ from bench.age_eval import (  # noqa: E402
     split_by_age,
     stamp_ages,
 )
-from bench.distractors import load_distractors  # noqa: E402
-from bench.retrieval import fused_ranker, search_ranker  # noqa: E402
-from bench.stores import build_store  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.domain import fusion  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.recall import search, search_fused  # noqa: E402
+from bench.distractors import load_distractors
+from bench.retrieval import fused_ranker, search_ranker
+from bench.stores import build_store
+from core.config import get_config
+from core.domain import fusion
+from core.ports.embedding import HashEmbedding
+from core.recall import search, search_fused
 
 
 class StampTests(unittest.TestCase):
@@ -62,8 +59,7 @@ class StampTests(unittest.TestCase):
 
 class RankerAndEvalTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.facts = [
@@ -72,10 +68,6 @@ class RankerAndEvalTests(unittest.TestCase):
             "The sqlite store keeps int8 vectors per fact.",
             "Recall injects at most three facts per prompt.",
         ]
-
-    def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_rankers_are_the_production_paths(self):
         store, project = build_store(self.embedder, self.cfg, [(t, None) for t in self.facts], Path(self.tmp.name))
@@ -134,16 +126,16 @@ class RankerAndEvalTests(unittest.TestCase):
 
 class LoadDistractorsTests(unittest.TestCase):
     def test_zero_requested_mines_nothing(self):
-        args = argparse.Namespace(distractors=0, distractor_project=None, distractor_db=None)
+        args = argparse.Namespace(distractors=0, store_project=None, store_db=None)
         self.assertEqual(load_distractors(args, get_config(), exclude=[]), [])
 
     def test_padding_without_a_source_project_is_refused(self):
-        args = argparse.Namespace(distractors=10, distractor_project=None, distractor_db=None)
+        args = argparse.Namespace(distractors=10, store_project=None, store_db=None)
         self.assertIsNone(load_distractors(args, get_config(), exclude=[]))
 
     def test_a_missing_source_db_is_refused_not_a_traceback(self):
         with tempfile.TemporaryDirectory() as tmp:
-            args = argparse.Namespace(distractors=10, distractor_project="p", distractor_db=str(Path(tmp) / "none.db"))
+            args = argparse.Namespace(distractors=10, store_project="p", store_db=str(Path(tmp) / "none.db"))
             self.assertIsNone(load_distractors(args, get_config(), exclude=[]))
 
 

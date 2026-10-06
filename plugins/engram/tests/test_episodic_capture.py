@@ -15,28 +15,25 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.consolidation import consolidate  # noqa: E402
-from core.domain.episodes import Exchange  # noqa: E402
-from core.domain.privacy import REDACTED  # noqa: E402
-from core.index.index_recall import get_chunk, search_index  # noqa: E402
-from core.index.indexer import exchange_chunk_units, index_nonfile, index_snapshot  # noqa: E402
-from core.ports.distill import DistilledFact  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.ports.workqueue import EXCHANGE_FORMAT  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.consolidation import consolidate
+from core.domain.episodes import Exchange
+from core.domain.privacy import REDACTED
+from core.index.index_recall import get_chunk, search_index
+from core.index.indexer import exchange_chunk_units, index_nonfile, index_snapshot
+from core.ports.distill import DistilledFact
+from core.ports.embedding import HashEmbedding
+from core.ports.workqueue import EXCHANGE_FORMAT
+from core.store import Store
 
 
 def _turn(role: str, text: str) -> str:
@@ -60,7 +57,6 @@ class _TranscriptCase(unittest.TestCase):
 
     def tearDown(self):
         os.unlink(self.tf.name)
-        self.tmp.cleanup()
 
     def _cfg(self, **overrides):
         return replace(get_config(), distiller="heuristic", embedding="hash", **overrides)
@@ -233,7 +229,6 @@ class EpisodeLinkStoreTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def _fact(self, text: str, episode: str | None) -> str:
         service.add_records(
@@ -287,7 +282,6 @@ class ExchangeFormatRewriteTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def _store_exchanges(self, episode: str, exchanges: list[Exchange], stamp: float = 5000.0) -> None:
         units = exchange_chunk_units(episode, exchanges, "2026-09-20 10:00")
@@ -398,9 +392,7 @@ class _HistoryCase(unittest.TestCase):
     """A fresh MCP engine over two captured sessions (a, b) — shared by the history-search tests."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
-        os.environ["ENGRAM_EMBEDDING"] = "hash"
+        self.tmp = temp_data_dir(self)
         import mcp_server
 
         self.mcp = mcp_server
@@ -413,11 +405,6 @@ class _HistoryCase(unittest.TestCase):
             turns = [("user", f"deploy question {i} in session {session}") for i in range(5)]
             delta = service.TranscriptDelta("", [], turns, 0, 1)
             service.capture_episodes(self.store, self.embedder, self.cfg, self.project, session, delta)
-
-    def tearDown(self):
-        for key in ("ENGRAM_DATA_DIR", "ENGRAM_EMBEDDING"):
-            os.environ.pop(key, None)
-        self.tmp.cleanup()
 
     def _call(self, name: str, arguments: dict) -> dict:
         resp = self.mcp._handle(
@@ -535,7 +522,6 @@ class EpisodicIndexTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def _episode(self, session: str, text: str, now: float) -> None:
         delta = service.TranscriptDelta("", [], [("user", text)], 0, 1)

@@ -14,11 +14,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import ROOT
 
-from core.store import Store  # noqa: E402
-from viewer.serve import PAGE  # noqa: E402
+from core.store import Store
+from viewer.serve import PAGE
 
 
 class SensoryTabPageTests(unittest.TestCase):
@@ -61,8 +60,7 @@ class SensoryStatsTests(unittest.TestCase):
 class DoctorSensoryTests(unittest.TestCase):
     def test_doctor_prints_the_sensory_line(self):
         with tempfile.TemporaryDirectory() as d:
-            env = {k: v for k, v in os.environ.items() if k != "ENGRAM_DISABLE"}
-            env.update({"ENGRAM_DATA_DIR": d, "ENGRAM_EMBEDDING": "hash"})
+            env = {**os.environ, "ENGRAM_DATA_DIR": d}
             r = subprocess.run(
                 [sys.executable, str(ROOT / "bin" / "engram"), "doctor"],
                 capture_output=True,

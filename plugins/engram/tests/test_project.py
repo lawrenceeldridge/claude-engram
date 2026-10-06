@@ -9,16 +9,14 @@ git/monorepo root; that `identity='marker'` restores the legacy walk-up; that
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.project import resolve_project  # noqa: E402
+from core.project import resolve_project
 
 MARKERS = (".git", "pyproject.toml", "package.json")
 
@@ -137,13 +135,9 @@ class ConfigIdentityTests(unittest.TestCase):
             return get_config()
 
     def test_identity_defaults_to_workspace(self):
-        # Strip any ambient override so the default is what's asserted.
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ENGRAM_IDENTITY", None)
-            os.environ.pop("CLAUDE_PLUGIN_OPTION_identity", None)
-            from core.config import get_config
+        from core.config import get_config
 
-            self.assertEqual(get_config().identity, "workspace")
+        self.assertEqual(get_config().identity, "workspace")  # the harness clears ambient overrides
 
     def test_identity_marker_from_env(self):
         self.assertEqual(self._cfg({"ENGRAM_IDENTITY": "marker"}).identity, "marker")
@@ -152,11 +146,9 @@ class ConfigIdentityTests(unittest.TestCase):
         self.assertEqual(self._cfg({"CLAUDE_PROJECT_DIR": "/ws/moj-sak"}).project_dir, "/ws/moj-sak")
 
     def test_project_dir_none_when_unset(self):
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("CLAUDE_PROJECT_DIR", None)
-            from core.config import get_config
+        from core.config import get_config
 
-            self.assertIsNone(get_config().project_dir)
+        self.assertIsNone(get_config().project_dir)  # the harness clears CLAUDE_PROJECT_DIR
 
 
 if __name__ == "__main__":

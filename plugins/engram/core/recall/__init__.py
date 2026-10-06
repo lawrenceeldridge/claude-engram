@@ -16,11 +16,11 @@ from dataclasses import dataclass
 from core.config import Config
 from core.domain.confidence import Calibration, PoolStats, calibrated_confidence, pool_stats
 from core.domain.fusion import Channel, fuse
-from core.domain.lexical import token_set
-from core.domain.scoring import frequency_boost, priority, recency_decay
+from core.domain.lexical import overlap_counts, token_set
+from core.domain.scoring import fact_priority, top_by_priority
 from core.domain.spreading import spread
 from core.ports.embedding import EmbeddingGateway
-from core.ports.scorer import DIM_MISMATCH, VectorScorer, get_scorer
+from core.ports.scorer import DIM_MISMATCH, get_scorer
 from core.project import GLOBAL_PROJECT_KEY, Project
 from core.store import Store
 
@@ -29,30 +29,42 @@ Hit = tuple[float, sqlite3.Row]
 FusedHit = tuple[float, float, sqlite3.Row]
 
 
-def _recall_rows(store: Store, project_key: str) -> list[sqlite3.Row]:
-    """Active facts for the project, unioned with globally-scoped anti-patterns.
+def _recall_rows(store: Store, project_key: str, *, text: bool = False) -> list[sqlite3.Row]:
+    """Active facts for the project, unioned with globally-scoped anti-patterns — lean scan rows
+    (``Store.scan_rows``); what leaves recall is re-read in full by ``_hydrate``.
 
     A narrow, kind-only exception to project scoping: a tool/harness lesson applies in every
     project. Adds nothing (and costs nothing) when no global anti-patterns exist — the common
     case, and always true in the eval store, so recall is unchanged there.
     """
-    rows = store.active_rows_for_project(project_key)
+    rows = store.scan_rows(project_key, text=text)
     if project_key != GLOBAL_PROJECT_KEY:
-        rows = rows + store.active_antipatterns(GLOBAL_PROJECT_KEY)
+        rows = rows + store.scan_rows(GLOBAL_PROJECT_KEY, kind="antipattern", text=text)
     return rows
 
 
-def _score(rows, query_vec, cfg: Config, now: float, min_sim: float, penalty: float, scorer: VectorScorer):
+def _hydrate(store: Store, hits: list) -> list:
+    """Swap each hit's lean scan row (its last element) for the full row callers read. A fact
+    deleted between the scan and this read (a concurrent purge) is dropped, not returned half-built."""
     out = []
-    sims = scorer.cosine_all(rows, query_vec)
+    for hit in hits:
+        row = store.get(hit[-1]["id"])
+        if row is not None:
+            out.append((*hit[:-1], row))
+    return out
+
+
+def _weights(cfg: Config) -> tuple[float, float, float]:
+    return cfg.w_sim, cfg.w_recency, cfg.w_freq
+
+
+def _score(rows, sims, cfg: Config, now: float, min_sim: float, penalty: float) -> list[Hit]:
+    out = []
     for row, sim in zip(rows, sims):
         # DIM_MISMATCH (-inf, incomparable embedder dim) or below the gate — both skip.
         if sim < min_sim:
             continue
-        age = now - (row["last_seen"] if row["last_seen"] is not None else row["created_at"])
-        decay = recency_decay(age, cfg.half_life_days)
-        boost = frequency_boost(row["frequency"] or 1)
-        score = priority(sim, decay, boost, cfg.w_sim, cfg.w_recency, cfg.w_freq) * penalty
+        score = fact_priority(row, sim, now, cfg.half_life_days, _weights(cfg)) * penalty
         # Short-term facts can be down-weighted at recall (context-dependent retrieval).
         # Default weight 1.0 is a no-op — and `tier` is only read when a penalty is set,
         # so behaviour (and old rows without the column) is untouched by default.
@@ -81,10 +93,20 @@ def search(
 
     scorer = get_scorer(cfg)
     query_vec = embedder.embed_query(query)
-    scored = _score(_recall_rows(store, project["key"]), query_vec, cfg, now, min_sim, 1.0, scorer)
+    rows = _recall_rows(store, project["key"])
+    sims = scorer.cosine_all(rows, query_vec)
+    # The common case — the shipped defaults — has an exact shortcut: rank only the rows that can
+    # still reach the top k (``top_by_priority``). Anything its bound doesn't cover (a cross-project
+    # top-up, spreading activation, an STM weight, a negative weight) takes the full ranking below.
+    if not cross and cfg.spread_weight <= 0 and cfg.stm_recall_weight == 1.0 and min(_weights(cfg)) >= 0:
+        top = top_by_priority(
+            rows, sims, k, min_sim=min_sim, now=now, half_life_days=cfg.half_life_days, weights=_weights(cfg)
+        )
+        return _hydrate(store, top)
+    scored = _score(rows, sims, cfg, now, min_sim, 1.0)
     if cross and len(scored) < k:
         others = [r for r in store.active_rows() if r["project_key"] != project["key"]]
-        scored += _score(others, query_vec, cfg, now, min_sim, 0.9, scorer)
+        scored += _score(others, scorer.cosine_all(others, query_vec), cfg, now, min_sim, 0.9)
     # Spreading activation (Idea #4): boost candidates co-activated with other candidates via
     # the association graph. Gated — spread_weight 0 (default) skips it entirely, so the hot
     # path (and its cost) is byte-identical when off. The boost math is pure; the shell loads
@@ -95,7 +117,7 @@ def search(
         if boosts:
             scored = [(s + boosts.get(row["id"], 0.0), row) for s, row in scored]
     scored.sort(key=lambda hit: hit[0], reverse=True)
-    return scored[:k]
+    return _hydrate(store, scored[:k])
 
 
 @dataclass(frozen=True)
@@ -147,17 +169,17 @@ def search_fused_with_stats(
     query_vec = embedder.embed_query(query)
     query_tokens = token_set(query)
 
-    rows = _recall_rows(store, project["key"])
+    rows = _recall_rows(store, project["key"], text=True)
     sims = scorer.cosine_all(rows, query_vec)
+    overlaps = overlap_counts(query_tokens, [row["text"] for row in rows])
     rows_by_id: dict[str, sqlite3.Row] = {}
     sim_by_id: dict[str, float] = {}
     candidates: dict[str, tuple[float, int, sqlite3.Row]] = {}
-    for row, sim in zip(rows, sims):
+    for row, sim, overlap in zip(rows, sims, overlaps):
         if sim == DIM_MISMATCH:
             continue  # different embedder — vectors aren't comparable
         rows_by_id[row["id"]] = row
         sim_by_id[row["id"]] = sim
-        overlap = len(query_tokens & token_set(row["text"]))
         if sim < min_sim and overlap == 0:
             continue
         candidates[row["id"]] = (sim, overlap, row)
@@ -188,12 +210,11 @@ def search_fused_with_stats(
         Channel("frequency", ranked_by(lambda v: v[2]["frequency"] or 1)),
     ]
 
-    fused = fuse(channels)
     out: list[FusedHit] = []
-    for entry in fused[:k]:
+    for entry in fuse(channels, limit=k):
         sim, _overlap, row = candidates[entry.fact_id]
         out.append((entry.score, sim, row))
-    return FusedResult(out, pool)
+    return FusedResult(_hydrate(store, out), pool)
 
 
 def best_match(hits: list[FusedHit]) -> FusedHit | None:
@@ -203,7 +224,7 @@ def best_match(hits: list[FusedHit]) -> FusedHit | None:
 
 
 # Platt fit of ``pool_z`` for semantic embedders at realistic density — the full-sample fit of
-# `engram eval --backends fastembed --confidence --distractors 20000 --distractor-project <a large
+# `engram eval --backends fastembed --confidence --distractors 20000 --store-project <a large
 # off-topic project>` (bge-base, 333 labelled queries, 2026-09-29), re-checked on a held-out half
 # (2026-10-05: a dev-only refit puts the `ok` boundary at z 4.49 vs these constants' 4.52; every
 # figure within the held-out interval). Fitted where real stores live (tens of thousands of facts):

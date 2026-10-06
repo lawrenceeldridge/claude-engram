@@ -144,9 +144,9 @@ Special Case.
 ## "In-process embedding, or the daemon?"
 
 ```
-Is ENGRAM_DAEMON set and a resident daemon reachable?
-    ├─ yes ──► daemon_client (Remote Facade) — embed over the local socket (model stays warm)
-    └─ no / any failure ──► load the model in-process
+Is a resident daemon reachable on the local socket? (SessionStart starts one when fastembed is provisioned)
+    ├─ yes ──► daemon_client (Remote Facade) — the daemon runs the recall with its warm model and returns the block
+    └─ no / any failure ──► load the model and recall in-process
         └─ fastembed unavailable ──► HashEmbedding (lexical stub, zero-dep)
 ```
 

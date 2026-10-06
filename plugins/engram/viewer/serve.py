@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(ROOT))
 
+from core import health  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.index.index_recall import get_chunk, get_outline, search_index  # noqa: E402
 from core.ports.embedding import get_embedder  # noqa: E402
@@ -195,6 +196,8 @@ PAGE = """<!doctype html>
     <span class="svc" id="svc-queue">queue <b>…</b><span class="d"></span></span>
     <span class="svc" id="svc-emb">emb <b>…</b><span class="d"></span></span>
     <span class="svc" id="svc-dist">dist <b>…</b><span class="d"></span></span>
+    <span class="svc" id="svc-scan">scan <b>…</b><span class="d"></span></span>
+    <span id="svc-extra"></span>
     <span id="live" class="off"><span class="dot"></span><span id="live-label">connecting…</span></span>
   </div>
 </header>
@@ -551,8 +554,8 @@ window.addEventListener('scroll', () => {
   if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 400) loadMore();
 });
 
-// Service health: the configured queue / embedding / distiller backends and whether
-// each is reachable (green = configured backend live, amber = on stdlib fallback).
+// Service health (core.health): the queue / embedding / distiller backends and the recall scan —
+// green = configured backend live, amber = on a stdlib fallback or degrading at this store size.
 function svcChip(el, name, s) {
   if (!el || !s) return;
   el.className = 'svc ' + (s.state || 'warn');
@@ -565,6 +568,18 @@ async function loadHealth() {
     svcChip($('#svc-queue'), 'queue', h.queue);
     svcChip($('#svc-emb'), 'emb', h.embedding);
     svcChip($('#svc-dist'), 'dist', h.distiller);
+    svcChip($('#svc-scan'), 'scan', h.scan);
+    // The detached side (store lock, capture, consolidation, errors, WAL) shows a chip only when it warns.
+    const extra = $('#svc-extra');
+    if (extra) {
+      extra.innerHTML = '';
+      for (const [name, s] of Object.entries(h)) {
+        if (['queue', 'embedding', 'distiller', 'scan'].includes(name) || s.state !== 'warn') continue;
+        const el = document.createElement('span');
+        svcChip(el, name, s);
+        extra.appendChild(el);
+      }
+    }
   } catch (e) { /* fail-open: leave the last-known chips */ }
 }
 
@@ -645,64 +660,13 @@ def _disambiguate_labels(items: list[dict]) -> list[dict]:
     return items
 
 
-def _tcp_ok(url: str, timeout: float = 0.6) -> bool:
-    """Best-effort TCP reachability for a host:port URL (http:// or https://).
-
-    Fail-open: any parse or socket error means "unreachable", never an exception.
-    """
+def _health_payload(cfg) -> dict:
+    """``/api/health``: the shared service checks (``core.health``), keyed by name for the header chips."""
+    store = Store(cfg.db_path)
     try:
-        u = urlparse(url)
-        host = u.hostname
-        port = u.port or {"https": 443, "http": 80}.get(u.scheme, 0)
-        if not host or not port:
-            return False
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def _service_health(cfg) -> dict:
-    """Resolve the configured backends and cheaply probe reachability for the header.
-
-    Everything fails open, so a subsystem is reported ``ok`` (configured backend live)
-    or ``warn`` (configured backend unavailable — running on the stdlib fallback), never
-    a hard error. Read-only and off the recall hot path (viewer only).
-    """
-    # WorkQueue — a stdlib SQLite Command queue; always available (no external backend).
-    queue = {"backend": "inproc", "state": "ok", "detail": "sqlite work_queue"}
-
-    # Embedding — fastembed needs its provisioned venv; hash is the stdlib default.
-    if cfg.embedding == "fastembed":
-        try:
-            from core.provision import is_provisioned
-
-            prov = is_provisioned(cfg.data_dir)
-        except Exception:
-            prov = False
-        bge = cfg.embedding_model or "bge-base"
-        embedding = {
-            "backend": "fastembed",
-            "state": "ok" if prov else "warn",
-            "detail": bge if prov else "venv not provisioned — falling open to hash",
-        }
-    else:
-        embedding = {"backend": "hash", "state": "ok", "detail": "lexical (stdlib)"}
-
-    # Distiller — an LLM backend is probed at its base URL; heuristic is stdlib.
-    if cfg.distiller == "heuristic":
-        distiller = {"backend": "heuristic", "state": "ok", "detail": "line extraction (stdlib)"}
-    else:
-        ok = _tcp_ok(cfg.distiller_base_url)
-        label = cfg.distiller + (f" · {cfg.distiller_model}" if cfg.distiller_model else "")
-        host = urlparse(cfg.distiller_base_url).netloc or cfg.distiller_base_url
-        distiller = {
-            "backend": label,
-            "state": "ok" if ok else "warn",
-            "detail": host if ok else f"{host} unreachable — falling open to heuristic",
-        }
-
-    return {"queue": queue, "embedding": embedding, "distiller": distiller}
+        return {c.name: {"backend": c.backend, "state": c.state, "detail": c.detail} for c in health.checks(cfg, store)}
+    finally:
+        store.close()
 
 
 def _card_from_rows(rows, score=None) -> dict:
@@ -784,7 +748,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/events":
             self._stream(cfg)
         elif parsed.path == "/api/health":
-            self._send(200, json.dumps(_service_health(cfg)))
+            self._send(200, json.dumps(_health_payload(cfg)))
         elif parsed.path == "/api/stats":
             from core.service import usage_summary
 

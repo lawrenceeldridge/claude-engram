@@ -36,10 +36,10 @@ core to Claude Code.
 ### Memory (capture + recall)
 | File | Role |
 |---|---|
-| `store.py` | Repository / Data Mapper over the SQLite store (facts + int8/binary embeddings, rows tagged by project); `reinforce`, `supersede`. |
+| `store.py` | Repository / Data Mapper over the SQLite store (facts + int8/binary embeddings, rows tagged by project); `reinforce`, `supersede`; `scan_rows` — the lean, rowid-ordered columns recall scans (full rows are re-read with `get` for the hits it returns). |
 | `service.py` | Capture Command/Handler — `add_facts`, consolidation, `_find_superseded`; idempotent per fact. Durable-queue handlers `rescue` (re-distil a degraded delta) and `reformat_exchanges` (the `exchange_format` rewrite of pre-footer exchanges), both drained at the head of incremental capture. |
-| `recall/` | Read side — Query Object `search`, hybrid re-rank, `render_block` DTO (Null Object on empty). |
-| `domain/scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`. |
+| `recall/` | Read side — Query Object `search` (exact bounded top-k by default; full rank + sort for cross-project / spreading / STM weight), `search_fused_with_stats` (5-channel fusion over lean rows), `_hydrate` (full rows for what leaves), `render_block` DTO (Null Object on empty). |
+| `domain/scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`; `fact_priority` (one row's score), `top_by_priority` (the exact k best without scoring every row — decay, boost ≤ 1 bound the score). |
 | `domain/confidence.py` | Pure score behind the `recall` verdict: `pool_stats` / `pool_z` (the best match against every fact scanned), `Calibration` VO + `calibrate` / `calibrated_confidence` (Platt), `sigmoid` (the one logistic — bench `platt_fit` uses it). A ranked score, not a probability; `core.recall.get_calibration` selects the calibration (`None` for the `hash` stub). |
 | `ports/distill.py` | Distiller port (Strategy): the `Distiller` ABC, the `HeuristicDistiller` (zero-dep fallback and test stub; salience-ranked `heuristic_facts`), the `LLMDistiller` template with its pure prompts + parsers (atomic facts + `supersedes` links), `is_distiller_prompt` (derived from those prompts), and `get_distiller` (Plugin selection; imports the adapters on demand). |
 | `transcript.py` | Parse Claude Code transcripts into capturable text: typed lines (conversation `text` / tool `action`, rendered through `ingest.action_line`), the distiller's text, verbatim prompts, and `(role, text)` turns with each action its own `action` turn. |
@@ -54,13 +54,16 @@ core to Claude Code.
 | `adapters/llm_distillers.py` | The LLM transports behind `LLMDistiller` — `ClaudeCliDistiller` (headless `claude -p`, Haiku, the shipped default, inside its tool/MCP isolation envelope) and `HTTPDistiller` (any OpenAI-compatible endpoint). Only the I/O; stdlib. |
 | `adapters/numpy_scorer.py` | Vectorised (numpy) cosine scan — the fast `VectorScorer` for large stores, behind `ports/scorer.py`. |
 | `ports/scorer.py` | `VectorScorer` port + the stdlib pure-Python default (`get_scorer` picks numpy when present). |
+| `health.py` | Service health — one list of `Check`s rendered by `engram doctor`, the viewer's `/api/health` (warn-only chips for the detached side) and `engram import`: queue / embedding / distiller / recall scan (`scan_check` warns when a numpy-less project's estimated pure-Python scan nears the hook ceiling), then store write lock, capture progress (`.capture-requested` marker vs cursor progress), consolidation, last error, WAL size. `session_warnings` → the SessionStart `systemMessage`. |
+| `errlog.py` | Fail open, but leave a record — a bounded, rotating JSON-lines `errors.log` in the data dir (`record`, never raises; `last`). Written by the capture worker, consolidation's stage deadline and the long-lived processes' stray-transaction guard. |
+| `singleflight.py` | One pid-lock implementation (`held`, `acquire`, `release`, `holder`) for capture, consolidation, the indexer, the edit drain and the daemon; a dead holder's lock is reclaimed. |
 | `domain/episodes.py` | Pure episodic pipeline: `exchange_units` (user turn + the assistant turns answering it, verbatim, ~800-char split; its tool actions folded into one `action_footer` on the first part — grouped by verb, capped at 1,024 chars; an exchange of actions alone forms no unit), `should_keep_exchange` (length gate), `prepare_exchanges` (redact → gate; shared by capture and the LongMemEval bench), `refold_exchanges` / `legacy_turns` (the one-off rewrite of pre-footer exchanges), `episode_key` (the `<session>:<delta start>` key shared by a delta's exchanges and the `facts.episode` provenance link). |
 | `domain/temporal.py` | Pure `TimeWindow` VO (epoch bounds, either open) with `distance` / `boost` (×1.4 inside, halving every 7 days outside) and `boost_by_window` (re-scores fused results; never adds or drops one) — `search_history`'s `after` / `before`, parsed from ISO dates in `bin/mcp_server.py`. |
 | `domain/sensory.py` | Pure sensory-register decisions (attention gate, promotion) for the one modality-columned register. |
 | `domain/entities.py` | Lightweight entity extraction for shared-entity association edges. |
 | `domain/spreading.py` | Spreading activation over the fact association graph (ACT-R). |
 | `domain/privacy.py` | Pure `redact` (credentials, emails, non-project paths → `«redacted»`) for verbatim storage, and `privacy_flags` (the bench's human-gate detector). |
-| `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`) for the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
+| `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`) for the fusion lexical channel; `overlap_counts` — the exact per-text query-token overlap via one `str.find` sweep instead of tokenising every text. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
 | `domain/quantize.py` | int8 (primary search rep) + binary sign-bit quantisation. |
 | `provision.py` | Self-provisions the private fastembed venv (no manual pip). |
 | `daemon_client.py` | Thin client to the resident daemon; falls back in-process (fail-open). |
@@ -74,12 +77,12 @@ core to Claude Code.
 | `index/treesitter_symbols.py` | TS/JS symbol extraction via `tree-sitter-language-pack`. |
 | `index/chunking.py` | Markdown/doc chunking by heading structure. |
 | `index/index_recall.py` | Ranked index search backing `search_code` / `search_docs` / `search_history` (scoped by kind and optionally one source/episode; cosine via the shared `VectorScorer`; an optional `TimeWindow` boosts candidates indexed in or near it). |
-| `domain/fusion.py` | Weighted Reciprocal Rank Fusion — one `fuse` shared by fact recall (similarity / lexical / fts / recency / frequency) and the index (fts ⊕ cosine). The index's diversity-budget packing is `index/index_recall.py::_diverse_pack`. |
+| `domain/fusion.py` | Weighted Reciprocal Rank Fusion — one `fuse` shared by fact recall (similarity / lexical / fts / recency / frequency) and the index (fts ⊕ cosine); `limit` keeps the top k exactly (plain-float accumulation, `Fused` only for what's returned). The index's diversity-budget packing is `index/index_recall.py::_diverse_pack`. |
 
 ### Consolidation (the sleep pass) and durable work
 | File | Role |
 |---|---|
-| `consolidation/__init__.py` | `consolidate()` — the checkpoint pass, in order: replay → mature → displace → integrate → refine → invalidate → purge → forget (exchanges). |
+| `consolidation/__init__.py` | `consolidate()` — the checkpoint pass, in order: replay → mature → displace → integrate → refine → invalidate → purge → forget (exchanges). `stages()` is the one stage table (consolidate runs it, the scale test measures it); each stage runs under `STAGE_DEADLINE_SECONDS` (`Store.deadline`). |
 | `consolidation/replay.py` / `mature.py` | Rehearsed STM facts graduate (NREM replay); age-based STM→LTM transfer. |
 | `consolidation/integrate.py` / `refine.py` / `invalidate.py` | Collapse near-duplicates (opt-in LLM merge); SHY-style pruning of low-importance facts; retire anti-patterns whose files are gone. |
 | `consolidation/scoring.py` | Retention score — how important a fact is, for the sleep pass. |
@@ -112,11 +115,11 @@ core to Claude Code.
 | `mark_consulted.py` | PostToolUse — records that an engram lookup ran (enables ordering). |
 | `index_docs.py` | SessionStart — auto-index the project (single-flight, file-capped). |
 | `index_edit.py` | PostToolUse — re-index each Edited/Written file. |
-| `capture.py` | Stop / SessionEnd / PreCompact — detached capture + throttled summary. |
-| `mcp_server.py` | `engram-memory` MCP server (`recall`, `search_code`, `get_symbol`, `code_outline`, `search_docs`, `get_doc_section`, `doc_outline`, `search_history`, `index_docs`, `list_projects`, `invalidate_memory`, `review_memory`); `TOOLS` is the one registry — dispatch is by name to the `_Engine` method. |
-| `daemon.py` | Optional resident embedder (keeps the model warm). |
+| `capture.py` | Stop / SessionEnd / PreCompact — detached capture under `.capture.lock`, then (checkpoints) consolidation under its own `.consolidate.lock`; every best-effort step recorded via `errlog`. |
+| `mcp_server.py` | `engram-memory` MCP server (`recall`, `search_code`, `get_symbol`, `code_outline`, `search_docs`, `get_doc_section`, `doc_outline`, `search_history`, `index_docs`, `list_projects`, `invalidate_memory`, `review_memory`); `TOOLS` is the one registry — dispatch is by name to the `_Engine` method. After every request `_Engine.settle()` rolls back a stray transaction and logs it. |
+| `daemon.py` | Optional resident embedder (keeps the model warm); serves only the interactive recall hooks, so its Store uses `INTERACTIVE_BUSY_MS`; rolls back a stray transaction after each op. |
 | `engram` | The CLI — `doctor`, `capture`, `recall`, `core`, `projects`, `prune`, `sweep`, `setup`, `daemon`, `viewer`, `stats`, `drift`, `eval`, `demo`. |
-| `_bootstrap.py` | Shared path/interpreter bootstrap for the entry points. |
+| `_bootstrap.py` | Shared path/interpreter bootstrap for the entry points; `emit` — the one hook-output envelope (`hookSpecificOutput` + `hookEventName`, top-level `systemMessage`). |
 
 ---
 
@@ -126,6 +129,8 @@ A selection of the suite's entry points (`ls plugins/engram/tests` for the full 
 
 | File | Covers |
 |---|---|
+| `_harness.py` | Imported first by every test module: import paths, a hermetic env (ambient `ENGRAM_*` cleared, heuristic distiller, temp data dir), and guards that make a `claude` spawn, an HTTP request, or a read-write open of the real store raise; `scoped_env` / `temp_data_dir` / `allow_llm_transport` helpers. |
+| `test_harness.py` | The harness's guards and helpers, plus the meta-test that every `test_*.py` imports it. |
 | `test_smoke.py` | End-to-end smoke (all stdlib). |
 | `test_recall_api.py` | `recall` verdict + budget behaviour. |
 | `test_capture_content.py` | Capture / distillation output. |
@@ -146,7 +151,8 @@ A selection of the suite's entry points (`ls plugins/engram/tests` for the full 
 | `age_eval.py` | `--aged`: old- vs new-gold Recall@k on both production rankers (`search`, `search_fused`) across recency weights, against the age-blind (recency-off) ranking. |
 | `retrieval.py` / `stores.py` | Shared rankers over the real paths + Recall@k/MRR scorer; throwaway eval stores with explicit timestamps. |
 | `replay_ledger.py` | Replays the last N real `recall_events` queries on a snapshot of the live store (unlabelled reality check). |
-| `distractors.py` / `snapshot.py` | Runtime-only distractor mining (contamination/privacy-filtered) from a `sqlite3.backup` snapshot; never written to the repo. |
+| `latency_eval.py` | `--latency`: the read path's cost on a snapshot of a real store — the hook's `search` and the tool's `search_fused_with_stats` × numpy / pure-Python scorer over the project's own ledger questions (query embedding excluded, `now` pinned): end-to-end p50/p90/max, an instrumented stage breakdown (wraps the production callables in `STAGES`), and a parity digest per path × scorer. `--latency-consolidation`: one `consolidate()` pass timed per stage on its own snapshot (heuristic distiller pinned). |
+| `distractors.py` / `snapshot.py` | Runtime-only distractor mining (contamination/privacy-filtered); `snapshot.py` owns reading a real store safely — the `sqlite3.backup` snapshot, `find_project`, `store_source` (`--store-db` / `--store-project`) and `snapshot_project`, shared by `--distractors` and `--latency`. Never written to the repo. |
 | `stats.py` / `report.py` / `backends.py` | Pure seeded statistics + `stable_split` (the one dev/test hold-out every harness uses); table printing; backend spec parsing + embedder construction. |
 | `mine_corpus.py` | Dev tool: mines dataset *candidates* from the live store for the human review gate. |
 | `replay.py` / `run_ab.py` / `eval_code_index.py` | Transcript counterfactual replay; paired live A/B; code-index model scoping. |

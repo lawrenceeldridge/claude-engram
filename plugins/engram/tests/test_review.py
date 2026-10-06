@@ -11,23 +11,17 @@ Run: python3 -m unittest discover -s plugins/engram/tests
 from __future__ import annotations
 
 import json
-import os
-import sys
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.distill import HeuristicDistiller, parse_review  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.distill import HeuristicDistiller, parse_review
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 
 class _ReviewStub:
@@ -76,8 +70,7 @@ class ParseReviewTests(unittest.TestCase):
 
 class _ServiceCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), embedding="hash", distiller="ollama", review_enabled=True)
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -85,8 +78,6 @@ class _ServiceCase(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add(self, text: str) -> str:
         service.add_facts(self.store, self.embedder, self.cfg, self.project, "s1", [text])
@@ -170,9 +161,7 @@ class RecallIdExposureTests(_ServiceCase):
 
 class McpCurationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
-        os.environ["ENGRAM_EMBEDDING"] = "hash"  # keep the engine off fastembed for hermeticity
+        self.tmp = temp_data_dir(self)
         import mcp_server
 
         self.mcp = mcp_server
@@ -183,11 +172,6 @@ class McpCurationTests(unittest.TestCase):
         self.store = self.mcp.ENGINE.store
         self.embedder = self.mcp.ENGINE.embedder
         self.cfg = self.mcp.ENGINE.cfg
-
-    def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        os.environ.pop("ENGRAM_EMBEDDING", None)
-        self.tmp.cleanup()
 
     def _add(self, text: str) -> str:
         service.add_facts(self.store, self.embedder, self.cfg, self.project, "s1", [text])
