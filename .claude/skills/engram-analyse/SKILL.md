@@ -211,7 +211,7 @@ ranking.
    See [DESIGN.md § Cache efficiency](../../../DESIGN.md).
 3. **Latency budget (hot path)** — Recall is an exact brute-force cosine over int8 vectors. The
    hook's memory search takes ~11 ms on a personal project and ~0.5 s at 10⁵ facts, and its index
-   block adds ~30 ms / ~0.3 s; query embedding comes on top (`engram eval --latency` times each
+   block adds ~10–30 ms; query embedding comes on top (`engram eval --latency` times each
    path — compare before/after on one frozen store; its parity digests prove rankings unchanged).
    Is any embedding/distillation on the interactive path, or does the hook wait on a writer? It must be
    **detached** (capture worker) or served by the resident daemon; the hook must fall

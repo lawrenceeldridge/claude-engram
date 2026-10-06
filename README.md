@@ -26,8 +26,8 @@ Two budgets are optimised separately (see [DESIGN.md](DESIGN.md)):
   interactive cost. Recall is an exact brute-force cosine over quantised (int8) vectors,
   **numpy-vectorised** (numpy ships with the `fastembed` extra): the hook's memory search takes
   ~11 ms on a 2.8k-fact project and ~0.5 s on a 144k-fact one, and its index block another
-  ~30 ms / ~0.3 s (measured with `engram eval --latency`, query embedding excluded), well inside
-  the hook's 5 s budget. Without numpy the scan is pure
+  ~10–30 ms (measured with `engram eval --latency`, query embedding excluded), well inside the
+  hook's 5 s budget. Without numpy the scan is pure
   Python — fine for a few thousand facts; `engram doctor` warns when a project outgrows it.
   An optional resident daemon keeps the embedding model warm across the short-lived hook
   processes, and an interactive hook never waits on another writer.

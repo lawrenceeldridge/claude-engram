@@ -109,20 +109,21 @@ This is why recall is a **hybrid**: cache-friendly core + relevance-driven JIT.
   Measured with `engram eval --latency` (fastembed bge-base + numpy, real ledger questions,
   query embedding excluded, median per query):
 
-  | store (active facts) | hook (`search`) | `recall` tool (`search_fused_with_stats`) |
-  |---|---|---|
-  | 2.8k (a personal project) | **11 ms** | 342 ms |
-  | 55k | 186 ms | 687 ms |
-  | 144k (a 10⁵ `engram import`) | **496 ms** | 1,432 ms (p90 2.1 s) |
+  | store (active facts) | hook: memory (`search`) | hook: index block | `recall` tool (`search_fused_with_stats`) |
+  |---|---|---|---|
+  | 2.8k (a personal project) | **11 ms** | 8 ms | 44 ms |
+  | 55k | 187 ms | 25 ms | 500 ms |
+  | 144k (a 10⁵ `engram import`) | **480 ms** | 30 ms | 1,246 ms (p90 1.6 s) |
 
   Cost is linear in the project's facts: lean scan rows (`Store.scan_rows`, full rows re-read
   only for the hits), an exact bounded top-k for the hook (`scoring.top_by_priority`), exact
   lexical overlap (`lexical.overlap_counts`) and top-k fusion (`fuse(limit=)`) took the 144k
   hook from 1.28 s and the tool from 2.68 s with byte-identical rankings (parity digests). The
-  tool's keyword channel is the remaining floor (~0.2–0.4 s at any project size): `facts_fts`
-  covers the whole store, and each `MATCH` reads every store-wide match's full fact row just to
-  filter it to the project (#69). The hook's index block adds ~30 ms on a 2.8k-fact project and
-  ~0.3 s at 144k (chunk FTS, then one candidate fetch at a time).
+  keyword channels search store-wide FTS tables, so each `MATCH` is filtered to the project's
+  rowids (a covering-index list) *before* bm25 and before any wide row is read — joining every
+  store-wide match to its row first cost 0.2–0.4 s at any project size — and the index block
+  fetches its candidates by primary key (an `id OR anchor` lookup scanned the project's chunks:
+  ~0.3 s a prompt at 40k chunks). Both kept every ranking byte-identical (#69).
 - Without numpy (a `hash` install on a bare interpreter) the scan is pure Python, ~106 ns per
   vector element — 11.6 s at 144k × 768 dims, past the 5 s hook ceiling; `engram doctor`, the
   viewer and `engram import` warn once the estimate reaches 2 s (`core/health.py`).

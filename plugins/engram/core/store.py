@@ -207,14 +207,13 @@ def _add_columns(db: sqlite3.Connection, specs: list[tuple[str, str]]) -> None:
             db.execute(f"ALTER TABLE facts ADD COLUMN {ddl}")
 
 
-def _chunk_scope(project_key: str, kind: str | None, source_path: str | None, *, table: str = "") -> tuple[str, list]:
+def _chunk_scope(project_key: str, kind: str | None, source_path: str | None) -> tuple[str, list]:
     """The WHERE clause (and its params) scoping chunk queries to a project, and optionally one
     kind and/or one source — shared by the outline, vector-scan and FTS reads."""
-    col = f"{table}." if table else ""
-    clauses, params = [f"{col}project_key = ?"], [project_key]
+    clauses, params = ["project_key = ?"], [project_key]
     for name, value in (("source_path", source_path), ("kind", kind)):
         if value is not None:
-            clauses.append(f"{col}{name} = ?")
+            clauses.append(f"{name} = ?")
             params.append(value)
     return " AND ".join(clauses), params
 
@@ -1256,18 +1255,43 @@ class Store:
             )
         return cur.rowcount
 
-    def fts_search(self, project_key: str, query: str, limit: int = 50) -> list[str]:
-        """Active fact ids for a project matching an FTS5 keyword query, best-ranked first."""
+    def _scoped_fts_ids(
+        self,
+        fts_table: str,
+        content_table: str,
+        rank: str,
+        scope: tuple[str, list],
+        query: str,
+        limit: int,
+    ) -> list[str]:
+        """Ids of ``content_table`` rows in ``scope`` (a WHERE clause and its params) matching an
+        FTS5 keyword query, best-ranked first — the one query shape both keyword channels use.
+
+        The FTS tables span the whole store, so the scope is applied *before* ranking: the MATCH is
+        filtered against the scope's rowids (a list built once per query from the scope's index),
+        bm25 is computed only for in-scope matches, and a content row — wide: vectors, bodies — is
+        read only for the ``limit`` survivors. Joining every store-wide match to its row just to
+        drop it cost 0.2–0.4 s per query whatever the project's size.
+
+        The unary ``+`` on ``rowid`` is load-bearing: it keeps the ``IN`` term away from FTS5's query
+        planner, which would otherwise seek every doclist once per in-scope rowid (~10× slower).
+        Ranking is unchanged — bm25's statistics are the same table's, and ties keep rowid order.
+        """
         match = _fts_match_expr(query)
         if not match:
             return []
-        rows = self.db.execute(
-            "SELECT f.id FROM facts_fts JOIN facts f ON f.rowid = facts_fts.rowid "
-            "WHERE facts_fts MATCH ? AND f.project_key = ? AND f.status = 'active' "
-            "ORDER BY bm25(facts_fts) LIMIT ?",
-            (match, project_key, limit),
-        ).fetchall()
-        return [row[0] for row in rows]
+        where, params = scope
+        sql = (
+            f"WITH hit AS (SELECT rowid AS r, {rank} AS s FROM {fts_table} WHERE {fts_table} MATCH ? "
+            f"AND +rowid IN (SELECT rowid FROM {content_table} WHERE {where}) ORDER BY s, r LIMIT ?) "
+            f"SELECT t.id FROM hit JOIN {content_table} t ON t.rowid = hit.r ORDER BY hit.s, hit.r"
+        )
+        return [row[0] for row in self.db.execute(sql, [match, *params, limit])]
+
+    def fts_search(self, project_key: str, query: str, limit: int = 50) -> list[str]:
+        """Active fact ids for a project matching an FTS5 keyword query, best-ranked first."""
+        scope = ("project_key = ? AND status = 'active'", [project_key])
+        return self._scoped_fts_ids("facts_fts", "facts", "bm25(facts_fts)", scope, query, limit)
 
     def sweep(
         self,
@@ -1570,10 +1594,17 @@ class Store:
             )
 
     def get_chunk(self, project_key: str, ref: str) -> sqlite3.Row | None:
-        """Fetch one chunk by its id or its human-readable anchor slug."""
+        """Fetch one chunk by its id or, failing that, its human-readable anchor slug.
+
+        The id goes through the primary key first: a single ``id = ? OR anchor = ?`` filter can't
+        use it and walked the project's chunks on every call — the hook's index block fetches each
+        candidate this way (~280 ms a prompt at 40k chunks). Among chunks sharing an anchor (one
+        name in several files), the first indexed — the lowest rowid — wins."""
+        row = self.db.execute("SELECT * FROM chunks WHERE id = ? AND project_key = ?", (ref, project_key)).fetchone()
+        if row is not None:
+            return row
         return self.db.execute(
-            "SELECT * FROM chunks WHERE project_key = ? AND (id = ? OR anchor = ?) LIMIT 1",
-            (project_key, ref, ref),
+            "SELECT * FROM chunks WHERE project_key = ? AND anchor = ? ORDER BY rowid LIMIT 1", (project_key, ref)
         ).fetchone()
 
     def chunk_outline(
@@ -1603,15 +1634,8 @@ class Store:
         source_path: str | None = None,
     ) -> list[str]:
         """Chunk ids matching an FTS5 keyword query, best-ranked first (weighted columns)."""
-        match = _fts_match_expr(query)
-        if not match:
-            return []
-        where, params = _chunk_scope(project_key, kind, source_path, table="c")
-        sql = (
-            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.rowid = chunks_fts.rowid "
-            f"WHERE chunks_fts MATCH ? AND {where} ORDER BY bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0) LIMIT ?"
-        )
-        return [row[0] for row in self.db.execute(sql, [match, *params, limit]).fetchall()]
+        scope = _chunk_scope(project_key, kind, source_path)
+        return self._scoped_fts_ids("chunks_fts", "chunks", "bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0)", scope, query, limit)
 
     def unlink_forgotten_episodes(self, project_key: str) -> int:
         """Clear the ``episode`` link on facts whose exchanges have all been forgotten, so on-demand
