@@ -6,25 +6,20 @@ default-off), and the two-stage purge. Stdlib unittest, hash embedder, no networ
 
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.consolidation import consolidate  # noqa: E402
-from core.consolidation.mature import mature  # noqa: E402
-from core.consolidation.refine import refine  # noqa: E402
-from core.consolidation.replay import replay  # noqa: E402
-from core.consolidation.scoring import RetentionFeatures, depth_of, retention  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.consolidation import consolidate
+from core.consolidation.mature import mature
+from core.consolidation.refine import refine
+from core.consolidation.replay import replay
+from core.consolidation.scoring import RetentionFeatures, depth_of, retention
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 NOW = 1_000_000.0
 HL = 30.0
@@ -67,8 +62,7 @@ class RetentionScoreTests(unittest.TestCase):
 
 class StageTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         # Pin every consolidation lever to its code default (all off) so the suite is hermetic
         # against ambient ENGRAM_* forgetting config in the environment; the tests that exercise a
         # lever override it locally via replace(self.cfg, ...).
@@ -88,8 +82,6 @@ class StageTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add(self, text):
         service.add_facts(self.store, self.embedder, self.cfg, self.project, "s1", [text])
@@ -242,8 +234,7 @@ class MaturationTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         # Maturation on at 1 day; every other consolidation lever off so we test it in isolation.
         self.cfg = replace(
             get_config(),
@@ -261,8 +252,6 @@ class MaturationTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add_aged(self, text: str, age_days: float) -> str:
         """Add an STM fact and back-date its capture time (and last_seen) by ``age_days``."""

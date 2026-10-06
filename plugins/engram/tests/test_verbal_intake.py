@@ -12,19 +12,17 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 
 def _turn(role: str, text: str) -> str:

@@ -7,14 +7,11 @@ fastembed installed — the adapter only imports fastembed inside __init__.
 from __future__ import annotations
 
 import math
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.adapters.fastembed_gw import truncate_renorm  # noqa: E402
+from core.adapters.fastembed_gw import truncate_renorm
 
 
 class TruncateRenormTests(unittest.TestCase):

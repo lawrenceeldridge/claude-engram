@@ -8,15 +8,12 @@ values from worked examples.
 from __future__ import annotations
 
 import math
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from bench.retrieval import score_queries  # noqa: E402
-from bench.stats import (  # noqa: E402
+from bench.retrieval import score_queries
+from bench.stats import (
     auroc,
     bootstrap_ci,
     bootstrap_stat_ci,
@@ -31,7 +28,7 @@ from bench.stats import (  # noqa: E402
     stable_split,
     wilson,
 )
-from core.domain.confidence import Calibration, calibrate  # noqa: E402
+from core.domain.confidence import Calibration, calibrate
 
 
 class McNemarTests(unittest.TestCase):

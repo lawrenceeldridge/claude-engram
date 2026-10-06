@@ -12,20 +12,18 @@ Run: python3 -m unittest discover -s plugins/engram/tests  (from repo root)
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import scoped_env
 
-from core import config, service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import config, service
+from core.config import get_config
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 
 class HasMemoriesTests(unittest.TestCase):
@@ -35,13 +33,12 @@ class HasMemoriesTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
         # A scratch data dir so building fixture DBs never touches the real home.
-        os.environ["ENGRAM_DATA_DIR"] = str(self.dir / "scratch")
+        scoped_env(self, ENGRAM_DATA_DIR=str(self.dir / "scratch"))
         self.cfg = replace(get_config(), distiller="heuristic")
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.project = {"key": "p", "path": "/tmp/p", "label": "p"}
 
     def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
         self.tmp.cleanup()
 
     def _make_db(self, path: Path, *, with_fact: bool) -> Path:
@@ -81,13 +78,12 @@ class DataDirResolutionTests(unittest.TestCase):
         self.base = self.home / ".claude" / "plugins" / "data"
         self.base.mkdir(parents=True, exist_ok=True)
         # Build the two fixture DBs with a scratch env so setup never hits the fake home.
-        os.environ["ENGRAM_DATA_DIR"] = str(self.home / "scratch")
+        scoped_env(self, ENGRAM_DATA_DIR=str(self.home / "scratch"))
         self.cfg = replace(get_config(), distiller="heuristic")
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.project = {"key": "p", "path": "/tmp/p", "label": "p"}
 
     def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
         self.tmp.cleanup()
 
     def _make_db(self, path: Path, *, with_fact: bool) -> None:

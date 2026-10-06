@@ -10,7 +10,8 @@ metadata:
 Operational depth for testing claude-engram. The suite is **stdlib `unittest`**
 (discoverable, also runs under `pytest`), all standard-library, no network — the
 `hash` embedding + `heuristic` distiller keep the core testable with zero dependencies
-(tests pin `distiller="heuristic"`: the shipped default is `claude`). This skill carries the depth the rule pointer at
+(the shipped default is `claude`, so every test imports `tests/_harness.py` first: it forces
+the heuristic, isolates the data dir, and fails any real LLM call or live-store write loudly). This skill carries the depth the rule pointer at
 [`.claude/rules/00-quality/02-testing.md`](../../rules/00-quality/02-testing.md)
 intentionally does not: how to structure a test, what to test per code type, how
 to keep the suite lean, and how to run and read the **recall-quality benchmark**.
@@ -70,8 +71,9 @@ python3 tests/test_smoke.py                       # modules are runnable directl
 Optional deps (`fastembed`, `tree-sitter-language-pack`) are **skipped**, not
 failed, when absent — a green run with 5 skips is the expected default. For
 failures, match against the table in [`references/standards.md`](references/standards.md)
-§ "Common failure patterns" and propose a fix (leaked `ENGRAM_DATA_DIR`, an
-un-closed `Store`, a stub whose signature drifted from the real adapter, etc.).
+§ "Common failure patterns" and propose a fix (an env var set-then-`pop`ped instead of
+`scoped_env`, an un-closed `Store`, a stub whose signature drifted from the real adapter, a
+`LLMCallInTest` / `LiveStoreInTest` from the harness, etc.).
 
 ### 2. `create` — Write a test for a module
 
@@ -83,8 +85,8 @@ Workflow:
    `core/recall/`), a hook (`bin/*.py`, tested as a subprocess), or an adapter
    behind a port (`core/ports/embedding.py`, `core/ports/distill.py`)?
 2. Pick the fixture shape from [`references/test-data.md`](references/test-data.md):
-   pure functions need nothing; store-touching tests need a `tempfile.TemporaryDirectory`
-   + `os.environ["ENGRAM_DATA_DIR"]` in `setUp`/`tearDown`; anything embedding-touching
+   pure functions need nothing; store-touching tests call `temp_data_dir(self)` (from
+   `_harness`) in `setUp`; anything embedding-touching
    uses `HashEmbedding(dim=...)`; anything LLM-touching uses a duck-typed stub
    distiller/summarizer (never a live model).
 3. Generate an `unittest.TestCase` with AAA-structured methods named
@@ -108,8 +110,9 @@ quality (no bare `assertTrue(True)`; meaningful comparisons), and
 **stdlib-purity** (a `core/**` test must not import `fastembed` or hit the network).
 
 Anti-pattern scanner (checklist, advisory): outdated stub (a stub whose method
-signature drifted from the real adapter), leaked global state (`ENGRAM_DATA_DIR` /
-`os.environ` not restored in `tearDown`), un-closed `Store`, network in a core
+signature drifted from the real adapter), leaked global state (`os.environ` set directly
+instead of via `scoped_env` / `mock.patch.dict`), a module missing the `_harness` import
+(the meta-test fails it), un-closed `Store`, network in a core
 test, and asserting a stdlib guarantee instead of behaviour. Rules in
 [`references/standards.md`](references/standards.md) § "Anti-pattern checklist".
 
@@ -175,8 +178,8 @@ These are non-negotiable and mirror
 3. **Fail-open is a test target, not an assumption.** A hook or adapter given a
    broken input / missing dep / dead daemon must still exit 0 or fall back —
    assert it explicitly.
-4. **Fixtures are local and self-cleaning.** `tempfile.TemporaryDirectory` +
-   `ENGRAM_DATA_DIR` set in `setUp` and restored in `tearDown`; close every `Store`.
+4. **Fixtures are local and self-cleaning.** Every module imports `_harness` first;
+   `temp_data_dir(self)` / `scoped_env(self, …)` restore themselves at cleanup; close every `Store`.
    No shared mutable state across tests; no live model in the default path.
 5. **AAA structure.** Arrange / Act / Assert, visually separated. `create` and
    `review` enforce it.
@@ -198,8 +201,8 @@ Read on demand based on mode and depth. Each is small and focused.
   `unittest` patterns per code type (pure function, store round-trip, recall/search,
   hook-as-subprocess, adapter/stub, CLI, MCP tool).
 - [`references/test-data.md`](references/test-data.md) — local fixtures, stub
-  embeddings (`HashEmbedding`), stub distillers/summarizers, the tempdir +
-  `ENGRAM_DATA_DIR` pattern. No faker, no DB, no network.
+  embeddings (`HashEmbedding`), stub distillers/summarizers, the `_harness` helpers
+  (`temp_data_dir`, `scoped_env`, `allow_llm_transport`). No faker, no DB, no network.
 - [`references/skip-conventions.md`](references/skip-conventions.md) — how to gate
   optional deps (`@unittest.skipUnless`), the `slow` convention, and the
   stdlib-purity rule for `core/**`.
@@ -219,8 +222,9 @@ The test picked up the real adapter instead of `HashEmbedding`. Pin
 `HashEmbedding(dim=cfg.dim)` explicitly, or skip-gate the fastembed path.
 
 ### Tests pass alone but fail when run together
-Leaked global state. Confirm `ENGRAM_DATA_DIR` (and any `ENGRAM_*` env you set) is
-restored in `tearDown`, and that every `Store` is `.close()`d. Namespace
+Leaked global state. Confirm every env change goes through `scoped_env` / `temp_data_dir`
+(or `mock.patch.dict`) — a bare `os.environ.pop` deletes the harness's own settings for every
+later test — and that every `Store` is `.close()`d. Namespace
 per-session markers by PID where hooks write them (see `test_hooks.py`).
 
 ### A patched/stubbed adapter test passes but the real path is broken

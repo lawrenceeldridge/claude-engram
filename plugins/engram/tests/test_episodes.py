@@ -8,17 +8,15 @@ one-off rewrite of exchanges stored before the footer). ``index_nonfile`` /
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.config import get_config  # noqa: E402
-from core.domain.episodes import (  # noqa: E402
+from core.config import get_config
+from core.domain.episodes import (
     EXCHANGE_MAX_CHARS,
     FOOTER_MAX_CHARS,
     Exchange,
@@ -29,8 +27,8 @@ from core.domain.episodes import (  # noqa: E402
     refold_exchanges,
     should_keep_exchange,
 )
-from core.domain.privacy import REDACTED  # noqa: E402
-from core.index.indexer import (  # noqa: E402
+from core.domain.privacy import REDACTED
+from core.index.indexer import (
     _records_from_units,
     exchange_anchor,
     exchange_chunk_units,
@@ -38,8 +36,8 @@ from core.index.indexer import (  # noqa: E402
     index_nonfile,
     index_snapshot,
 )
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 
 class ExchangeUnitTests(unittest.TestCase):

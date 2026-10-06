@@ -7,14 +7,11 @@ back the headline savings claim.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from bench.run_ab import composite_tokens, wilcoxon_exact  # noqa: E402
+from bench.run_ab import composite_tokens, wilcoxon_exact
 
 
 class CompositeTokenTests(unittest.TestCase):

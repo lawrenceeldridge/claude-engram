@@ -126,6 +126,8 @@ A selection of the suite's entry points (`ls plugins/engram/tests` for the full 
 
 | File | Covers |
 |---|---|
+| `_harness.py` | Imported first by every test module: import paths, a hermetic env (ambient `ENGRAM_*` cleared, heuristic distiller, temp data dir), and guards that make a `claude` spawn, an HTTP request, or a read-write open of the real store raise; `scoped_env` / `temp_data_dir` / `allow_llm_transport` helpers. |
+| `test_harness.py` | The harness's guards and helpers, plus the meta-test that every `test_*.py` imports it. |
 | `test_smoke.py` | End-to-end smoke (all stdlib). |
 | `test_recall_api.py` | `recall` verdict + budget behaviour. |
 | `test_capture_content.py` | Capture / distillation output. |

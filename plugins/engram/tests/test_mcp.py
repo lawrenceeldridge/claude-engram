@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from _harness import ROOT
 
 
 def _rpc(*requests: dict, cwd: str | None = None, env: dict | None = None) -> list[dict]:
@@ -81,11 +81,8 @@ class McpAnchorRoundTripTests(unittest.TestCase):
         self.env = {
             **os.environ,
             "ENGRAM_DATA_DIR": self.data.name,
-            "ENGRAM_EMBEDDING": "hash",
             "ENGRAM_ENFORCE": "off",
-            "ENGRAM_BUS": "inproc",
         }
-        self.env.pop("ENGRAM_PYTHON", None)
 
     def tearDown(self):
         self.proj.cleanup()

@@ -76,22 +76,23 @@ State-touching tests set up a throwaway store and tear it down completely. The
 canonical shape (see [`test-data.md`](test-data.md) for the full pattern):
 
 ```python
+from _harness import temp_data_dir
+
 def setUp(self):
-    self.tmp = tempfile.TemporaryDirectory()
-    os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+    self.tmp = temp_data_dir(self)  # ENGRAM_DATA_DIR → a fresh temp dir; both undone at cleanup
     self.cfg = get_config()
     self.store = Store(self.cfg.db_path)
     self.embedder = HashEmbedding(dim=self.cfg.dim)
 
 def tearDown(self):
     self.store.close()
-    os.environ.pop("ENGRAM_DATA_DIR", None)
-    self.tmp.cleanup()
 ```
 
 Non-negotiable:
-- **Restore every env var** you set (`ENGRAM_DATA_DIR`, `ENGRAM_DISTILLER`, …) in
-  `tearDown`, or tests pollute each other and pass/fail depending on order.
+- **Import `_harness` first** in every test module (`test_harness` enforces it).
+- **Change env only through `scoped_env` / `temp_data_dir`** (or a `mock.patch.dict(os.environ, …)`
+  block), never set-then-`pop`: the `pop` would delete the harness's own `ENGRAM_DATA_DIR` /
+  `ENGRAM_DISTILLER` for every later test.
 - **Close every `Store`.** An open SQLite handle leaks across tests.
 - **No shared mutable module state.** Factories/helpers return fresh objects.
 - **No live embedding model in the default path.** `HashEmbedding` or a stub.
@@ -129,7 +130,7 @@ Minimum 3: a known input/output pair, a boundary (empty / zero / max), and any
 invariant (idempotence, monotonicity, round-trip fidelity). No fixtures needed.
 
 ### Store-touching component (`core/service.py`, `core/store.py`, `core/recall/`)
-Tempdir + `ENGRAM_DATA_DIR` fixture. Test: the happy write→read round-trip, the empty
+`temp_data_dir` fixture. Test: the happy write→read round-trip, the empty
 / no-match case (recall returns nothing, not an error), consolidation/supersession
 where relevant, and status filtering (`active` vs `superseded`/`expired`).
 
@@ -166,9 +167,9 @@ spawns `claude -p` without a skip-gate.
 **Fix:** use `HashEmbedding` / a stub distiller, or move behind `@unittest.skipUnless`.
 
 ### 2. Leaked global state
-**Detect:** `os.environ[...] = ...` in `setUp`/body with no matching `pop` in
-`tearDown`; a `Store()` never `.close()`d.
-**Fix:** restore in `tearDown`; close the store.
+**Detect:** `os.environ[...] = ...` / `os.environ.pop(...)` outside `scoped_env` or a
+`mock.patch.dict` block; a `Store()` never `.close()`d.
+**Fix:** `scoped_env(self, NAME=value)` (or `temp_data_dir(self)`); close the store.
 
 ### 3. Outdated test double
 **Detect:** a stub method whose signature no longer matches the real port
@@ -193,7 +194,9 @@ that type; asserting a dataclass stores its init value.
 
 | Failure text | Likely cause | Fix |
 |---|---|---|
-| Test passes alone, fails in the suite | Leaked `ENGRAM_DATA_DIR` / env not restored | Restore all env in `tearDown` |
+| Test passes alone, fails in the suite | Env changed by hand, not via `scoped_env` | Use `scoped_env` / `temp_data_dir` |
+| `_harness.LLMCallInTest: test spawned 'claude'` / `made an HTTP request` | A capture path reached a real LLM distiller | Pin `distiller="heuristic"` or stub the transport; a deliberate transport test uses `allow_llm_transport()` |
+| `_harness.LiveStoreInTest` | The test resolved the real plugin data store read-write | Use `temp_data_dir(self)`; never build the live path |
 | `sqlite3.OperationalError: database is locked` | A `Store` left open by a prior test | `self.store.close()` in `tearDown` |
 | `AttributeError` on a patched adapter | Stub/patch target drifted from the real port | Re-sync signature; `review` mode flags this |
 | Import of `fastembed` fails in a core test | Core test reached for the real adapter | Use `HashEmbedding`; gate real path with `skipUnless` |

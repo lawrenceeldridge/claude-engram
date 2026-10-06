@@ -11,8 +11,10 @@ adapters when they are installed.
 ## The stdlib-purity rule
 
 Tests for `core/**` **must run without `fastembed` and without the network.** The
-`hash` embedding + `heuristic` distiller make this possible (pin `distiller="heuristic"` —
-the shipped default is `claude`, which would spawn `claude -p`); it is the
+`hash` embedding + `heuristic` distiller make this possible (the shipped distiller default
+is `claude`, which would spawn `claude -p` — `tests/_harness.py` forces the heuristic and
+turns any `claude` spawn or HTTP request into a `LLMCallInTest` error; a test that builds its
+own config still pins `distiller="heuristic"` for intent); it is the
 promise the whole design rests on (see
 [`.claude/rules/00-quality/02-testing.md`](../../../rules/00-quality/02-testing.md)).
 

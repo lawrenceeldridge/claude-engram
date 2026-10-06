@@ -12,13 +12,11 @@ import random
 import sys
 import time
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.domain.quantize import quantize_int8  # noqa: E402
-from core.ports.scorer import DIM_MISMATCH, PurePythonScorer, get_scorer  # noqa: E402
+from core.domain.quantize import quantize_int8
+from core.ports.scorer import DIM_MISMATCH, PurePythonScorer, get_scorer
 
 try:
     import numpy  # noqa: F401

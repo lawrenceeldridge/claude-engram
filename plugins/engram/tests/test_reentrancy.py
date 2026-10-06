@@ -15,26 +15,21 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _bootstrap import hooks_disabled
+from _harness import ROOT, scoped_env, temp_data_dir
 
-from _bootstrap import hooks_disabled  # noqa: E402
-
-from core import service  # noqa: E402
-from core.adapters import llm_distillers  # noqa: E402
-from core.adapters.llm_distillers import ClaudeCliDistiller  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports import distill  # noqa: E402
-from core.ports.distill import is_distiller_prompt  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core import service
+from core.adapters import llm_distillers
+from core.adapters.llm_distillers import ClaudeCliDistiller
+from core.config import get_config
+from core.ports import distill
+from core.ports.distill import is_distiller_prompt
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 _HOOKS = [
     "capture.py",
@@ -49,21 +44,11 @@ _HOOKS = [
 
 
 class HooksDisabledHelperTests(unittest.TestCase):
-    def setUp(self):
-        self._saved = os.environ.get("ENGRAM_DISABLE")
-        os.environ.pop("ENGRAM_DISABLE", None)
-
-    def tearDown(self):
-        if self._saved is None:
-            os.environ.pop("ENGRAM_DISABLE", None)
-        else:
-            os.environ["ENGRAM_DISABLE"] = self._saved
-
     def test_off_by_default(self):
-        self.assertFalse(hooks_disabled())
+        self.assertFalse(hooks_disabled())  # the harness clears any ambient ENGRAM_DISABLE
 
     def test_on_when_set(self):
-        os.environ["ENGRAM_DISABLE"] = "1"
+        scoped_env(self, ENGRAM_DISABLE="1")
         self.assertTrue(hooks_disabled())
 
 
@@ -71,8 +56,7 @@ class HookNoOpTests(unittest.TestCase):
     """Every hook exits 0 and does nothing when ENGRAM_DISABLE=1 (driven as a subprocess)."""
 
     def test_all_hooks_noop_when_disabled(self):
-        env = {**os.environ, "ENGRAM_DISABLE": "1", "ENGRAM_DATA_DIR": tempfile.mkdtemp()}
-        env.pop("ENGRAM_PYTHON", None)
+        env = {**os.environ, "ENGRAM_DISABLE": "1"}
         for hook in _HOOKS:
             proc = subprocess.run(
                 [sys.executable, str(ROOT / "bin" / hook)],
@@ -155,8 +139,7 @@ class DistillerEnvTests(unittest.TestCase):
 
 class DistillerPromptBackstopTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), distiller="heuristic")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -164,8 +147,6 @@ class DistillerPromptBackstopTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_is_distiller_prompt(self):
         self.assertTrue(is_distiller_prompt("You extract durable long-term memory from a coding assistant session."))

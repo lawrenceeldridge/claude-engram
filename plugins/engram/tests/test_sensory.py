@@ -9,16 +9,14 @@ Intake hooks (visual/verbal) and promotion into the durable store land in later 
 from __future__ import annotations
 
 import sqlite3
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.domain.sensory import should_promote  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.domain.sensory import should_promote
+from core.store import Store
 
 # The `sensory` table schema an earlier, later-reverted build shipped in the same migration slot
 # (no `modality` / `decayed_at`). A database stamped by that build must be reconciled on open.

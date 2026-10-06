@@ -8,6 +8,8 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+import _harness  # noqa: F401
+
 from core import service
 from core.config import get_config
 from core.domain.entities import extract_entities

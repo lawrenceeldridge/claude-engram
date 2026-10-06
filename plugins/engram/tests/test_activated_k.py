@@ -7,11 +7,12 @@ until raised.
 
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+
+from _harness import scoped_env
 
 from core import service
 from core.config import get_config
@@ -26,25 +27,15 @@ class ActivatedKConfigTests(unittest.TestCase):
         self.assertEqual(cfg.activated_k, cfg.top_k)
 
     def test_env_widens_activated_only(self):
-        os.environ["ENGRAM_TOP_K"] = "2"
-        os.environ["ENGRAM_ACTIVATED_K"] = "7"
-        try:
-            cfg = get_config()
-            self.assertEqual(cfg.top_k, 2)
-            self.assertEqual(cfg.activated_k, 7)
-        finally:
-            del os.environ["ENGRAM_TOP_K"]
-            del os.environ["ENGRAM_ACTIVATED_K"]
+        scoped_env(self, ENGRAM_TOP_K="2", ENGRAM_ACTIVATED_K="7")
+        cfg = get_config()
+        self.assertEqual(cfg.top_k, 2)
+        self.assertEqual(cfg.activated_k, 7)
 
     def test_activated_k_never_below_top_k(self):
-        os.environ["ENGRAM_TOP_K"] = "5"
-        os.environ["ENGRAM_ACTIVATED_K"] = "0"  # manifest default 0 => fall back to top_k
-        try:
-            cfg = get_config()
-            self.assertEqual(cfg.activated_k, 5)
-        finally:
-            del os.environ["ENGRAM_TOP_K"]
-            del os.environ["ENGRAM_ACTIVATED_K"]
+        scoped_env(self, ENGRAM_TOP_K="5", ENGRAM_ACTIVATED_K="0")  # manifest default 0 => fall back to top_k
+        cfg = get_config()
+        self.assertEqual(cfg.activated_k, 5)
 
 
 class ActivatedKRecallTests(unittest.TestCase):

@@ -11,22 +11,18 @@ test_viewer.PageScriptTests via `node --check`; here we assert the wiring is pre
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-import os  # noqa: E402
-
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.recall import search_fused  # noqa: E402
-from core.store import Store  # noqa: E402
-from viewer.serve import PAGE, SEARCH_K_CAP  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.embedding import HashEmbedding
+from core.recall import search_fused
+from core.store import Store
+from viewer.serve import PAGE, SEARCH_K_CAP
 
 
 class _SeededStore(unittest.TestCase):
@@ -38,7 +34,6 @@ class _SeededStore(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def _fact(self, fid, text, *, status="active", obs=None, created=1.0, pk="pk"):
         self.store.db.execute(
@@ -145,8 +140,7 @@ class SearchKCapTests(unittest.TestCase):
     pool, so a reordering bug (not just fewer rows) would fail the assertion."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -154,8 +148,6 @@ class SearchKCapTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_capped_search_is_exact_prefix_of_uncapped(self):
         cap = 10

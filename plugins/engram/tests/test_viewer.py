@@ -10,18 +10,16 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.config import get_config  # noqa: E402
-from core.store import Store  # noqa: E402
-from viewer.serve import _disambiguate_labels, _service_health, _tcp_ok  # noqa: E402
+from core.config import get_config
+from core.store import Store
+from viewer.serve import _disambiguate_labels, _service_health, _tcp_ok
 
 
 class DisambiguateLabelsTests(unittest.TestCase):

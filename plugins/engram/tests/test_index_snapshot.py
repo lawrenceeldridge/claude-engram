@@ -9,20 +9,18 @@ never touches the ``facts`` recall surface (A-S modality routing — visual → 
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.config import get_config  # noqa: E402
-from core.index.index_recall import _snapshot_freshness, search_index  # noqa: E402
-from core.index.indexer import index_snapshot  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.config import get_config
+from core.index.index_recall import _snapshot_freshness, search_index
+from core.index.indexer import index_snapshot
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 _A11Y = 'heading "Login"\ntextbox "Email"\nbutton "Sign in"\nlink "Forgot password"'
 

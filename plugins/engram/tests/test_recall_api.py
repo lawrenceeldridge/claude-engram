@@ -10,20 +10,14 @@ Run: python3 -m unittest discover -s plugins/engram/tests
 from __future__ import annotations
 
 import json
-import os
-import sys
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "bin"))
+from _harness import temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.domain.confidence import (  # noqa: E402
+from core import service
+from core.config import get_config
+from core.domain.confidence import (
     Calibration,
     PoolStats,
     calibrate,
@@ -32,9 +26,9 @@ from core.domain.confidence import (  # noqa: E402
     pool_z,
     sigmoid,
 )
-from core.domain.lexical import tokenize  # noqa: E402
-from core.ports.embedding import EmbeddingGateway, HashEmbedding  # noqa: E402
-from core.recall import (  # noqa: E402
+from core.domain.lexical import tokenize
+from core.ports.embedding import EmbeddingGateway, HashEmbedding
+from core.recall import (
     SEMANTIC_CALIBRATION,
     FusedResult,
     get_calibration,
@@ -43,7 +37,7 @@ from core.recall import (  # noqa: E402
     search_fused,
     search_fused_with_stats,
 )
-from core.store import Store  # noqa: E402
+from core.store import Store
 
 
 class _SemanticStandIn(EmbeddingGateway):
@@ -146,8 +140,7 @@ class LexicalTests(unittest.TestCase):
 
 class RecallStructuredTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -155,8 +148,6 @@ class RecallStructuredTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_empty_store_returns_no_memory(self):
         result = service.recall_structured(self.store, self.embedder, self.cfg, self.project, "anything")
@@ -451,17 +442,12 @@ class RecallStructuredTests(unittest.TestCase):
 
 class McpServerTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         import mcp_server
 
         self.mcp = mcp_server
         # fresh engine per test so the cached store points at this temp dir
         self.mcp.ENGINE = mcp_server._Engine()
-
-    def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_initialize_echoes_protocol_and_advertises_tools(self):
         resp = self.mcp._handle(

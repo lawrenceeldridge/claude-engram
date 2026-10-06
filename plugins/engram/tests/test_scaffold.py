@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unittest
 
+import _harness  # noqa: F401
+
 from core.ports.distill import DistilledFact
 from core.recall import render_scaffold
 

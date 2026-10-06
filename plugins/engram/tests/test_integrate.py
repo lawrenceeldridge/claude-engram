@@ -8,22 +8,17 @@ vectors are crafted so the cosine cut is deterministic.
 
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from core.config import get_config  # noqa: E402
-from core.consolidation.integrate import cluster_duplicates, integrate  # noqa: E402
-from core.domain.quantize import pack_bits, quantize_int8  # noqa: E402
-from core.ports.distill import Distiller  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.config import get_config
+from core.consolidation.integrate import cluster_duplicates, integrate
+from core.domain.quantize import pack_bits, quantize_int8
+from core.ports.distill import Distiller
+from core.ports.embedding import HashEmbedding
+from core.store import Store
 
 
 class _FakeMerger(Distiller):
@@ -67,8 +62,7 @@ class ClusterDuplicatesTests(unittest.TestCase):
 
 class IntegrateShellTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         # Pin integrate_threshold to the code default (off) so the suite is hermetic against an
         # ambient ENGRAM_INTEGRATE_THRESHOLD in the environment; the "on" tests override it locally.
         self.cfg = replace(get_config(), distiller="heuristic", integrate_threshold=0)
@@ -77,8 +71,6 @@ class IntegrateShellTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _add_vec(self, text, vec, tier="stm"):
         blob, scale = quantize_int8(vec)

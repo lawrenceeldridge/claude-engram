@@ -17,8 +17,8 @@ alone.** This is the project's defining constraint, not a nicety:
 
 - The default `embedding=hash` (lexical stub) is **zero-dependency**, and so is the
   `heuristic` distiller (line extraction) — the fallback whenever the default `claude`
-  distiller (headless `claude -p`, Haiku, detached) is unavailable, and the distiller every
-  test pins. The plugin works out of the box with no pip install; `distiller=heuristic` also
+  distiller (headless `claude -p`, Haiku, detached) is unavailable, and the distiller the test
+  harness (`tests/_harness.py`) forces. The plugin works out of the box with no pip install; `distiller=heuristic` also
   removes the one network call.
 - Real semantic recall (`fastembed`) is an **opt-in adapter**; the LLM distillers sit
   behind the Distiller interface on the stdlib alone (a subprocess / HTTP call).

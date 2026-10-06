@@ -7,14 +7,11 @@ precision over recall — a real decision fact must survive every gate (test_rea
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from core.domain import ingest  # noqa: E402
+from core.domain import ingest
 
 # A genuine, durable fact. It must pass EVERY gate (never dropped) — the over-filtering guard.
 REAL_FACT = "We chose an int8 pre-filter before the float cosine rescore because it passed the benchmark at 0.92 MRR."

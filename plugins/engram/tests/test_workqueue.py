@@ -7,34 +7,26 @@ crash recovery (expired-lease reclaim), stage isolation, and get_queue selection
 
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from core.adapters.inproc_queue import InprocQueue  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.workqueue import WorkItem, WorkQueue, get_queue  # noqa: E402
-from core.store import Store  # noqa: E402
+from core.adapters.inproc_queue import InprocQueue
+from core.config import get_config
+from core.ports.workqueue import WorkItem, WorkQueue, get_queue
+from core.store import Store
 
 
 class WorkQueueStoreTests(unittest.TestCase):
     """Store-level queue mechanics, with injected clocks for deterministic timing."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.store = Store(get_config().db_path)
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _enqueue(self, msg_id, stage="distill", now=100.0):
         return self.store.enqueue_work(msg_id=msg_id, stage=stage, project_key="p", ref="r", now=now)
@@ -154,8 +146,7 @@ class InprocQueueTests(unittest.TestCase):
     """Adapter-level behaviour through the WorkQueue port."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         # Immediate retries so the dead-letter path is testable without sleeping.
         self.cfg = replace(get_config(), queue_backoff=(0.0,), queue_max_deliver=2)
         self.store = Store(self.cfg.db_path)
@@ -163,8 +154,6 @@ class InprocQueueTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def _item(self, msg_id, stage="distill"):
         return WorkItem(stage=stage, project_key="p", msg_id=msg_id, ref="r")

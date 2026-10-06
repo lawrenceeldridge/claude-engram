@@ -13,8 +13,11 @@ No faker, no database server, no network, no live model.
 - **Deterministic** — `HashEmbedding` is a pure function of its input text, so the
   same string always embeds the same way. Tests never depend on a downloaded
   model or a random seed.
-- **Self-cleaning** — a `TemporaryDirectory` holds the SQLite store; `tearDown`
-  removes it and restores every env var. Nothing survives a test.
+- **Self-cleaning** — `temp_data_dir(self)` holds the SQLite store and `scoped_env(self, …)`
+  sets env; both undo themselves at cleanup. Nothing survives a test.
+- **Hermetic** — every module imports `tests/_harness.py` first: the developer's ambient
+  `ENGRAM_*` env is cleared, the distiller is the heuristic, the default data dir is a temp
+  dir, and a `claude` spawn / HTTP request / read-write open of the real store raises.
 
 The rule from the source project still holds: **a value should not look special
 unless it IS special.** Hardcode `"SW1A 1AA"`-style constants only when the exact
@@ -24,13 +27,15 @@ value is the point (a known cosine, a boundary length, a specific slug).
 
 ## The store fixture
 
-The one fixture almost every stateful test needs. `ENGRAM_DATA_DIR` points the config
-at a temp dir, so `get_config()` resolves a throwaway `db_path`:
+The one fixture almost every stateful test needs. `temp_data_dir(self)` exports a fresh
+temp dir as `ENGRAM_DATA_DIR` for this test, so `get_config()` resolves a throwaway
+`db_path`; the dir and the env are restored at cleanup:
 
 ```python
+from _harness import temp_data_dir
+
 def setUp(self):
-    self.tmp = tempfile.TemporaryDirectory()
-    os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+    self.tmp = temp_data_dir(self)
     self.cfg = get_config()
     self.store = Store(self.cfg.db_path)
     self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -38,20 +43,19 @@ def setUp(self):
 
 def tearDown(self):
     self.store.close()
-    os.environ.pop("ENGRAM_DATA_DIR", None)
-    self.tmp.cleanup()
 ```
 
-If a test needs a specific config knob, set the matching `ENGRAM_*` env var in
-`setUp` **before** `get_config()` and pop it in `tearDown`:
+If a test needs a specific config knob, set it with `scoped_env` **before** `get_config()`
+(`None` unsets a variable); the whole environment is restored at cleanup:
 
 ```python
-os.environ["ENGRAM_DISTILLER"] = "ollama"   # exercise the LLM/recovery path
-os.environ["ENGRAM_MIN_SIM"] = "0.0"        # disable the context gate for a ranking test
+scoped_env(self, ENGRAM_DISTILLER="ollama")   # exercise the LLM/recovery path
+scoped_env(self, ENGRAM_MIN_SIM="0.0")        # disable the context gate for a ranking test
 ```
 
-Restoring these is not optional — a leaked env var makes another test pass or fail
-depending on run order.
+Never set-then-`pop` `os.environ` by hand: the `pop` deletes the harness's own
+`ENGRAM_DATA_DIR` / `ENGRAM_DISTILLER` for every later test (a bare `with
+mock.patch.dict(os.environ, …)` block is fine — it restores too).
 
 ---
 
@@ -62,7 +66,7 @@ a real, deterministic lexical embedder that satisfies the same `EmbeddingGateway
 port as `fastembed`. Use it everywhere in the default test path:
 
 ```python
-from core.embedding import HashEmbedding
+from core.ports.embedding import HashEmbedding
 
 embedder = HashEmbedding(dim=128)
 vec = embedder.embed_one("deploys to AWS Lambda")
@@ -82,7 +86,7 @@ duck-typed stub that matches the **real** signatures in `core/ports/distill.py`,
 inject it with `mock.patch.object`:
 
 ```python
-from core.distill import DistilledFact
+from core.ports.distill import DistilledFact
 from core import service
 
 
@@ -187,7 +191,7 @@ Python symbol extraction uses stdlib `ast`, so those tests need **no** gate.
 
 ## Summary
 
-1. **One store fixture** — tempdir + `ENGRAM_DATA_DIR`, closed and cleaned in `tearDown`.
+1. **One store fixture** — `temp_data_dir(self)` + a `Store` closed in `tearDown`; env via `scoped_env`.
 2. **`HashEmbedding`** is the default embedder — deterministic, zero-dep, real port.
 3. **Duck-typed stub distillers/summarizers** matching the live signatures; inject
    with `mock.patch.object`.

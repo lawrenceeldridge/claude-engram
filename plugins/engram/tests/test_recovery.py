@@ -8,23 +8,19 @@ Run: python3 -m unittest discover -s plugins/engram/tests
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import sys
-import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import scoped_env, temp_data_dir
 
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.ports.distill import DistilledFact  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.store import _SCHEMA_VERSION, Store  # noqa: E402
+from core import service
+from core.config import get_config
+from core.ports.distill import DistilledFact
+from core.ports.embedding import HashEmbedding
+from core.store import _SCHEMA_VERSION, Store
 
 
 class _StubDistiller:
@@ -48,9 +44,8 @@ def _degraded():
 
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
-        os.environ["ENGRAM_DISTILLER"] = "ollama"  # an LLM distiller, so recovery is active
+        self.tmp = temp_data_dir(self)
+        scoped_env(self, ENGRAM_DISTILLER="ollama")  # an LLM distiller, so recovery is active
         self.cfg = replace(get_config(), distiller="ollama")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -58,9 +53,6 @@ class RecoveryTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        for k in ("ENGRAM_DATA_DIR", "ENGRAM_DISTILLER"):
-            os.environ.pop(k, None)
-        self.tmp.cleanup()
 
     def _rescue_count(self):
         return self.store.count_work(stage="rescue")
@@ -128,7 +120,7 @@ class RecoveryTests(unittest.TestCase):
     def test_rescue_noop_for_heuristic_distiller(self):
         with mock.patch.object(service, "get_distiller", return_value=_StubDistiller(_degraded())):
             service.capture_text(self.store, self.embedder, self.cfg, self.project, "s1", "raw")
-        os.environ["ENGRAM_DISTILLER"] = "heuristic"
+        scoped_env(self, ENGRAM_DISTILLER="heuristic")
         cfg = get_config()
         self.assertEqual(service.rescue(self.store, self.embedder, cfg), 0)
         self.assertEqual(self._rescue_count(), 1)  # left intact — a heuristic install never recovers

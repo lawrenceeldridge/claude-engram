@@ -6,14 +6,11 @@ All pure — the index answer is injected, no store or embedder involved.
 from __future__ import annotations
 
 import json
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _harness  # noqa: F401
 
-from bench.replay import counterfactual, find_sweeps, parse_transcript, sweep_query  # noqa: E402
+from bench.replay import counterfactual, find_sweeps, parse_transcript, sweep_query
 
 
 def _tool_use(name: str, tool_id: str, **tool_input) -> str:

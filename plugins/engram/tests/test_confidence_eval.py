@@ -12,18 +12,15 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sqlite3
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from _harness import temp_data_dir
 
-from bench.confidence_eval import (  # noqa: E402
+from bench.confidence_eval import (
     CANDIDATES,
     NO_RECALL,
     candidate_scores,
@@ -36,16 +33,16 @@ from bench.confidence_eval import (  # noqa: E402
     summarise,
     write_observations,
 )
-from bench.distractors import find_project, mine_distractors  # noqa: E402
-from bench.replay_ledger import replay  # noqa: E402
-from bench.snapshot import snapshot_db  # noqa: E402
-from bench.stores import build_store  # noqa: E402
-from core import service  # noqa: E402
-from core.config import get_config  # noqa: E402
-from core.domain.confidence import PoolStats  # noqa: E402
-from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.recall import SEMANTIC_CALIBRATION, FusedResult, recall_confidence  # noqa: E402
-from core.store import Store  # noqa: E402
+from bench.distractors import find_project, mine_distractors
+from bench.replay_ledger import replay
+from bench.snapshot import snapshot_db
+from bench.stores import build_store
+from core import service
+from core.config import get_config
+from core.domain.confidence import PoolStats
+from core.ports.embedding import HashEmbedding
+from core.recall import SEMANTIC_CALIBRATION, FusedResult, recall_confidence
+from core.store import Store
 
 
 def _row(fact_id: str, text: str) -> dict:
@@ -178,14 +175,9 @@ class HoldOutSplitTests(unittest.TestCase):
 
 class EvaluateTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = replace(get_config(), activated_k=3)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
-
-    def tearDown(self):
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_build_store_stamps_dataset_facts_with_distractor_ages(self):
         facts = ["deployment runs on github actions", "frontend uses tailwind utility classes"]
@@ -243,7 +235,6 @@ class DistractorTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def test_filters_short_contaminated_private_and_near_duplicate(self):
         mined = mine_distractors(self.store, self.project, n=10, exclude=self.dataset)
@@ -298,8 +289,7 @@ class SnapshotTests(unittest.TestCase):
 
 class LedgerReplayTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        os.environ["ENGRAM_DATA_DIR"] = self.tmp.name
+        self.tmp = temp_data_dir(self)
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
@@ -317,8 +307,6 @@ class LedgerReplayTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        os.environ.pop("ENGRAM_DATA_DIR", None)
-        self.tmp.cleanup()
 
     def test_recent_recall_queries_distinct_newest_first_answered_only(self):
         self.assertEqual(
