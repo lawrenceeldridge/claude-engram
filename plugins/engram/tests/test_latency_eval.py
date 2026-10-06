@@ -243,10 +243,10 @@ class HelperTests(unittest.TestCase):
         inner = HashEmbedding(dim=32)
         embedder = PreEmbedded(inner, ["q"])
         self.assertEqual(embedder.embed_query("q"), inner.embed_query("q"))
-        self.assertEqual(embedder.embed_one("q"), inner.embed_one("q"))  # the index paths' way
         self.assertEqual((embedder.dim, embedder.semantic), (inner.dim, inner.semantic))
-        with self.assertRaises(NotImplementedError):
-            embedder.embed(["anything"])
+        for passage in (lambda: embedder.embed(["anything"]), lambda: embedder.embed_one("q")):
+            with self.assertRaises(NotImplementedError):  # stored text is never embedded in a read
+                passage()
 
     def test_instrument_times_and_restores_every_kind_of_attribute(self):
         class Owner:

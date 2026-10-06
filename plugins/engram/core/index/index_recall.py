@@ -38,7 +38,7 @@ def _cosine_ranked(cfg: Config, embedder: EmbeddingGateway, rows, query: str, k:
     """Chunk ids ranked by cosine to the query — the same ``VectorScorer`` recall scans facts with
     (vectorised where numpy is present) — skipping unembedded rows and other-dimension vectors."""
     embedded = [row for row in rows if row["vec_int8"]]
-    sims = get_scorer(cfg).cosine_all(embedded, embedder.embed_one(query))
+    sims = get_scorer(cfg).cosine_all(embedded, embedder.embed_query(query))
     scored = [(sim, row["id"]) for sim, row in zip(sims, embedded) if sim != DIM_MISMATCH]
     scored.sort(reverse=True)
     return [cid for _sim, cid in scored[:k]]

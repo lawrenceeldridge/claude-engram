@@ -116,23 +116,19 @@ CONSOLIDATION_COLS = ["stage", "ms", "changed"]
 class PreEmbedded(EmbeddingGateway):
     """The run's query vectors, embedded once up front, so query embedding stays out of every timing.
 
-    Serves both ways a read path embeds a query today: ``embed_query`` (recall) and ``embed_one``
-    (the index paths).
+    Every read path embeds its query through ``embed_query``; ``embed`` / ``embed_one`` (stored
+    text) raise, so a read path that embeds anything else fails the run rather than timing a model.
     """
 
     def __init__(self, inner: EmbeddingGateway, queries: list[str]) -> None:
         self.dim, self.semantic = inner.dim, inner.semantic
-        self._query = {query: inner.embed_query(query) for query in queries}
-        self._passage = {query: inner.embed_one(query) for query in queries}
+        self._vectors = {query: inner.embed_query(query) for query in queries}
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         raise NotImplementedError("the latency run embeds its queries up front only")
 
-    def embed_one(self, text: str) -> list[float]:
-        return self._passage[text]
-
     def embed_query(self, text: str) -> list[float]:
-        return self._query[text]
+        return self._vectors[text]
 
 
 @contextmanager

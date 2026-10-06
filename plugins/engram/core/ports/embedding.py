@@ -31,9 +31,37 @@ class EmbeddingGateway(ABC):
         return self.embed([text])[0]
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed a retrieval query. Symmetric by default; asymmetric models
-        (e.g. BGE) override this to apply their query instruction prefix."""
+        """Embed a retrieval query — every read path embeds its query here; stored text (facts,
+        chunks) goes through ``embed`` / ``embed_one``. Symmetric by default; a gateway whose model
+        embeds queries differently from passages overrides it."""
         return self.embed_one(text)
+
+
+class QueryMemo(EmbeddingGateway):
+    """An ``EmbeddingGateway`` in front of another that embeds a query once, however many reads ask.
+
+    The wrapped gateway's ``embed_query`` result for the last text is kept and served again;
+    everything else passes straight through. ``recall_prompt_block`` wraps its embedder in one
+    for the call, so the hook's two blocks — memory and index — share the prompt's vector instead
+    of each paying for a model run (5–80 ms a prompt with bge-base). One entry, scoped to the call
+    that made it — never a cross-turn cache (the daemon outlives every prompt).
+    """
+
+    def __init__(self, inner: EmbeddingGateway) -> None:
+        self._inner = inner
+        self.dim, self.semantic = inner.dim, inner.semantic
+        self._last: tuple[str, list[float]] | None = None
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._inner.embed(texts)
+
+    def embed_one(self, text: str) -> list[float]:
+        return self._inner.embed_one(text)
+
+    def embed_query(self, text: str) -> list[float]:
+        if self._last is None or self._last[0] != text:
+            self._last = (text, self._inner.embed_query(text))
+        return self._last[1]
 
 
 class HashEmbedding(EmbeddingGateway):

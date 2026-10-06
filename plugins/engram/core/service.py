@@ -28,7 +28,7 @@ from core.ports.distill import (
     has_admission_markers,
     is_distiller_prompt,
 )
-from core.ports.embedding import EmbeddingGateway
+from core.ports.embedding import EmbeddingGateway, QueryMemo
 from core.ports.scorer import VectorScorer, get_scorer
 from core.ports.workqueue import EXCHANGE_FORMAT, RESCUE, WorkItem, get_queue
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
@@ -486,7 +486,7 @@ def review_memories(
     if not cfg.review_enabled:
         return {"proposals": [], "reviewed": 0, "guidance": "review disabled (review_enabled=false)"}
     if query:
-        scored = _scored_active(store, project["key"], embedder.embed_one(query), get_scorer(cfg))
+        scored = _scored_active(store, project["key"], embedder.embed_query(query), get_scorer(cfg))
         scored.sort(key=lambda pair: pair[1], reverse=True)
         rows = [row for row, _sim in scored[:limit]]
     else:
@@ -828,7 +828,7 @@ def index_prompt_block(
     candidate_ids = store.chunk_fts_search(project["key"], prompt, limit=max(cfg.index_top_k * 6, 12))
     if not candidate_ids:
         return ""
-    qvec = embedder.embed_one(prompt)
+    qvec = embedder.embed_query(prompt)
     qdim = len(qvec)
     scored: list[tuple[float, sqlite3.Row]] = []
     for cid in candidate_ids:
@@ -869,6 +869,7 @@ def recall_prompt_block(
     project: Project,
     prompt: str,
 ) -> str:
+    embedder = QueryMemo(embedder)  # the memory and index blocks share one embedding of the prompt
     hits = search(store, embedder, project, prompt, cfg)
     memory, injected_ids = render_block(PROMPT_MEMORY_HEADER, hits, cfg.max_chars)
     index = index_prompt_block(store, embedder, cfg, project, prompt)

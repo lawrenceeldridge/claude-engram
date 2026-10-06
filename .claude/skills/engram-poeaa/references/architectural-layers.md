@@ -182,7 +182,9 @@ A typical `UserPromptSubmit` recall:
    (get_embedder) in-process        (Composition Root — bin/recall_prompt.py, bin/daemon.py)
 
 3. service.recall_prompt_block(store, embedder, cfg, project, prompt)
-   (Service Layer — read side — core/service.py) composes the hook's two blocks:
+   (Service Layer — read side — core/service.py) wraps the embedder in a QueryMemo (an
+   EmbeddingGateway in front of the real one, for this call only: the prompt is embedded once
+   for both blocks) and composes the hook's two blocks:
 
    a. recall.search(store, embedder, project, prompt, cfg): embed_query(prompt) through the
       EmbeddingGateway (Secondary adapter — Gateway + Separated Interface), an exact scan of
@@ -190,7 +192,7 @@ A typical `UserPromptSubmit` recall:
       sim·Ws + decay·Wr + freq·Wf over the survivors (Functional Core — domain/scoring.py).
       No FTS or rank fusion here: that is the `recall` tool's search_fused_with_stats.
    b. index_prompt_block(...): an FTS prefilter over the indexed chunks (Store), a cosine
-      re-rank of the candidates (it embeds the prompt a second time, with embed_one) and the
+      re-rank of the candidates against the same query vector (the memo's) and the
       index_min_sim gate.
 
 4. render_block(PROMPT_MEMORY_HEADER, hits, max_chars) → capped, one-line-per-fact DTO; the
