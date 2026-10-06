@@ -330,11 +330,11 @@ def evaluate_consolidation(store, project, embedder: EmbeddingGateway, cfg) -> d
 
 
 def _backend(spec: str, cfg, stored: set[int]) -> EmbeddingGateway | None:
-    name, model, truncate_dim, float_mode = parse_spec(spec)
-    if float_mode:
+    parsed = parse_spec(spec)
+    if parsed.float_mode:
         print(f"[latency skipped {spec}] +float ranks in memory, not through the store")
         return None
-    embedder = make_embedder(name, model, truncate_dim, cfg)
+    embedder = make_embedder(parsed, cfg)
     if embedder.dim not in stored:
         print(f"[latency skipped {spec}] {embedder.dim}-dim queries, but the store holds {sorted(stored)}-dim vectors")
         return None

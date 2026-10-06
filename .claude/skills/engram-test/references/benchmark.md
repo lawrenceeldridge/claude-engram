@@ -47,6 +47,10 @@ real store that `--distractors` mines and `--latency` times (always on a snapsho
   store. The gap between a backend and its `+float` twin is **exactly the int8
   quantization loss** — that is how "int8 ≈ float" was established.
 
+`bench/backends.py` parses it once (`parse_spec` → `Spec`) and builds it in one place
+(`make_embedder`); a harness that ranks through the store builds via `store_embedder`, which
+refuses `+float`. An unknown `+flag` is an error, never folded into the model name.
+
 ---
 
 ## What it reports

@@ -127,7 +127,7 @@ and the allowlist in [`references/test-leanness-heuristics.md`](references/test-
 
 ### 5. `bench` — Recall-quality benchmark
 
-Input: a backend spec (`name[@model][+float]`, comma-separated). This is the
+Input: a backend spec (`name[@model][%dim][+float]`, comma-separated). This is the
 second test surface and the gate on any retrieval change.
 
 ```bash
@@ -234,7 +234,7 @@ the stub against `core/ports/distill.py` / `core/ports/embedding.py`; `review` m
 
 ### `engram eval` reports 0.0 across the board
 Wrong backend spec or an empty dataset load. Confirm the spec parses
-(`name[@model][+float]`) and that `bench/dataset.json` is present; run
+(`name[@model][%dim][+float]`) and that `bench/dataset.json` is present; run
 `python3 bin/engram eval --backends hash` as the zero-dep sanity check.
 
 ### `coverage: command not found`

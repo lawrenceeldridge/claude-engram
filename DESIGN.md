@@ -154,6 +154,16 @@ numbers on the larger mined set are in [README § Benchmarking](README.md)):
   (absorbed by the warm daemon); on the harder mined set the gap is smaller (0.463 vs 0.398)
   but still significant (paired McNemar p=0.033). Hence bge-base is the default; bge-small remains
   available via `embedding_model` for constrained environments.
+- **No query instruction** — BGE's model card offers a retrieval instruction for queries
+  (`"Represent this sentence for searching relevant passages: "`); fastembed doesn't apply it (its
+  `query_embed` is plain `embed` for BGE), so engram's queries and passages embed alike. Prefixing it
+  by hand was A/B'd under a rule fixed in advance — adopt only if no surface regresses — and **not
+  adopted** (#69, bge-base, paired). On the paraphrase set it helped (R@3 0.656 → 0.717, p<0.001;
+  MRR@10 0.574 → 0.609, CI excludes 0; R@1 +0.029, ns). But that set is a regression gate, not a
+  decision surface. On the 30-query code index it lost a point (R@1 0.700 both; R@3 0.800 → 0.767:
+  4 discordant, 2 / 2, p=1.0). Revisit only as a dedicated experiment decided on LongMemEval dev
+  with a larger code-index set, and with the confidence calibration refitted (it is fitted on
+  unprefixed vectors).
 
 Recall@k is one axis; the same harness measures the others a default rests on — `--confidence`
 (does the `recall` verdict mean what it says; § Recall confidence below), `--aged` (does age

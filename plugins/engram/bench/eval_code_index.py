@@ -76,9 +76,8 @@ def _matches(anchor: str, gold: str) -> bool:
 
 
 def evaluate_backend(spec: str, base_cfg) -> dict:
-    name, model, truncate_dim, _float = parse_spec(spec)
     cfg = replace(base_cfg, index_top_k=10, index_min_sim=-1.0)
-    embedder = make_embedder(name, model, truncate_dim, cfg)
+    embedder = make_embedder(parse_spec(spec), cfg)
     tmp = tempfile.mkdtemp(prefix="engram-codeidx-")
     store = Store(Path(tmp) / "eval.db")
     project = {"key": f"codeidx-{abs(hash(spec)) % 99999}", "path": str(ROOT), "label": "codeidx"}
