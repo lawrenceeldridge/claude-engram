@@ -97,7 +97,7 @@ These run against the same store/index the MCP tools use — handy for a quick
 terminal check or when confirming state:
 
 ```bash
-python3 plugins/engram/bin/engram doctor      # resolved config, project identity, fact count
+python3 plugins/engram/bin/engram doctor      # resolved config, project identity, fact count, service health
 python3 plugins/engram/bin/engram recall <q>  # just-in-time recall for this project
 python3 plugins/engram/bin/engram core        # stable session-start memory block
 python3 plugins/engram/bin/engram stats       # recall telemetry + estimated searches/tokens saved

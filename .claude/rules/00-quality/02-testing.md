@@ -12,7 +12,7 @@ harness) lives in the [`engram-test`](../../skills/engram-test/SKILL.md) skill.
 |---|---|---|
 | **Unit / integration** | `unittest`-discoverable suite (also runs under `pytest`); all stdlib, no network | `cd plugins/engram && python3 -m unittest discover -s tests` |
 | **Recall benchmark** | Labelled paraphrase set through the real quantised search path — Recall@1/@3, MRR@10, bytes/fact | `cd plugins/engram && python3 bin/engram eval --backends "hash,fastembed"` |
-| **Doctor** | Resolved config, project identity, fact counts | `python3 bin/engram doctor` |
+| **Doctor** | Resolved config, project identity, fact counts, service health (`core/health.py`) | `python3 bin/engram doctor` |
 
 ## Rules
 

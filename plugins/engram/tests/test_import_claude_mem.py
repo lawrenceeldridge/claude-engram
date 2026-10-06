@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 import sqlite3
@@ -19,10 +22,13 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Iterator
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from _harness import ROOT, scoped_env, temp_data_dir
 
+from core import health
 from core.adapters.claude_mem_source import (
     ClaudeMemSource,
     _epoch_seconds,
@@ -535,6 +541,39 @@ class ImportCLITests(unittest.TestCase):
             except sqlite3.OperationalError:
                 continue
         return {}
+
+    def _import_in_process(self, **patches) -> str:
+        """``engram import`` run in this process (so ``core.health`` can be patched); returns stderr."""
+        loader = importlib.machinery.SourceFileLoader("engram_cli", str(ROOT / "bin" / "engram"))
+        cli = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(cli)
+        scoped_env(self, ENGRAM_DATA_DIR=self.data.name, ENGRAM_SCORER="python")  # a numpy-less recall scan
+        self._make(observations=[{"id": 1, "project": "ukh-world", "facts": json.dumps(["fact a", "fact b"])}])
+        argv = [
+            "engram",
+            "import",
+            "claude-mem",
+            "--db",
+            str(self.db),
+            "--map",
+            f"ukh-world={self._map_dir()}",
+            "--yes",
+        ]
+        err = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.multiple(health, **patches),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
+        ):
+            self.assertEqual(cli.main(), 0)
+        return err.getvalue()
+
+    def test_import_warns_when_the_project_is_too_large_to_scan_without_numpy(self):
+        self.assertIn("warning: recall scan — no numpy", self._import_in_process(SCAN_WARN_SECONDS=0.0))
+
+    def test_import_is_quiet_when_the_scan_keeps_up(self):
+        self.assertNotIn("warning: recall scan", self._import_in_process(SCAN_WARN_SECONDS=health.SCAN_WARN_SECONDS))
 
     def test_dry_run_reports_and_writes_nothing(self):
         self._make(observations=[{"id": 1, "project": "ukh-world", "facts": json.dumps(["x", "y"])}])

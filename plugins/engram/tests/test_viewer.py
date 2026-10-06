@@ -15,11 +15,11 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-import _harness  # noqa: F401
+from _harness import temp_data_dir
 
 from core.config import get_config
 from core.store import Store
-from viewer.serve import _disambiguate_labels, _service_health, _tcp_ok
+from viewer.serve import _disambiguate_labels, _health_payload
 
 
 class DisambiguateLabelsTests(unittest.TestCase):
@@ -55,40 +55,13 @@ class PageScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
-class TcpOkTests(unittest.TestCase):
-    def test_closed_port_is_unreachable(self):
-        # Port 1 is not listening — connection refused, fast.
-        self.assertFalse(_tcp_ok("http://127.0.0.1:1", timeout=0.2))
-
-    def test_garbage_url_is_unreachable(self):
-        self.assertFalse(_tcp_ok("not-a-url", timeout=0.2))
-        self.assertFalse(_tcp_ok("http://", timeout=0.2))  # no host
-
-
-class ServiceHealthTests(unittest.TestCase):
-    def _cfg(self, **kw):
-        # Pin the stdlib backends regardless of ambient ENGRAM_* env, then override.
-        base = replace(get_config(), embedding="hash", distiller="heuristic")
-        return replace(base, **kw)
-
-    def test_stdlib_defaults_all_ok(self):
-        h = _service_health(self._cfg())
-        self.assertEqual(h["queue"]["backend"], "inproc")
-        self.assertEqual(h["embedding"]["backend"], "hash")
-        self.assertEqual(h["distiller"]["backend"], "heuristic")
-        self.assertEqual({s["state"] for s in h.values()}, {"ok"})
-
-    def test_queue_backend_is_always_inproc(self):
-        # The WorkQueue has one always-available backend; the chip is never a warn.
-        h = _service_health(self._cfg())
-        self.assertEqual(h["queue"]["backend"], "inproc")
-        self.assertEqual(h["queue"]["state"], "ok")
-
-    def test_llm_distiller_unreachable_warns(self):
-        h = _service_health(self._cfg(distiller="ollama", distiller_base_url="http://127.0.0.1:1"))
-        self.assertTrue(h["distiller"]["backend"].startswith("ollama"))
-        self.assertEqual(h["distiller"]["state"], "warn")
-        self.assertIn("heuristic", h["distiller"]["detail"])  # names the fallback
+class HealthPayloadTests(unittest.TestCase):
+    def test_api_health_keeps_its_shape_and_adds_the_scan_chip(self):
+        temp_data_dir(self)
+        payload = _health_payload(replace(get_config(), embedding="hash", distiller="heuristic"))
+        self.assertEqual(set(payload), {"queue", "embedding", "distiller", "scan"})
+        for chip in payload.values():
+            self.assertEqual(set(chip), {"backend", "state", "detail"})
 
 
 class DeleteProjectTests(unittest.TestCase):

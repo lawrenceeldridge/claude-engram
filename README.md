@@ -178,7 +178,7 @@ index on demand (these are what the memory-first guard steers toward):
 cd plugins/engram
 python3 -m unittest discover -s tests        # smoke tests (all stdlib)
 python3 bin/engram demo                         # capture sample facts, then recall
-python3 bin/engram doctor                       # show config, project, counts
+python3 bin/engram doctor                       # show config, project, counts, service health
 python3 bin/engram eval --backends hash         # recall-quality benchmark (add fastembed to compare)
 python3 bin/engram viewer                       # browse at http://127.0.0.1:7801/
 ```
@@ -204,7 +204,7 @@ session summary) at stop / session end / pre-compact.
 ## CLI
 
 ```
-engram doctor              show resolved config, project identity and fact count
+engram doctor              show resolved config, project identity, fact count and service health
 engram capture             capture memory from stdin / --file / --transcript
 engram recall <query>      run a just-in-time recall query for the current project
 engram core                show the stable session-start memory block
@@ -263,7 +263,10 @@ instead of duplicating. Facts land in **STM**; superseding and spread-activation
 deferred to `consolidate` (a raw import can be large — ~10⁵ facts — so the first
 consolidation is the expensive one; run it per-project first to bound blast radius). A store
 that large stays recallable within the hook budget via the numpy-vectorised scan (see
-`scorer` in [Configuration](#configuration)).
+`scorer` in [Configuration](#configuration)). Without numpy — a `hash` install on an
+interpreter that lacks it — the scan is pure Python (~106 ns per vector element, so 10⁵ facts
+take seconds per prompt); `engram import`, `engram doctor` and the viewer's `scan` chip warn
+once the estimate nears the hook's ceiling.
 
 > **TTL caveat.** Because original timestamps are preserved, if you have set `ttl_days > 0`
 > a `sweep` will archive imported facts older than that window immediately. `ttl_days` is
@@ -296,7 +299,7 @@ or `ENGRAM_*` env vars for standalone use:
 | `embedding` | `hash` | `hash` (lexical stub, zero deps) or `fastembed` (real semantic model, self-provisions a venv) |
 | `embedding_model` | *(blank)* | fastembed model id; blank = `BAAI/bge-base-en-v1.5` (best measured recall) |
 | `embedding_truncate_dim` | `0` | Matryoshka truncation: keep the first N dims and re-normalise (0 = off). Only for Matryoshka-trained models (e.g. `nomic-ai/nomic-embed-text-v1.5`); changing it invalidates stored vectors — re-capture/re-index |
-| `scorer` | `auto` | recall similarity-scan backend: `auto` (numpy if importable, else pure-Python) / `python` / `numpy`. numpy vectorises the cosine scan (~100× faster) so large stores stay under the recall-hook budget; ships with the `fastembed` extra. Ranking is identical to the pure-Python scan |
+| `scorer` | `auto` | recall similarity-scan backend: `auto` (numpy if importable, else pure-Python) / `python` / `numpy`. numpy vectorises the cosine scan (~100× faster) so large stores stay under the recall-hook budget; ships with the `fastembed` extra. Ranking is identical to the pure-Python scan; without numpy, `engram doctor` / the viewer warn when a project is too large to scan in pure Python |
 | `distiller` | `claude` | `claude` (headless `claude -p`, Haiku), `ollama` (local, zero-token), or `heuristic` (line extraction, no LLM) |
 | `distiller_model` | *(blank)* | claude: model alias (blank = `haiku`); ollama: model name (blank = `qwen2.5:3b`) |
 | `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller (ignored under `claude`) |

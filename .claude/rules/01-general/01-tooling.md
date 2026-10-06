@@ -43,7 +43,7 @@ All commands run from `plugins/engram/`:
 ```bash
 cd plugins/engram
 python3 -m unittest discover -s tests   # test suite (all stdlib)
-python3 bin/engram doctor                  # resolved config, project identity, counts
+python3 bin/engram doctor                  # resolved config, project identity, counts, service health
 python3 bin/engram demo                    # capture sample facts then recall (end-to-end)
 python3 bin/engram eval --backends hash    # recall-quality benchmark
 python3 bin/engram viewer                  # localhost memory/index viewer
