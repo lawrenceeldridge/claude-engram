@@ -35,7 +35,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from bench.backends import make_embedder, parse_spec
+from bench.backends import parse_spec, store_embedder
 from bench.report import print_rows
 from bench.stats import auroc, bootstrap_stat_ci, brier, ece, platt_fit, stable_split, wilson
 from bench.stores import build_store
@@ -228,10 +228,7 @@ CONFIDENCE_COLS = [
 
 
 def evaluate_confidence(spec: str, data: dict, cfg, distractors: list[tuple[str, float]], ok_precision: float) -> dict:
-    name, model, truncate_dim, float_mode = parse_spec(spec)
-    if float_mode:
-        raise ValueError("+float ranks outside the store; the recall verdict needs the real path")
-    embedder = make_embedder(name, model, truncate_dim, cfg)
+    embedder = store_embedder(parse_spec(spec), cfg, "the recall verdict")
     facts = data["facts"]
     labelled = [(q["q"], {facts[i] for i in q["relevant"]}) for q in data["queries"]]
     labelled += [(q, set()) for q in data["confidence_scenario"]["unanswerable"]]

@@ -144,6 +144,8 @@ END;
 # mixed into `facts`, so recall of learned memory is never polluted by raw source
 # chunks. Vectors live inline (dim/scale/vec_int8) exactly as facts store them, and
 # `chunk_sources` records a per-file hash+mtime so re-indexing skips unchanged files.
+# Run only by _v7_index (a released slot: its effect stays as written); _v21 adds the (project_key, kind) and
+# (project_key, anchor) lookup indexes.
 _CHUNK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
   id            TEXT PRIMARY KEY,
@@ -207,14 +209,13 @@ def _add_columns(db: sqlite3.Connection, specs: list[tuple[str, str]]) -> None:
             db.execute(f"ALTER TABLE facts ADD COLUMN {ddl}")
 
 
-def _chunk_scope(project_key: str, kind: str | None, source_path: str | None, *, table: str = "") -> tuple[str, list]:
+def _chunk_scope(project_key: str, kind: str | None, source_path: str | None) -> tuple[str, list]:
     """The WHERE clause (and its params) scoping chunk queries to a project, and optionally one
     kind and/or one source — shared by the outline, vector-scan and FTS reads."""
-    col = f"{table}." if table else ""
-    clauses, params = [f"{col}project_key = ?"], [project_key]
+    clauses, params = ["project_key = ?"], [project_key]
     for name, value in (("source_path", source_path), ("kind", kind)):
         if value is not None:
-            clauses.append(f"{col}{name} = ?")
+            clauses.append(f"{name} = ?")
             params.append(value)
     return " AND ".join(clauses), params
 
@@ -236,14 +237,32 @@ def _v2_structured(db: sqlite3.Connection) -> None:
     _add_columns(db, [("title", "title TEXT"), ("narrative", "narrative TEXT"), ("files", "files TEXT")])
 
 
+# The FTS indexes and the content tables they index — the pairs fts_coverage / repair_fts check.
+_FTS_INDEXES = (("facts_fts", "facts"), ("chunks_fts", "chunks"))
+
+
+def _fts_built(db: sqlite3.Connection, ddl: str, fts_table: str) -> None:
+    """Run FTS DDL and the 'rebuild' that backfills it as ONE transaction.
+
+    External-content FTS5 is populated with the 'rebuild' command (a manual INSERT...SELECT creates
+    rows that don't match). Committed apart, an interrupted run — a hook cancelled at its ceiling, a
+    process stopped — leaves an index that exists but is empty while its triggers keep writing: the
+    keyword channel goes blind and an update can fail as 'database disk image is malformed'. As one
+    transaction, an interrupted run leaves the store as it was."""
+    try:
+        db.executescript(f"BEGIN; {ddl}; INSERT INTO {fts_table}({fts_table}) VALUES ('rebuild'); COMMIT;")
+    except BaseException:
+        if db.in_transaction:
+            db.rollback()
+        raise
+
+
 def _v3_fts(db: sqlite3.Connection) -> None:
     existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_fts'").fetchone()
-    db.executescript(_FTS_SCHEMA)
-    if not existed:
-        # External-content FTS5 is populated with the 'rebuild' command (a manual
-        # INSERT...SELECT creates rows that don't match); run it once, when the index
-        # is first created, to backfill facts written before it existed.
-        db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
+    if existed:
+        db.executescript(_FTS_SCHEMA)  # idempotent: the triggers, if any were missing
+    else:
+        _fts_built(db, _FTS_SCHEMA, "facts_fts")  # backfill facts written before the index existed
 
 
 def _v4_observations(db: sqlite3.Connection) -> None:
@@ -260,13 +279,14 @@ def _v5_subtitle(db: sqlite3.Connection) -> None:
 def _v6_fts_widen(db: sqlite3.Connection) -> None:
     # FTS5 can't ALTER-add columns, so drop and rebuild the index over the widened
     # column set (now including subtitle + files). Facts (the content table) are
-    # untouched; 'rebuild' repopulates the index from them.
-    db.executescript(
+    # untouched; 'rebuild' repopulates the index from them — in the same transaction as the drop,
+    # so an interrupted replay can't leave the index empty (see _fts_built).
+    _fts_built(
+        db,
         "DROP TRIGGER IF EXISTS facts_ai; DROP TRIGGER IF EXISTS facts_ad;"
-        "DROP TRIGGER IF EXISTS facts_au; DROP TABLE IF EXISTS facts_fts;"
+        "DROP TRIGGER IF EXISTS facts_au; DROP TABLE IF EXISTS facts_fts;" + _FTS_SCHEMA,
+        "facts_fts",
     )
-    db.executescript(_FTS_SCHEMA)
-    db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
 
 
 def _v8_redistill(db: sqlite3.Connection) -> None:
@@ -293,9 +313,10 @@ def _v7_index(db: sqlite3.Connection) -> None:
     # untouched. 'rebuild' backfills the FTS from any chunks written before it existed.
     existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts'").fetchone()
     db.executescript(_CHUNK_SCHEMA)
-    db.executescript(_CHUNK_FTS_SCHEMA)
-    if not existed:
-        db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+    if existed:
+        db.executescript(_CHUNK_FTS_SCHEMA)
+    else:
+        _fts_built(db, _CHUNK_FTS_SCHEMA, "chunks_fts")
 
 
 def _v9_stm(db: sqlite3.Connection) -> None:
@@ -525,10 +546,27 @@ def _v20_exchange_format(db: sqlite3.Connection) -> None:
     )
 
 
-# Ordered schema migrations. user_version marks how many have run; every step is
-# also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
-# EXISTS, rebuild only on first creation), so a database at any prior version —
-# including the legacy FTS flag of 1 — converges by running the rest as no-ops.
+def _v21_chunk_lookup_indexes(db: sqlite3.Connection) -> None:
+    # Covering indexes for the chunk reads that filter past the project: the kind-scoped index
+    # searches (search_code / search_docs prefilter their FTS match and load their rows by
+    # (project_key, kind)) and get_chunk's anchor fallback (get_symbol by name). Measured at 40k
+    # chunks: search_code / search_docs ~160 → ~125 ms, an anchor lookup 12 → 0.03 ms; they build
+    # in ~0.2 s. idx_chunks_project (_v7) stays although both lead with project_key: the hook's
+    # unscoped index prefilter reads it, and without it the planner picks the wider anchor index
+    # (+4 ms a prompt at 40k chunks). Idempotent.
+    db.executescript(
+        "CREATE INDEX IF NOT EXISTS idx_chunks_kind ON chunks(project_key, kind);"
+        "CREATE INDEX IF NOT EXISTS idx_chunks_anchor ON chunks(project_key, anchor);"
+    )
+
+
+# Ordered schema migrations. user_version marks how many have run — it is stamped only after the
+# whole ladder has, so a store stamped N has run steps 1…N and an upgrade runs only the rest. Every
+# step is also individually idempotent (ADD COLUMN only if missing, CREATE … IF NOT EXISTS, rebuild
+# only on first creation), so a store below _LADDER_FLOOR — fresh, or the legacy FTS flag of 1 that
+# predates the ladder — converges by replaying every step. A step that must re-run on stores already
+# stamped past it gets a new slot of its own (see _v17_sensory_schema); a released slot's effect never
+# changes, though its implementation may get safer (the FTS builds became atomic — _fts_built).
 _MIGRATIONS = [
     _v1_lifecycle,
     _v2_structured,
@@ -550,8 +588,10 @@ _MIGRATIONS = [
     _v18_facts_browse_index,
     _v19_fact_episode,
     _v20_exchange_format,
+    _v21_chunk_lookup_indexes,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
+_LADDER_FLOOR = 2  # below this, user_version doesn't say which steps ran (0 = fresh, 1 = legacy FTS flag)
 # Every table / index / trigger the base schema declares — a store missing one isn't current.
 _SCHEMA_OBJECTS = frozenset(
     re.findall(r"CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(\w+)", _SCHEMA, re.I)
@@ -592,13 +632,18 @@ class Store:
     def _migrate(self) -> None:
         """Run the schema-migration ladder up to _SCHEMA_VERSION, then stamp it.
 
-        user_version is the fast path: once stamped, opens are a single PRAGMA read.
-        Below the head we replay every step — cheap because each is idempotent — so
-        a fresh, partial, or legacy database all converge to the same schema.
+        user_version is the fast path: once stamped, opens are a single PRAGMA read. A store stamped
+        below the head runs only the steps after its stamp, so a schema bump costs its own step —
+        replaying the whole ladder took ~8 s at 10⁵ facts (_v6 rebuilds facts_fts on every run), on
+        whichever process opened the store first after an upgrade, often the prompt hook. A store
+        below _LADDER_FLOOR, or stamped past the head by newer code, replays every step instead —
+        each is idempotent — so fresh, legacy and downgraded databases converge to the same schema.
         """
-        if self.db.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION:
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version == _SCHEMA_VERSION:
             return
-        for step in _MIGRATIONS:
+        steps = _MIGRATIONS[version:] if _LADDER_FLOOR <= version < _SCHEMA_VERSION else _MIGRATIONS
+        for step in steps:
             step(self.db)
         self.db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self.db.commit()
@@ -1256,18 +1301,43 @@ class Store:
             )
         return cur.rowcount
 
-    def fts_search(self, project_key: str, query: str, limit: int = 50) -> list[str]:
-        """Active fact ids for a project matching an FTS5 keyword query, best-ranked first."""
+    def _scoped_fts_ids(
+        self,
+        fts_table: str,
+        content_table: str,
+        rank: str,
+        scope: tuple[str, list],
+        query: str,
+        limit: int,
+    ) -> list[str]:
+        """Ids of ``content_table`` rows in ``scope`` (a WHERE clause and its params) matching an
+        FTS5 keyword query, best-ranked first — the one query shape both keyword channels use.
+
+        The FTS tables span the whole store, so the scope is applied *before* ranking: the MATCH is
+        filtered against the scope's rowids (a list built once per query from the scope's index),
+        bm25 is computed only for in-scope matches, and a content row — wide: vectors, bodies — is
+        read only for the ``limit`` survivors. Joining every store-wide match to its row just to
+        drop it cost 0.2–0.4 s per query whatever the project's size.
+
+        The unary ``+`` on ``rowid`` is load-bearing: it keeps the ``IN`` term away from FTS5's query
+        planner, which would otherwise seek every doclist once per in-scope rowid (~10× slower).
+        Ranking is unchanged — bm25's statistics are the same table's, and ties keep rowid order.
+        """
         match = _fts_match_expr(query)
         if not match:
             return []
-        rows = self.db.execute(
-            "SELECT f.id FROM facts_fts JOIN facts f ON f.rowid = facts_fts.rowid "
-            "WHERE facts_fts MATCH ? AND f.project_key = ? AND f.status = 'active' "
-            "ORDER BY bm25(facts_fts) LIMIT ?",
-            (match, project_key, limit),
-        ).fetchall()
-        return [row[0] for row in rows]
+        where, params = scope
+        sql = (
+            f"WITH hit AS (SELECT rowid AS r, {rank} AS s FROM {fts_table} WHERE {fts_table} MATCH ? "
+            f"AND +rowid IN (SELECT rowid FROM {content_table} WHERE {where}) ORDER BY s, r LIMIT ?) "
+            f"SELECT t.id FROM hit JOIN {content_table} t ON t.rowid = hit.r ORDER BY hit.s, hit.r"
+        )
+        return [row[0] for row in self.db.execute(sql, [match, *params, limit])]
+
+    def fts_search(self, project_key: str, query: str, limit: int = 50) -> list[str]:
+        """Active fact ids for a project matching an FTS5 keyword query, best-ranked first."""
+        scope = ("project_key = ? AND status = 'active'", [project_key])
+        return self._scoped_fts_ids("facts_fts", "facts", "bm25(facts_fts)", scope, query, limit)
 
     def sweep(
         self,
@@ -1570,10 +1640,17 @@ class Store:
             )
 
     def get_chunk(self, project_key: str, ref: str) -> sqlite3.Row | None:
-        """Fetch one chunk by its id or its human-readable anchor slug."""
+        """Fetch one chunk by its id or, failing that, its human-readable anchor slug.
+
+        The id goes through the primary key first: a single ``id = ? OR anchor = ?`` filter can't
+        use it and walked the project's chunks on every call — the hook's index block fetches each
+        candidate this way (~280 ms a prompt at 40k chunks). Among chunks sharing an anchor (one
+        name in several files), the first indexed — the lowest rowid — wins."""
+        row = self.db.execute("SELECT * FROM chunks WHERE id = ? AND project_key = ?", (ref, project_key)).fetchone()
+        if row is not None:
+            return row
         return self.db.execute(
-            "SELECT * FROM chunks WHERE project_key = ? AND (id = ? OR anchor = ?) LIMIT 1",
-            (project_key, ref, ref),
+            "SELECT * FROM chunks WHERE project_key = ? AND anchor = ? ORDER BY rowid LIMIT 1", (project_key, ref)
         ).fetchone()
 
     def chunk_outline(
@@ -1603,15 +1680,8 @@ class Store:
         source_path: str | None = None,
     ) -> list[str]:
         """Chunk ids matching an FTS5 keyword query, best-ranked first (weighted columns)."""
-        match = _fts_match_expr(query)
-        if not match:
-            return []
-        where, params = _chunk_scope(project_key, kind, source_path, table="c")
-        sql = (
-            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.rowid = chunks_fts.rowid "
-            f"WHERE chunks_fts MATCH ? AND {where} ORDER BY bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0) LIMIT ?"
-        )
-        return [row[0] for row in self.db.execute(sql, [match, *params, limit]).fetchall()]
+        scope = _chunk_scope(project_key, kind, source_path)
+        return self._scoped_fts_ids("chunks_fts", "chunks", "bm25(chunks_fts, 3.0, 2.0, 1.5, 1.0)", scope, query, limit)
 
     def unlink_forgotten_episodes(self, project_key: str) -> int:
         """Clear the ``episode`` link on facts whose exchanges have all been forgotten, so on-demand
@@ -1642,6 +1712,32 @@ class Store:
             "FROM chunks c LEFT JOIN index_meta m ON m.project_key = c.project_key "
             "GROUP BY c.project_key ORDER BY last DESC"
         ).fetchall()
+
+    def fts_coverage(self) -> dict[str, tuple[int, int]]:
+        """Per FTS index, ``(rows it indexes, rows in its content table)`` — equal on a healthy store.
+
+        Counted from FTS5's own per-document table, so it is cheap (a few ms at 10⁵ rows) and
+        catches an index emptied by an interrupted migration while its triggers kept writing (an
+        older build's ladder replay did exactly that). It can't see stale tokens on a counted row."""
+        return {
+            fts: tuple(
+                self.db.execute(
+                    f"SELECT (SELECT count(*) FROM {fts}_docsize), (SELECT count(*) FROM {content})"
+                ).fetchone()
+            )
+            for fts, content in _FTS_INDEXES
+        }
+
+    def repair_fts(self) -> list[tuple[str, int, int]]:
+        """Rebuild every FTS index whose coverage is off; ``[(index, indexed, rows)]`` for each one
+        rebuilt (empty — and nothing written — on a healthy store). A write-side, detached job."""
+        rebuilt = []
+        for fts, (indexed, rows) in self.fts_coverage().items():
+            if indexed != rows:
+                with self.db:
+                    self.db.execute(f"INSERT INTO {fts}({fts}) VALUES ('rebuild')")
+                rebuilt.append((fts, indexed, rows))
+        return rebuilt
 
     def chunk_count(self, project_key: str) -> int:
         return self.db.execute("SELECT COUNT(*) FROM chunks WHERE project_key = ?", (project_key,)).fetchone()[0]

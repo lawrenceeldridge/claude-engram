@@ -43,7 +43,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from bench.backends import make_embedder, parse_spec
+from bench.backends import parse_spec, store_embedder
 from bench.report import print_rows
 from bench.stats import (
     bootstrap_ci,
@@ -370,10 +370,7 @@ def evaluate_longmemeval(
     ``capture_text``, which resolves it from the same config (``distiller_runs`` pins it).
     ``progress(done, total, record)`` receives each question's record as it completes, so a long
     run can persist it immediately (an interrupted run keeps every finished question)."""
-    name, model, truncate_dim, float_mode = parse_spec(spec)
-    if float_mode:
-        raise ValueError("+float ranks outside the store; LongMemEval needs the real ranking paths")
-    embedder = make_embedder(name, model, truncate_dim, cfg)
+    embedder = store_embedder(parse_spec(spec), cfg, "LongMemEval")
     distiller = get_distiller(cfg)
     scored = [q for q in questions if q.scoreable]
     arms = ARMS + SHIPPED_ARMS if shipped else ARMS

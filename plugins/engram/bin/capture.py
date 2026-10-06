@@ -34,12 +34,22 @@ def _attempt(cfg, step: str, run) -> None:
         errlog.record(cfg.data_dir, "capture", f"{step}: {exc!r}")
 
 
+def _repair_fts(store, cfg) -> None:
+    """Rebuild an FTS index that lost coverage (an interrupted migration can empty one while its
+    triggers keep writing), leaving a record of it — first, so this capture's writes find it whole."""
+    from core import errlog
+
+    for fts, indexed, rows in store.repair_fts():
+        errlog.record(cfg.data_dir, "capture", f"fts repair: {fts} indexed {indexed:,} of {rows:,} rows — rebuilt")
+
+
 def _capture(store, embedder, cfg, project: dict, payload: dict, checkpoint: bool) -> None:
     """Everything that runs under the capture lock: the transcript delta and its follow-ons."""
     import time
 
     from core.service import capture_transcript_incremental, maybe_capture_antipatterns, maybe_capture_summary
 
+    _attempt(cfg, "fts repair", lambda: _repair_fts(store, cfg))
     session_id = payload.get("session_id", "")
     transcript_path = payload["transcript_path"]
     _attempt(

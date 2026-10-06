@@ -109,18 +109,27 @@ This is why recall is a **hybrid**: cache-friendly core + relevance-driven JIT.
   Measured with `engram eval --latency` (fastembed bge-base + numpy, real ledger questions,
   query embedding excluded, median per query):
 
-  | store (active facts) | hook (`search`) | `recall` tool (`search_fused_with_stats`) |
-  |---|---|---|
-  | 2.8k (a personal project) | **11 ms** | 342 ms |
-  | 55k | 186 ms | 687 ms |
-  | 144k (a 10⁵ `engram import`) | **496 ms** | 1,432 ms (p90 2.1 s) |
+  | store (active facts) | hook: memory (`search`) | hook: index block | `recall` tool (`search_fused_with_stats`) | `search_code` / `search_docs` |
+  |---|---|---|---|---|
+  | 2.8k (a personal project) | **10 ms** | 9 ms | 44 ms | 16 / 11 ms |
+  | 55k | 189 ms | 26 ms | 511 ms | 41 / 55 ms |
+  | 144k (a 10⁵ `engram import`) | **500 ms** | 31 ms | 1,237 ms (p90 1.6 s) | 126 / 121 ms |
 
   Cost is linear in the project's facts: lean scan rows (`Store.scan_rows`, full rows re-read
   only for the hits), an exact bounded top-k for the hook (`scoring.top_by_priority`), exact
   lexical overlap (`lexical.overlap_counts`) and top-k fusion (`fuse(limit=)`) took the 144k
   hook from 1.28 s and the tool from 2.68 s with byte-identical rankings (parity digests). The
-  tool's keyword channel is the remaining floor: `facts_fts` is not project-scoped, so each
-  `MATCH` scores the whole store's matches (~0.2–0.4 s at any project size).
+  keyword channels search store-wide FTS tables, so each `MATCH` is filtered to the project's
+  rowids (a covering-index list) *before* bm25 and before any wide row is read — joining every
+  store-wide match to its row first cost 0.2–0.4 s at any project size — and the index block
+  fetches its candidates by primary key (an `id OR anchor` lookup scanned the project's chunks:
+  ~0.3 s a prompt at 40k chunks). Covering `chunks(project_key, kind)` / `(project_key, anchor)`
+  indexes serve the kind-scoped index searches (−25 % at 40k chunks) and `get_symbol` by name. All
+  of it kept every ranking byte-identical (#69).
+- The hook embeds the prompt **once** for both blocks (`QueryMemo`, a per-call wrapper over the
+  embedder; every read path embeds its query through `embed_query`) — the model run the table
+  excludes, 5 ms on a typical prompt and ~80 ms at the 512-token cap with bge-base, used to be paid
+  twice.
 - Without numpy (a `hash` install on a bare interpreter) the scan is pure Python, ~106 ns per
   vector element — 11.6 s at 144k × 768 dims, past the 5 s hook ceiling; `engram doctor`, the
   viewer and `engram import` warn once the estimate reaches 2 s (`core/health.py`).
@@ -151,6 +160,16 @@ numbers on the larger mined set are in [README § Benchmarking](README.md)):
   (absorbed by the warm daemon); on the harder mined set the gap is smaller (0.463 vs 0.398)
   but still significant (paired McNemar p=0.033). Hence bge-base is the default; bge-small remains
   available via `embedding_model` for constrained environments.
+- **No query instruction** — BGE's model card offers a retrieval instruction for queries
+  (`"Represent this sentence for searching relevant passages: "`); fastembed doesn't apply it (its
+  `query_embed` is plain `embed` for BGE), so engram's queries and passages embed alike. Prefixing it
+  by hand was A/B'd under a rule fixed in advance — adopt only if no surface regresses — and **not
+  adopted** (#69, bge-base, paired). On the paraphrase set it helped (R@3 0.656 → 0.717, p<0.001;
+  MRR@10 0.574 → 0.609, CI excludes 0; R@1 +0.029, ns). But that set is a regression gate, not a
+  decision surface. On the 30-query code index it lost a point (R@1 0.700 both; R@3 0.800 → 0.767:
+  4 discordant, 2 / 2, p=1.0). Revisit only as a dedicated experiment decided on LongMemEval dev
+  with a larger code-index set, and with the confidence calibration refitted (it is fitted on
+  unprefixed vectors).
 
 Recall@k is one axis; the same harness measures the others a default rests on — `--confidence`
 (does the `recall` verdict mean what it says; § Recall confidence below), `--aged` (does age
@@ -505,13 +524,15 @@ consolidate upward. In both modes an explicit `.engram-root` sentinel overrides 
 | Hook error breaks a turn | every hook exits 0 on any error, injects nothing |
 | Irrelevant recall pollutes context | `min_sim` threshold + `top_k` + `max_chars` cap + project scoping |
 | Cross-project leakage | project-scoped by default; fallback penalised and opt-in |
+| A schema upgrade stalls the first hook on a large store | the migration ladder resumes from the store's `user_version` stamp, so a bump runs only its own step (0.17 s at 213k facts, where replaying all 21 steps took 7.7 s); every step is idempotent, a step that must re-run gets a new slot, and a released slot's effect never changes |
+| An interrupted migration leaves a keyword index empty (its triggers still writing) | each FTS create-and-backfill is one transaction (`_fts_built`); `doctor` / the viewer flag a coverage gap (`fts_check`); the next capture rebuilds the index and records it (`Store.repair_fts`) — older builds can still cause it (one did, on a downgrade replay) |
 | Store growth / stale facts | recency decay + supersession de-rank/retire old facts; idempotent capture; viewer prune; verbatim exchanges bounded by `episodic_ttl_days` + `episodic_max_chunks` (reported by `engram doctor`) |
 | Verbatim storage keeps secrets a distiller would drop | exchanges are redacted before storage (credentials, auth headers, token shapes, private keys, emails, non-project paths); local-only store; retention horizon; `episodic_enabled=false` turns the layer off |
 | Over-eager supersession retires a distinct fact | conservative default threshold (0.85); superseded rows are archived (reversible), not deleted |
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
 | A long-lived process holds the write lock (13 h on 2026-10-05) | every `Store` write commits or rolls back (`with self.db`); the MCP server and daemon roll back any stray transaction after each request and log it; interactive hooks never wait on a writer (`INTERACTIVE_BUSY_MS`) and open a current store without the write lock; doctor / the SessionStart notice report a write-locked store |
 | A slow consolidation stage stalls capture (a 13.5 h `refine`, #67) | consolidation holds its own lock, never the capture lock; each stage is deadline-bounded; a per-stage scale test fails any stage that issues SQL per fact |
-| A detached failure goes unseen | the bounded `errors.log`; `core/health` checks (store lock, capture progress, consolidation, errors, WAL) in doctor, the viewer and the SessionStart notice |
+| A detached failure goes unseen | the bounded `errors.log`; `core/health` checks (store lock, capture progress, consolidation, errors, WAL, keyword-index coverage) in doctor and the viewer — store lock, capture progress and errors also in the SessionStart notice |
 | Hook output silently ignored | every hook emits through `_bootstrap.emit` (the documented envelope); tests parse the real hooks' output |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
 | Durable queue becomes a de-facto dependency | `WorkQueue` is a stdlib-only SQLite queue behind a Separated Interface; no external backend or broker; core stays importable with the standard library alone |

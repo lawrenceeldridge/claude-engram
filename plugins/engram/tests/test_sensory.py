@@ -16,7 +16,7 @@ from pathlib import Path
 import _harness  # noqa: F401
 
 from core.domain.sensory import should_promote
-from core.store import Store
+from core.store import _MIGRATIONS, _SCHEMA, Store
 
 # The `sensory` table schema an earlier, later-reverted build shipped in the same migration slot
 # (no `modality` / `decayed_at`). A database stamped by that build must be reconciled on open.
@@ -153,6 +153,10 @@ class MigrationReconcileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db_path = Path(d) / "memory.db"
             con = sqlite3.connect(db_path)
+            # The buggy build ran steps 1–15 as shipped, then its own v16, which left this table.
+            con.executescript(_SCHEMA)
+            for step in _MIGRATIONS[:15]:
+                step(con)
             con.executescript(_LEGACY_SENSORY_DDL)
             con.execute(
                 "INSERT INTO sensory (id, project_key, session_id, url, text, created_at, attended) "

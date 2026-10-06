@@ -288,7 +288,8 @@ class ExchangeFormatRewriteTests(unittest.TestCase):
         index_nonfile(self.store, self.embedder, self.project, "exchange", episode, units, now=stamp)
 
     def _replay_migrations(self) -> int:
-        """Reopen as a database stamped one step below head, so the ladder replays (as on upgrade)."""
+        """Reopen as a database stamped before v20 (the exchange_format step), so the ladder runs it
+        again, as on upgrade."""
         self.store.db.execute("PRAGMA user_version = 19")
         self.store.db.commit()
         self.store.close()

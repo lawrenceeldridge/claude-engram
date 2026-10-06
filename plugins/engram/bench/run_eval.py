@@ -6,7 +6,7 @@ Measures retrieval quality (Recall@1, Recall@3, MRR@10) and operational cost
 real store path; ``+float`` runs rank on raw full-precision vectors in memory, so
 the gap between a backend and its ``+float`` twin is exactly the int8 loss.
 
-Backend spec: ``name[@model][+float]``. Examples:
+Backend spec: ``name[@model][%dim][+float]`` (``bench/backends.py``). Examples:
     hash
     fastembed
     fastembed+float
@@ -57,13 +57,13 @@ DATASET = Path(__file__).resolve().parent / "dataset.json"
 
 
 def evaluate(spec: str, data: dict, base_cfg) -> dict:
-    name, model, truncate_dim, float_mode = parse_spec(spec)
+    parsed = parse_spec(spec)
     cfg = replace(base_cfg, supersede_threshold=1.0, top_k=10, min_sim=-1.0)
-    embedder = make_embedder(name, model, truncate_dim, cfg)
+    embedder = make_embedder(parsed, cfg)
     facts, queries = data["facts"], data["queries"]
     embedder.embed_query("warm up the model")  # exclude cold load from timings
 
-    if float_mode:
+    if parsed.float_mode:
         start = time.perf_counter()
         fact_vecs = embedder.embed(facts)
         embed_ms = (time.perf_counter() - start) * 1000
@@ -82,7 +82,7 @@ def evaluate(spec: str, data: dict, base_cfg) -> dict:
     else:
         tmp = tempfile.mkdtemp(prefix="engram-bench-")
         store = Store(Path(tmp) / "eval.db")
-        project = {"key": f"eval-{name}", "path": tmp, "label": "eval"}
+        project = {"key": f"eval-{parsed.name}", "path": tmp, "label": "eval"}
         start = time.perf_counter()
         service.add_facts(store, embedder, cfg, project, "eval", facts)
         embed_ms = (time.perf_counter() - start) * 1000

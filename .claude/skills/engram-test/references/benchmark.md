@@ -47,6 +47,10 @@ real store that `--distractors` mines and `--latency` times (always on a snapsho
   store. The gap between a backend and its `+float` twin is **exactly the int8
   quantization loss** — that is how "int8 ≈ float" was established.
 
+`bench/backends.py` parses it once (`parse_spec` → `Spec`) and builds it in one place
+(`make_embedder`); a harness that ranks through the store builds via `store_embedder`, which
+refuses `+float`. An unknown `+flag` is an error, never folded into the model name.
+
 ---
 
 ## What it reports
@@ -166,16 +170,30 @@ python3 bin/engram eval --backends fastembed --latency [--latency-consolidation]
 ```
 
 - **What runs:** the project's last `--latency-n` distinct answered ledger questions, on a snapshot,
-  through the two production read paths — the hook's `search` and the `recall` tool's
-  `search_fused_with_stats` at `activated_k` — with the numpy scorer and (on the first
-  `--latency-python-n`) the pure-Python one. Query embedding is done once up front and excluded;
-  `now` is pinned to the snapshot's newest fact, so the run is deterministic. A backend whose
-  dim isn't in the store (`stored_dims`) or a `+float` spec is skipped.
-- **What it reports:** per path × scorer, p50 / p90 / max ms per query (clean runs); the median
-  per-stage ms (load / scan / lexical / FTS / pool / fusion / other) from a separate instrumented
-  pass that wraps the production callables listed in `STAGES` (update that table, not the
-  harness, when a hot-path refactor renames a stage); and a **parity digest** — a hash of every
-  query's ranked ids, exact score `repr`s and pool.
+  with the numpy scorer and (on the first `--latency-python-n`) the pure-Python one, through the
+  production read paths (`PATHS`):
+  - `hook` + `index`: the UserPromptSubmit hook's two blocks, memory (`search`) and the index nudge
+    (`index_prompt_block`); the hook's read cost is their sum;
+  - `tool`: the `recall` tool's `search_fused_with_stats` at `activated_k`;
+  - `code` / `docs`: the `search_code` / `search_docs` tools' `search_index`, called as the MCP
+    server calls it.
+
+  Query embedding is done once up front and excluded; `now` is pinned to the snapshot's newest
+  fact, so the run is deterministic. A backend whose dim isn't in the store (`stored_dims`) or a
+  `+float` spec is skipped, and so are the index paths for a project with nothing indexed.
+- **What it reports:**
+  - per path × scorer, p50 / p90 / max ms per query (clean runs);
+  - the token columns: `hit_pct` (share of queries that return anything) and, for the two hook
+    blocks, `mean_chars` (mean characters injected per prompt; `n/a` for the tools, whose replies
+    the model asks for). This is the baseline a gate (`min_sim` / `index_min_sim`) or
+    query-embedding change is judged against;
+  - the median per-stage ms (load / scan / rank / lexical / FTS / pool / fusion, the index's
+    `index_load` / `index_fts` / `freshness`, and `other`), from a separate instrumented pass that
+    wraps the production callables listed in `STAGES`. Update that table, not the harness, when a
+    hot-path refactor renames a stage. A stage a path never reaches is left out of its row;
+  - a **parity digest** per path × scorer: a hash of every query's ranked ids and exact score
+    `repr`s (plus the pool for `tool`, and the rendered block for `index`). `code` / `docs` leave
+    freshness out, because it hashes files on disk.
 - **Proving a refactor is exact:** freeze one copy of the store (`sqlite3` online backup) and pass it
   as `--store-db` to both the before and the after run; equal digests per path × scorer mean
   byte-identical rankings (and so an unchanged calibrated confidence). The live DB changes with

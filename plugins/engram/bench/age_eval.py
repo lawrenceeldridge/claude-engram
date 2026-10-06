@@ -31,7 +31,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from bench.backends import make_embedder, parse_spec
+from bench.backends import parse_spec, store_embedder
 from bench.report import print_rows
 from bench.retrieval import RankFn, fused_ranker, score_queries, search_ranker
 from bench.stats import mcnemar_exact
@@ -161,10 +161,7 @@ def _measure(
 
 
 def evaluate_aged(spec: str, data: dict, cfg, distractors: list[tuple[str, float]], seed: int = 0) -> dict:
-    name, model, truncate_dim, float_mode = parse_spec(spec)
-    if float_mode:
-        raise ValueError("+float ranks outside the store; the age benchmark needs the real ranking paths")
-    embedder = make_embedder(name, model, truncate_dim, cfg)
+    embedder = store_embedder(parse_spec(spec), cfg, "the age benchmark")
     facts, queries = data["facts"], data["queries"]
     records, old = stamp_ages(facts, time.time(), seed)
     old_q, new_q = split_by_age(queries, old)

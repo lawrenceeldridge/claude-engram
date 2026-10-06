@@ -414,7 +414,7 @@ async function loadSensoryPage() {
 // selected project's per-view total (already in the dropdown label); the type legend is shared —
 // stm and ltm hold the same kinds of memory, they differ only in how settled they are.
 function memoryIntroHTML(view) {
-  const m = ($('#project').selectedOptions[0]?.textContent || '').match(/\((\d+)\)\s*$/);
+  const m = ($('#project').selectedOptions[0]?.textContent || '').match(/\\((\\d+)\\)\\s*$/);
   const n = m ? +m[1] : 0;
   const title = view === 'stm' ? 'Short-term memory' : 'Long-term memory';
   const lead = view === 'stm'

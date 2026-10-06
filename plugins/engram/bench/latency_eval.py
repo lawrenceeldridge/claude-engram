@@ -3,17 +3,31 @@
 The labelled benchmark measures *quality* on a few hundred facts; this measures *cost* at the
 size real stores reach (10⁵ facts), where recall is scan-bound. It re-asks the project's own
 recent ledger questions, on a snapshot (``bench.snapshot`` — the source is only opened
-read-only), through the functions production calls: the hook's ``search`` and the ``recall``
-tool's ``search_fused_with_stats`` at ``activated_k``, with each scorer (numpy, pure Python).
+read-only), through the functions production calls (:data:`PATHS`), with each scorer (numpy,
+pure Python):
 
-Three outputs, all repeatable on the same DB file:
+- ``hook`` + ``index`` — the two blocks the UserPromptSubmit hook injects: memory (``search``)
+  and the index nudge (``index_prompt_block``); the hook's read cost is their sum.
+- ``tool`` — the ``recall`` tool's ``search_fused_with_stats`` at ``activated_k``.
+- ``code`` / ``docs`` — the ``search_code`` / ``search_docs`` tools' ``search_index``, called as the
+  MCP server calls it (kind-scoped, default ``k`` and character budget).
+
+The index paths need indexed chunks; a project with none skips them (with a note).
+
+Four outputs, all repeatable on the same DB file:
 
 - **End to end** — per-query wall time (p50 / p90 / max) per path × scorer, from clean runs.
-- **Stages** — where a query's time goes (load / scan / lexical / FTS / pool / fusion), from a
-  separate instrumented pass that wraps the production callables in :data:`STAGES`. The bench
-  never re-implements recall, and the wrappers' overhead stays out of the end-to-end numbers.
-- **A parity digest** per path × scorer — a hash of every query's ranked ids, exact scores and
-  pool — so a refactor of the hot path can prove byte-identical output.
+- **Tokens** — per path, the share of queries that return anything (``hit_pct``) and, for the two
+  hook blocks, the mean characters injected (``mean_chars``) — the baseline a gate change
+  (``min_sim`` / ``index_min_sim``) or a query-embedding change is judged against.
+- **Stages** — where a query's time goes (load / scan / lexical / FTS / pool / fusion, and the
+  index's load / FTS / freshness), from a separate instrumented pass that wraps the production
+  callables in :data:`STAGES`. The bench never re-implements recall, and the wrappers' overhead
+  stays out of the end-to-end numbers. A stage a path never reaches is left out of its row.
+- **A parity digest** per path × scorer — a hash of every query's ranked ids and exact scores
+  (plus the pool for ``tool``; the rendered block for ``index``) — so a refactor of the hot path
+  can prove byte-identical output. ``code`` / ``docs`` leave freshness out: it hashes the files
+  on disk, which change between runs.
 
 Query embedding happens once, up front, and is excluded: the model is not the cost measured
 here. ``now`` is pinned to the snapshot's newest fact timestamp, so recency is deterministic.
@@ -39,26 +53,31 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import NamedTuple
 
 import core.consolidation.integrate as integrate_module
 import core.consolidation.invalidate as invalidate_module
 import core.consolidation.mature as mature_module
 import core.consolidation.refine as refine_module
 import core.consolidation.replay as replay_module
+import core.index.index_recall as index_recall_module
 import core.recall as recall_module
 from bench.backends import make_embedder, parse_spec
 from bench.report import print_rows
 from bench.snapshot import snapshot_project, store_source
 from core.adapters.numpy_scorer import NumpyScorer
 from core.consolidation import consolidate
+from core.index.index_recall import search_index
 from core.ports.embedding import EmbeddingGateway
 from core.ports.scorer import PurePythonScorer
-from core.recall import search, search_fused_with_stats
+from core.recall import render_block, search, search_fused_with_stats
+from core.service import PROMPT_MEMORY_HEADER, index_prompt_block
 from core.store import Store
 
-# (stage label, owner, attribute) — the production callables a recall query's time is spent in.
-# Several owners may share a label (one scorer or one ranker runs per query). Time outside them
-# is ``other`` (the tool's candidate loop and channel sorts, hydration).
+# (stage label, owner, attribute) — the production callables a read's time is spent in. Several
+# owners may share a label (one scorer or one ranker runs per query; recall and the index each
+# import ``fuse``). Time outside them is ``other`` (the tool's candidate loop and channel sorts,
+# hydration; the index block's per-candidate cosine; the index search's diversity pack).
 STAGES: tuple[tuple[str, object, str], ...] = (
     ("load", recall_module, "_recall_rows"),
     ("scan", NumpyScorer, "cosine_all"),
@@ -69,6 +88,11 @@ STAGES: tuple[tuple[str, object, str], ...] = (
     ("fts", Store, "fts_search"),
     ("pool", recall_module, "pool_stats"),
     ("fusion", recall_module, "fuse"),
+    ("fusion", index_recall_module, "fuse"),
+    ("index_load", Store, "chunk_rows"),
+    ("index_load", Store, "get_chunk"),
+    ("index_fts", Store, "chunk_fts_search"),
+    ("freshness", index_recall_module, "_file_freshness"),
 )
 
 # consolidate()'s stages in its order, with the key of the count it returns for each. It imports
@@ -85,12 +109,16 @@ CONSOLIDATION_STAGES: tuple[tuple[str, object, str, str], ...] = (
 )
 
 SCORERS = ("numpy", "python")
-LATENCY_COLS = ["path", "scorer", "queries", "p50_ms", "p90_ms", "max_ms"]
+LATENCY_COLS = ["path", "scorer", "queries", "p50_ms", "p90_ms", "max_ms", "hit_pct", "mean_chars"]
 CONSOLIDATION_COLS = ["stage", "ms", "changed"]
 
 
 class PreEmbedded(EmbeddingGateway):
-    """The run's query vectors, embedded once up front, so query embedding stays out of every timing."""
+    """The run's query vectors, embedded once up front, so query embedding stays out of every timing.
+
+    Every read path embeds its query through ``embed_query``; ``embed`` / ``embed_one`` (stored
+    text) raise, so a read path that embeds anything else fails the run rather than timing a model.
+    """
 
     def __init__(self, inner: EmbeddingGateway, queries: list[str]) -> None:
         self.dim, self.semantic = inner.dim, inner.semantic
@@ -129,19 +157,53 @@ def instrument(stages: tuple[tuple, ...]) -> Iterator[dict[str, float]]:
             setattr(owner, attr, raw)
 
 
-def _hook(store, embedder, project, query, cfg, now):
+class Read(NamedTuple):
+    """One read: what the parity digest hashes, how many results came back, and the characters it
+    injects into the prompt (``None`` for a tool — its output is a reply the model asked for)."""
+
+    out: object
+    returned: int
+    chars: int | None = None
+
+
+def _hook(store, embedder, project, query, cfg, now) -> Read:
     hits = search(store, embedder, project, query, cfg, now=now)
-    return [(row["id"], repr(score)) for score, row in hits]
+    block, _ids = render_block(PROMPT_MEMORY_HEADER, hits, cfg.max_chars)
+    return Read([(row["id"], repr(score)) for score, row in hits], len(hits), len(block))
 
 
-def _tool(store, embedder, project, query, cfg, now):
+def _index(store, embedder, project, query, cfg, now) -> Read:
+    block = index_prompt_block(store, embedder, cfg, project, query)
+    return Read(block, block.count("\n"), len(block))  # one line per hit under the header
+
+
+def _tool(store, embedder, project, query, cfg, now) -> Read:
     result = search_fused_with_stats(store, embedder, project, query, cfg, k=cfg.activated_k)
     hits = [(row["id"], repr(fused), repr(sim)) for fused, sim, row in result.hits]
-    return {"hits": hits, "pool": [result.pool.n, repr(result.pool.mean), repr(result.pool.std)]}
+    return Read({"hits": hits, "pool": [result.pool.n, repr(result.pool.mean), repr(result.pool.std)]}, len(hits))
 
 
-# The two production read paths: what the UserPromptSubmit hook and the `recall` tool call.
-PATHS: dict[str, Callable] = {"hook": _hook, "tool": _tool}
+def _index_search(kind: str) -> Callable[..., Read]:
+    """The ``search_code`` / ``search_docs`` tool for one chunk kind, called as the MCP server calls it."""
+
+    def run(store, embedder, project, query, cfg, now) -> Read:
+        results = search_index(store, embedder, cfg, project, query, kind=kind)["results"]
+        return Read([(r["source_path"], r["anchor"], repr(r["score"])) for r in results], len(results))
+
+    return run
+
+
+# The production read paths: the UserPromptSubmit hook's two blocks, then the `recall`,
+# `search_code` and `search_docs` tools.
+PATHS: dict[str, Callable[..., Read]] = {
+    "hook": _hook,
+    "index": _index,
+    "tool": _tool,
+    "code": _index_search("code_symbol"),
+    "docs": _index_search("doc_section"),
+}
+# The paths that read the code/docs index — skipped for a project with nothing indexed.
+INDEX_PATHS = frozenset({"index", "code", "docs"})
 
 
 def _quantile_ms(seconds: list[float], q: float) -> float:
@@ -150,21 +212,25 @@ def _quantile_ms(seconds: list[float], q: float) -> float:
 
 
 def run_path(path: str, store, embedder, project, queries: list[str], cfg, now: float) -> dict:
-    """Clean end-to-end timings plus the parity digest of one path × scorer."""
+    """Clean end-to-end timings, the token columns and the parity digest of one path × scorer."""
     run = PATHS[path]
     run(store, embedder, project, queries[0], cfg, now)  # warm-up: page cache + first-call costs
-    seconds, outputs = [], []
+    seconds, outputs, reads = [], [], []
     for query in queries:
         start = time.perf_counter()
-        out = run(store, embedder, project, query, cfg, now)
+        read = run(store, embedder, project, query, cfg, now)
         seconds.append(time.perf_counter() - start)
-        outputs.append([query, out])
+        outputs.append([query, read.out])
+        reads.append(read)
     digest = hashlib.sha256(json.dumps(outputs, sort_keys=True).encode()).hexdigest()
+    injected = [read.chars for read in reads if read.chars is not None]
     return {
         "queries": len(queries),
         "p50_ms": statistics.median(seconds) * 1000,
         "p90_ms": _quantile_ms(seconds, 0.9),
         "max_ms": max(seconds) * 1000,
+        "hit_pct": 100 * sum(read.returned > 0 for read in reads) / len(reads),
+        "mean_chars": statistics.fmean(injected) if injected else None,
         "digest": digest,
     }
 
@@ -182,7 +248,11 @@ def stage_breakdown(path: str, store, embedder, project, queries: list[str], cfg
             for label in dict.fromkeys(label for label, *_ in STAGES):
                 per_stage[label].append(totals.get(label, 0.0))
             per_stage["other"].append(elapsed - sum(totals.values()))
-    return {label: statistics.median(values) * 1000 for label, values in per_stage.items()}
+    return {
+        label: statistics.median(values) * 1000
+        for label, values in per_stage.items()
+        if label == "other" or any(values)  # a stage this path never reaches stays out of its row
+    }
 
 
 def _scorer_available(scorer: str) -> bool:
@@ -211,6 +281,12 @@ def evaluate_latency(store, project, inner: EmbeddingGateway, cfg, n: int, pytho
         raise LookupError(f"no answered recall questions for {project['label']} in the ledger")
     embedder = PreEmbedded(inner, queries)
     now = _pinned_now(store, project)
+    paths = list(PATHS)
+    if not store.chunk_count(project["key"]):
+        paths = [path for path in paths if path not in INDEX_PATHS]
+        print(
+            f"[latency] {project['label']} has no indexed chunks — the {', '.join(sorted(INDEX_PATHS))} paths skipped"
+        )
     results: list[dict] = []
     stages: dict[str, dict[str, float]] = {}
     stages_scorer = None
@@ -221,7 +297,7 @@ def evaluate_latency(store, project, inner: EmbeddingGateway, cfg, n: int, pytho
         scorer_cfg = replace(cfg, scorer=scorer)
         subset = queries[:python_n] if scorer == "python" else queries
         breakdown = stages_scorer is None
-        for path in PATHS:
+        for path in paths:
             timing = run_path(path, store, embedder, project, subset, scorer_cfg, now)
             results.append({"path": path, "scorer": scorer, **timing})
             if breakdown:
@@ -254,11 +330,11 @@ def evaluate_consolidation(store, project, embedder: EmbeddingGateway, cfg) -> d
 
 
 def _backend(spec: str, cfg, stored: set[int]) -> EmbeddingGateway | None:
-    name, model, truncate_dim, float_mode = parse_spec(spec)
-    if float_mode:
+    parsed = parse_spec(spec)
+    if parsed.float_mode:
         print(f"[latency skipped {spec}] +float ranks in memory, not through the store")
         return None
-    embedder = make_embedder(name, model, truncate_dim, cfg)
+    embedder = make_embedder(parsed, cfg)
     if embedder.dim not in stored:
         print(f"[latency skipped {spec}] {embedder.dim}-dim queries, but the store holds {sorted(stored)}-dim vectors")
         return None

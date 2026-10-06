@@ -92,6 +92,24 @@ class CaptureWorkerTests(unittest.TestCase):
         self.assertFalse((self.data / ".capture.lock").exists())
         self.assertFalse((self.data / ".consolidate.lock").exists())
 
+    def test_a_capture_rebuilds_an_emptied_keyword_index_first_and_says_so(self):
+        self._run()  # a store with facts
+        store = Store(get_config().db_path)
+        with store.db:
+            store.db.execute(
+                "INSERT INTO facts_fts(facts_fts) VALUES ('delete-all')"
+            )  # what an interrupted replay left
+        rows = store.count()
+        self.assertEqual(store.fts_coverage()["facts_fts"], (0, rows))
+        store.close()
+        self._run()
+        store = Store(get_config().db_path)
+        self.addCleanup(store.close)
+        indexed, total = store.fts_coverage()["facts_fts"]
+        self.assertEqual(indexed, total)
+        store.db.execute("INSERT INTO facts_fts(facts_fts, rank) VALUES ('integrity-check', 1)")  # raises if not
+        self.assertIn(f"fts repair: facts_fts indexed 0 of {rows:,} rows — rebuilt", errlog.last(self.data)["message"])
+
     def test_a_failing_step_is_recorded_not_raised(self):
         with mock.patch.object(service, "capture_transcript_incremental", side_effect=RuntimeError("disk full")):
             self._run()

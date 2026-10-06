@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook — just-in-time, query-specific recall.
 
-Embeds the current prompt, retrieves the top few relevant facts for this project,
-and injects them (threshold-gated, byte-capped) via ``additionalContext``. Fails
-open: any error or empty result prints nothing and exits 0, so memory can never
-block or break a turn. Lands at the tail of the message array (not the cached
-prefix), so keep it small.
+Embeds the current prompt, retrieves the top few relevant facts for this project and the
+most relevant indexed code/docs, and injects them (threshold-gated, byte-capped) via
+``additionalContext``. Fails open: any error or empty result prints nothing and exits 0, so
+memory can never block or break a turn. Lands at the tail of the message array (not the
+cached prefix), so keep it small.
 """
 
 from __future__ import annotations

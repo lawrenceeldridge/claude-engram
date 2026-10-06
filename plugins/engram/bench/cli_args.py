@@ -53,7 +53,8 @@ def add_eval_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--latency",
         action="store_true",
-        help="also time recall's read path (hook + tool, numpy + pure-Python) on a snapshot of --store-project",
+        help="also time the read paths (the hook's memory + index blocks, the recall / search_code / search_docs "
+        "tools; numpy + pure-Python) on a snapshot of --store-project",
     )
     parser.add_argument(
         "--latency-consolidation",

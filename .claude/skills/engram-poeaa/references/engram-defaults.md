@@ -89,7 +89,9 @@ and to quantisation — exactly what the Repository keeps out.
   `Store.active_rows_for_project(...)`, `Store.fts_search(...)`, `Store.chunk_outline(...)`.
 - **No** `def save(self)` / `def find(cls, …)` on any row or dataclass type.
 - Raw SQL lives **only** inside `store.py` (including FTS5 `MATCH` and the migration
-  ladder). Callers never see a SQL string or a cursor.
+  ladder). Callers never see a SQL string or a cursor. The ladder resumes from the store's
+  `user_version` stamp. Its steps are idempotent, a step that must re-run gets a new slot, and a
+  released slot's effect never changes (its implementation may only get safer — e.g. atomic).
 - Idempotency is a Data-Source concern here: `Store.fact_id(project_key, text)` is a
   content hash, and `Store.exists()` / `Store.reinforce()` make re-capture a no-op-or-boost
   rather than a duplicate (see § Offline Concurrency).
@@ -282,6 +284,7 @@ a smell.
 | **Separated Interface** | ✅ default | `EmbeddingGateway(ABC)` in `core/ports/embedding.py`; `Distiller(ABC)` in `core/ports/distill.py`. Concrete impls (`core/adapters/fastembed_gw.py`; `core/adapters/llm_distillers.py` — `ClaudeCliDistiller`, `HTTPDistiller`) live behind them; the core imports the ABC, never the impl |
 | **Plugin** | ✅ default | `get_embedder(cfg)` / `get_distiller(cfg)` select the implementation from config at runtime; a reachable daemon serves recall, else it runs in-process. This is Plugin selection, one place per Composition Root |
 | **Service Stub** | ✅ default | `HashEmbedding` (lexical, zero-dep — the shipped embedding default) and `HeuristicDistiller` (line extraction, zero-dep — the fallback for the default `claude` distiller) are the always-available implementations **and** the test fakes — no network, no model download |
+| **Gateway (per-call wrapper)** | ✅ in use | `QueryMemo` (`core/ports/embedding.py`) is one more `EmbeddingGateway`: it fronts the real one for a single `recall_prompt_block` call and serves the last `embed_query` vector again, so the hook embeds the prompt once for both blocks. Its memo is bespoke, not a catalogued pattern — **not** an Identity Map (n/a here) and never a cross-turn cache (Session State guard): it is created per call, never held by the long-lived daemon |
 | **Special Case / Null Object** | ✅ default | `render_block` returns `""` on empty recall — inject nothing, never a placeholder or an error. Irrelevant turns cost zero tokens |
 | **Value Object** | ✅ default | `DistilledFact`, `Observation`, `Hit`, and the frozen `Config` are immutable value carriers compared by content |
 | **Layer Supertype** | ✅ default | the `EmbeddingGateway` / `Distiller` ABCs are the layer supertypes for their adapters |

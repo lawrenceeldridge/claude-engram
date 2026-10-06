@@ -18,6 +18,7 @@ from unittest import mock
 from _harness import temp_data_dir
 
 from bench import longmemeval as lme
+from bench.backends import make_embedder, parse_spec
 from bench.cli_args import add_eval_arguments
 from core.config import get_config
 
@@ -205,7 +206,7 @@ class EvaluateTests(unittest.TestCase):
     def test_verbatim_arm_indexes_exchanges_and_maps_to_sessions(self):
         q = lme.parse(FIXTURE)[0]
         cfg = replace(self.cfg, episodic_min_chars=0)  # mapping, not the gate, is under test here
-        units = lme.rank_verbatim(lme.make_embedder("hash", None, 0, cfg), cfg, q, Path(self.tmp.name))
+        units = lme.rank_verbatim(make_embedder(parse_spec("hash"), cfg), cfg, q, Path(self.tmp.name))
         self.assertTrue(units)
         self.assertTrue(all(sid in {"s00", "s01", "s02"} for _u, sid, _t in units))
         self.assertTrue(all(text.startswith("User:") for _u, _s, text in units))
@@ -219,7 +220,7 @@ class EvaluateTests(unittest.TestCase):
 
     def test_shipped_path_captures_the_transcript_and_maps_both_surfaces_by_episode(self):
         q = lme.parse(FIXTURE)[0]
-        ranked = lme.rank_shipped(lme.make_embedder("hash", None, 0, self.cfg), self.cfg, q, Path(self.tmp.name))
+        ranked = lme.rank_shipped(make_embedder(parse_spec("hash"), self.cfg), self.cfg, q, Path(self.tmp.name))
         sids = {s.sid for s in q.sessions}
         self.assertTrue(ranked["Vs"] and ranked["Ds"])
         self.assertTrue({sid for _u, sid, _t in ranked["Vs"]} <= sids)  # every exchange maps to its session

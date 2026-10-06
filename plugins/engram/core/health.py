@@ -207,6 +207,21 @@ def errors_check(cfg: Config, now: float | None = None) -> Check:
     return Check("errors", "errors.log", "ok", f"none in the last {ERROR_WINDOW_SECONDS // 3600} h")
 
 
+def fts_check(store: Store) -> Check:
+    """Do the keyword indexes still cover their tables? An interrupted migration can leave one
+    existing but empty — the keyword channel goes blind — until a capture rebuilds it."""
+    short = [
+        f"{fts} indexes {indexed:,} of {rows:,} rows"
+        for fts, (indexed, rows) in store.fts_coverage().items()
+        if indexed != rows
+    ]
+    if short:
+        return Check(
+            "fts", "sqlite", "warn", "; ".join(short) + " — keyword recall is degraded; the next capture rebuilds it"
+        )
+    return Check("fts", "sqlite", "ok", "keyword indexes cover every fact and chunk")
+
+
 def wal_check(cfg: Config) -> Check:
     try:
         size = Path(str(cfg.db_path) + "-wal").stat().st_size
@@ -244,5 +259,6 @@ def checks(cfg: Config, store: Store | None = None) -> list[Check]:
             consolidation_check(cfg),
             errors_check(cfg),
             wal_check(cfg),
+            fts_check(store),
         ]
     return out

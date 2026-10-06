@@ -53,9 +53,11 @@ class FastEmbedGateway(EmbeddingGateway):
         return [self._cut(vec.tolist()) for vec in self._model.embed(texts)]
 
     def embed_query(self, text: str) -> list[float]:
-        # BGE is asymmetric: queries need the model's instruction prefix, which
-        # fastembed applies via query_embed(). Fall back to plain embed if the
-        # installed model/version lacks it.
+        # The model's own query embedding where fastembed specialises one. For the BGE models it
+        # does not (fastembed 0.8: query_embed is plain embed — no instruction prefix), so queries
+        # and passages embed alike; adding BGE's instruction by hand was measured and not adopted
+        # (DESIGN § Embedding backend). Routing every query through here keeps a model that does
+        # specialise it correct. Plain embed if the installed version lacks query_embed.
         query_embed = getattr(self._model, "query_embed", None)
         if query_embed is None:
             return self.embed_one(text)
