@@ -13,7 +13,9 @@ so channels on incompatible score scales combine cleanly with no normalisation.
 
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass, field
+from operator import itemgetter
 
 # Channel weights, tuned for a text-fact store. Similarity carries semantic
 # intent; lexical and fts (keyword/BM25, the latter also over title/narrative) are
@@ -42,21 +44,34 @@ def fuse(
     *,
     weights: dict[str, float] | None = None,
     smoothing: int = DEFAULT_SMOOTHING,
+    limit: int | None = None,
 ) -> list[Fused]:
-    """Reciprocal-rank-fuse channels into one list, highest fused score first."""
+    """Reciprocal-rank-fuse channels into one list, highest fused score first — the first
+    ``limit`` of it when given (ties keep first-seen order either way).
+
+    Scores accumulate as plain floats, in channel order, and a ``Fused`` (with its per-channel
+    contributions) is built only for what is returned: at 10⁵ candidates the per-candidate
+    objects, not the arithmetic, were the cost.
+    """
     effective = dict(DEFAULT_WEIGHTS)
     if weights:
         effective.update(weights)
+    channel_weights = [(channel, effective.get(channel.name, 1.0)) for channel in channels]
 
-    accum: dict[str, Fused] = {}
-    for channel in channels:
-        weight = effective.get(channel.name, 1.0)
+    scores: dict[str, float] = {}
+    for channel, weight in channel_weights:
+        current = scores.get
         for rank_0, fact_id in enumerate(channel.ranked_ids):
-            contribution = weight / (smoothing + rank_0 + 1)
-            entry = accum.get(fact_id)
-            if entry is None:
-                entry = accum[fact_id] = Fused(fact_id=fact_id, score=0.0)
-            entry.score += contribution
-            entry.contributions[channel.name] = contribution
+            scores[fact_id] = current(fact_id, 0.0) + weight / (smoothing + rank_0 + 1)
 
-    return sorted(accum.values(), key=lambda f: f.score, reverse=True)
+    if limit is None:
+        ranked = sorted(scores.items(), key=itemgetter(1), reverse=True)
+    else:
+        ranked = heapq.nlargest(limit, scores.items(), key=itemgetter(1))  # == sorted(...)[:limit], stably
+    out = {fact_id: Fused(fact_id=fact_id, score=score) for fact_id, score in ranked}
+    for channel, weight in channel_weights:
+        for rank_0, fact_id in enumerate(channel.ranked_ids):
+            entry = out.get(fact_id)
+            if entry is not None:
+                entry.contributions[channel.name] = weight / (smoothing + rank_0 + 1)
+    return list(out.values())

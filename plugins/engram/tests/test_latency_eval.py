@@ -108,7 +108,7 @@ class EvaluateLatencyTests(LatencyFixture):
         summary = self._run()
         self.assertEqual(summary["stages_scorer"], _available_scorers()[0])
         self.assertEqual(set(summary["stages"]), set(PATHS))
-        self.assertTrue({"load", "scan", "other"} <= set(summary["stages"]["hook"]))
+        self.assertTrue({"load", "scan", "rank", "other"} <= set(summary["stages"]["hook"]))
         self.assertTrue({"load", "scan", "lexical", "fts", "pool", "fusion"} <= set(summary["stages"]["tool"]))
 
     def test_the_parity_digest_is_stable_across_runs_of_one_db(self):

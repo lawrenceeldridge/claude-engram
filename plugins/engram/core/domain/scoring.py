@@ -12,7 +12,10 @@ stale-but-frequent fact must never out-rank the fact that replaced it.
 
 from __future__ import annotations
 
+import heapq
 import math
+from collections.abc import Sequence
+from operator import itemgetter
 
 
 def recency_decay(age_seconds: float, half_life_days: float) -> float:
@@ -39,6 +42,58 @@ def priority(
     w_freq: float,
 ) -> float:
     return similarity * w_sim + decay * w_recency + freq_boost * w_freq
+
+
+def fact_priority(
+    row, similarity: float, now: float, half_life_days: float, weights: tuple[float, float, float]
+) -> float:
+    """A fact row's Priority Score at ``now``: ``priority`` of its similarity, its recency decay
+    since last seen (else created), and its frequency boost. ``weights`` = (w_sim, w_recency, w_freq)."""
+    seen = row["last_seen"] if row["last_seen"] is not None else row["created_at"]
+    decay = recency_decay(now - seen, half_life_days)
+    return priority(similarity, decay, frequency_boost(row["frequency"] or 1), *weights)
+
+
+def top_by_priority(
+    rows: Sequence,
+    sims: Sequence[float],
+    k: int,
+    *,
+    min_sim: float,
+    now: float,
+    half_life_days: float,
+    weights: tuple[float, float, float],
+) -> list[tuple[float, object]]:
+    """The ``k`` best ``(fact_priority, row)`` among rows whose similarity clears ``min_sim`` —
+    exactly ``sorted(gated, key=score, reverse=True)[:k]`` over rows in their given order —
+    without scoring every row.
+
+    Rows are visited in descending similarity. Decay and boost are each at most 1, so with
+    non-negative weights no row scores above ``sim·w_sim + w_recency + w_freq``; once that bound
+    falls strictly below the k-th best score found, no later row can enter (or tie into) the top
+    k. Float rounding is monotone, so the bound holds for the computed scores too. Ties keep row
+    order, as the full stable sort does.
+    """
+    if min(weights) < 0:
+        raise ValueError("top_by_priority needs non-negative weights (its bound assumes them)")
+    if k <= 0:
+        return []
+    w_sim, w_recency, w_freq = weights
+    best: list[float] = []  # min-heap of the k best scores so far
+    found: list[tuple[int, float]] = []
+    for i in sorted(range(len(rows)), key=sims.__getitem__, reverse=True):
+        sim = sims[i]
+        if sim < min_sim or (len(best) == k and sim * w_sim + w_recency + w_freq < best[0]):
+            break
+        score = fact_priority(rows[i], sim, now, half_life_days, weights)
+        found.append((i, score))
+        if len(best) < k:
+            heapq.heappush(best, score)
+        elif score > best[0]:
+            heapq.heapreplace(best, score)
+    found.sort(key=itemgetter(0))  # back to row order, so the stable sort breaks ties as the full one does
+    found.sort(key=itemgetter(1), reverse=True)
+    return [(score, rows[i]) for i, score in found[:k]]
 
 
 # Salience (importance) by observation type — the "how strongly encoded" signal (emotional /

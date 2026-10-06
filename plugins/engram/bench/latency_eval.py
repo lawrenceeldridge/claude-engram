@@ -57,13 +57,15 @@ from core.recall import search, search_fused_with_stats
 from core.store import Store
 
 # (stage label, owner, attribute) — the production callables a recall query's time is spent in.
-# Several owners may share a label (one scorer runs per path). Time outside them is ``other``
-# (the hook's per-row priority + sort, the tool's candidate loop).
+# Several owners may share a label (one scorer or one ranker runs per query). Time outside them
+# is ``other`` (the tool's candidate loop and channel sorts, hydration).
 STAGES: tuple[tuple[str, object, str], ...] = (
     ("load", recall_module, "_recall_rows"),
     ("scan", NumpyScorer, "cosine_all"),
     ("scan", PurePythonScorer, "cosine_all"),
-    ("lexical", recall_module, "token_set"),
+    ("rank", recall_module, "top_by_priority"),
+    ("rank", recall_module, "_score"),
+    ("lexical", recall_module, "overlap_counts"),
     ("fts", Store, "fts_search"),
     ("pool", recall_module, "pool_stats"),
     ("fusion", recall_module, "fuse"),

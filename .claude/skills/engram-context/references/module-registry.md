@@ -36,10 +36,10 @@ core to Claude Code.
 ### Memory (capture + recall)
 | File | Role |
 |---|---|
-| `store.py` | Repository / Data Mapper over the SQLite store (facts + int8/binary embeddings, rows tagged by project); `reinforce`, `supersede`. |
+| `store.py` | Repository / Data Mapper over the SQLite store (facts + int8/binary embeddings, rows tagged by project); `reinforce`, `supersede`; `scan_rows` — the lean, rowid-ordered columns recall scans (full rows are re-read with `get` for the hits it returns). |
 | `service.py` | Capture Command/Handler — `add_facts`, consolidation, `_find_superseded`; idempotent per fact. Durable-queue handlers `rescue` (re-distil a degraded delta) and `reformat_exchanges` (the `exchange_format` rewrite of pre-footer exchanges), both drained at the head of incremental capture. |
-| `recall/` | Read side — Query Object `search`, hybrid re-rank, `render_block` DTO (Null Object on empty). |
-| `domain/scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`. |
+| `recall/` | Read side — Query Object `search` (exact bounded top-k by default; full rank + sort for cross-project / spreading / STM weight), `search_fused_with_stats` (5-channel fusion over lean rows), `_hydrate` (full rows for what leaves), `render_block` DTO (Null Object on empty). |
+| `domain/scoring.py` | Recency decay `e^(-λt)` + Priority Score `sim·Ws + decay·Wr + freq·Wf`; `fact_priority` (one row's score), `top_by_priority` (the exact k best without scoring every row — decay, boost ≤ 1 bound the score). |
 | `domain/confidence.py` | Pure score behind the `recall` verdict: `pool_stats` / `pool_z` (the best match against every fact scanned), `Calibration` VO + `calibrate` / `calibrated_confidence` (Platt), `sigmoid` (the one logistic — bench `platt_fit` uses it). A ranked score, not a probability; `core.recall.get_calibration` selects the calibration (`None` for the `hash` stub). |
 | `ports/distill.py` | Distiller port (Strategy): the `Distiller` ABC, the `HeuristicDistiller` (zero-dep fallback and test stub; salience-ranked `heuristic_facts`), the `LLMDistiller` template with its pure prompts + parsers (atomic facts + `supersedes` links), `is_distiller_prompt` (derived from those prompts), and `get_distiller` (Plugin selection; imports the adapters on demand). |
 | `transcript.py` | Parse Claude Code transcripts into capturable text: typed lines (conversation `text` / tool `action`, rendered through `ingest.action_line`), the distiller's text, verbatim prompts, and `(role, text)` turns with each action its own `action` turn. |
@@ -60,7 +60,7 @@ core to Claude Code.
 | `domain/entities.py` | Lightweight entity extraction for shared-entity association edges. |
 | `domain/spreading.py` | Spreading activation over the fact association graph (ACT-R). |
 | `domain/privacy.py` | Pure `redact` (credentials, emails, non-project paths → `«redacted»`) for verbatim storage, and `privacy_flags` (the bench's human-gate detector). |
-| `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`) for the fusion lexical channel. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
+| `domain/lexical.py` | Pure tokenisation (`tokenize`, `token_set`) for the fusion lexical channel; `overlap_counts` — the exact per-text query-token overlap via one `str.find` sweep instead of tokenising every text. The zero-dep `hash` embedding is `HashEmbedding` in `ports/embedding.py`. |
 | `domain/quantize.py` | int8 (primary search rep) + binary sign-bit quantisation. |
 | `provision.py` | Self-provisions the private fastembed venv (no manual pip). |
 | `daemon_client.py` | Thin client to the resident daemon; falls back in-process (fail-open). |
@@ -74,7 +74,7 @@ core to Claude Code.
 | `index/treesitter_symbols.py` | TS/JS symbol extraction via `tree-sitter-language-pack`. |
 | `index/chunking.py` | Markdown/doc chunking by heading structure. |
 | `index/index_recall.py` | Ranked index search backing `search_code` / `search_docs` / `search_history` (scoped by kind and optionally one source/episode; cosine via the shared `VectorScorer`; an optional `TimeWindow` boosts candidates indexed in or near it). |
-| `domain/fusion.py` | Weighted Reciprocal Rank Fusion — one `fuse` shared by fact recall (similarity / lexical / fts / recency / frequency) and the index (fts ⊕ cosine). The index's diversity-budget packing is `index/index_recall.py::_diverse_pack`. |
+| `domain/fusion.py` | Weighted Reciprocal Rank Fusion — one `fuse` shared by fact recall (similarity / lexical / fts / recency / frequency) and the index (fts ⊕ cosine); `limit` keeps the top k exactly (plain-float accumulation, `Fused` only for what's returned). The index's diversity-budget packing is `index/index_recall.py::_diverse_pack`. |
 
 ### Consolidation (the sleep pass) and durable work
 | File | Role |

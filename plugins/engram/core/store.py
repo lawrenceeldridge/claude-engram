@@ -37,6 +37,10 @@ def _now(now: float | None) -> float:
     return now if now is not None else time.time()
 
 
+# What recall's scan and ranking read from a fact row (Store.scan_rows) — the rest stays on disk.
+_SCAN_COLUMNS = "id, dim, scale, vec_int8, created_at, last_seen, frequency, tier"
+
+
 def _placeholders(seq) -> str:
     """`?, ?, …` for an IN (...) clause sized to ``seq``."""
     return ",".join("?" for _ in seq)
@@ -884,6 +888,18 @@ class Store:
     def active_rows_for_project(self, project_key: str) -> list[sqlite3.Row]:
         return self.db.execute(
             "SELECT * FROM facts WHERE project_key = ? AND status = 'active'", (project_key,)
+        ).fetchall()
+
+    def scan_rows(self, project_key: str, *, kind: str | None = None, text: bool = False) -> list[sqlite3.Row]:
+        """A project's active facts with only the columns recall's scan and ranking read (plus
+        ``text`` for the lexical channel), in rowid order — the order the full-row query returns.
+        Recall re-reads the few rows it returns in full with ``get``; ``SELECT *`` over 10⁵ rows
+        (~2 KB each, the narrative and bit vector included) was a third of a recall."""
+        columns = _SCAN_COLUMNS + (", text" if text else "")
+        kind_clause, params = (" AND kind = ?", (project_key, kind)) if kind else ("", (project_key,))
+        return self.db.execute(
+            f"SELECT {columns} FROM facts WHERE project_key = ? AND status = 'active'{kind_clause} ORDER BY rowid",
+            params,
         ).fetchall()
 
     def active_antipatterns(self, project_key: str) -> list[sqlite3.Row]:
