@@ -756,9 +756,14 @@ class Store:
         ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
-    def supersede_count(self, fact_id: str) -> int:
-        """How many facts this one superseded — the retention 'surprise' signal (§3A)."""
-        return self.db.execute("SELECT COUNT(*) FROM facts WHERE superseded_by = ?", (fact_id,)).fetchone()[0]
+    def supersede_counts(self) -> dict[str, int]:
+        """How many facts each fact superseded — the retention 'surprise' signal (§3A) — for every
+        fact at once. One grouped scan: ``superseded_by`` is unindexed, so a per-fact ``COUNT(*)``
+        is a full-table scan each, which made a refine pass over a 144k-fact store take ~13.5 h."""
+        rows = self.db.execute(
+            "SELECT superseded_by, COUNT(*) FROM facts WHERE superseded_by IS NOT NULL GROUP BY superseded_by"
+        ).fetchall()
+        return {fact_id: count for fact_id, count in rows}
 
     def set_status(self, fact_ids: list[str], status: str) -> int:
         """Archive a set of facts under ``status`` (reversible; recall scans 'active' only)."""

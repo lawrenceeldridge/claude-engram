@@ -149,6 +149,26 @@ class StageTests(unittest.TestCase):
         self.assertEqual(refine(self.store, cfg, self.project), 2)  # 8 -> 6 (ceil(0.2*8))
         self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 6)
 
+    def test_supersede_counts_are_per_fact_and_omit_the_unsuperseded(self):
+        winner, loser_a, loser_b, bystander = (self._add(t) for t in ("winner fact", "loser a", "loser b", "bystander"))
+        self.store.supersede([loser_a, loser_b], winner)
+        counts = self.store.supersede_counts()
+        self.assertEqual(counts.get(winner), 2)
+        self.assertNotIn(bystander, counts)
+
+    def test_refine_counts_supersessions_in_one_query_whatever_the_store_size(self):
+        # Regression: a per-fact COUNT(*) over the unindexed superseded_by column made one refine
+        # pass over a 144k-fact store take ~13.5 h. The pass must issue one grouped query.
+        for i in range(25):
+            self._add(f"fact number {i} about the deploy pipeline")
+        statements = []
+        self.store.db.set_trace_callback(statements.append)
+        try:
+            refine(self.store, replace(self.cfg, refine_min_retention=10.0), self.project)
+        finally:
+            self.store.db.set_trace_callback(None)
+        self.assertEqual(sum("superseded_by" in sql for sql in statements), 1)
+
     def test_refine_keep_max_is_idempotent(self):
         # Absolute count -> a second pass finds exactly N active and prunes nothing more.
         for i in range(5):
