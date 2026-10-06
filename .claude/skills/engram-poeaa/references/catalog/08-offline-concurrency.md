@@ -23,7 +23,7 @@ Four patterns. "Offline" because they cover **business transactions that span mu
 
 **Forbidden alongside.** Pessimistic Offline Lock for the same resource.
 
-**claude-engram applicability.** ❌ **N/A** — there is no contended mutable aggregate to version. A fact is content-addressed (`fact_id = hash(project_key, text)`) and immutable; re-capture is idempotent, not a competing edit, so there is no lost-update race to detect.
+**claude-engram applicability.** ❌ **N/A** — there is no contended mutable aggregate to version. A fact is content-addressed (`fact_id = hash(project_key, text)`) and immutable; re-capture is idempotent, not a competing edit. The one concurrent *status* write — capture superseding a fact while consolidation archives it (they hold separate single-flight locks) — is settled by a **guard clause**, not a version: every archival `UPDATE` touches only `status = 'active'` rows (`Store.supersede`, `set_status`, `displace_stm`), so the first verdict stands.
 
 ---
 
@@ -82,7 +82,7 @@ Four patterns. "Offline" because they cover **business transactions that span mu
 
 claude-engram's concurrency problem is not contended edits; it is keeping detached capture in order and keeping the store from filling with stale facts. Four mechanisms cover it, none of them a lock:
 
-**Single-flight capture.** The capture hook spawns exactly **one** detached worker/daemon and returns; a second capture for the same session does **not** stack another worker on top. This replaced an earlier worker/daemon pileup (commit `b30889a`). It is the concurrency primitive that actually matters here — bound the fan-out at the point work is spawned, rather than lock the resource work touches.
+**Single-flight capture.** The capture hook spawns exactly **one** detached worker/daemon and returns; a second capture for the same session does **not** stack another worker on top. This replaced an earlier worker/daemon pileup (commit `b30889a`). It is the concurrency primitive that actually matters here — bound the fan-out at the point work is spawned, rather than lock the resource work touches. One implementation (`core/singleflight.py`, a pid lock file with dead-holder reclaim) serves every job: capture, consolidation, the indexer, the edit-reindex drain and the daemon. Consolidation holds **its own** lock, taken after capture releases the capture lock, so a slow pass can delay the next consolidation but never a capture; each stage also runs under a deadline (`Store.deadline`).
 
 **Idempotent-per-fact capture.** `Store.fact_id(project_key, text)` is a content hash, and `Store.exists` / `Store.reinforce` make re-processing the same transcript a **no-op-or-reinforce**, never a duplicate. Re-running capture is always safe — a fact seen again boosts frequency and refreshes recency instead of inserting a second row. This is the safety an Implicit Lock buys (you can't corrupt state by forgetting a guard), achieved by content-addressing rather than locking.
 
@@ -97,7 +97,7 @@ claude-engram's concurrency problem is not contended edits; it is keeping detach
 claude-engram has **no offline locks**, because there is no contended interactive edit. Its concurrency stack is a pipeline of safety mechanisms instead:
 
 ```
-single-flight capture   (one detached worker per session — commit b30889a)
+single-flight capture   (one detached worker per session — commit b30889a; consolidation: its own lock)
     └─ idempotent-per-fact capture   (fact_id content hash + Store.exists / Store.reinforce)
         └─ supersession   (Store.supersede — newer near-identical fact archives older ones)
             └─ TTL sweep   (Store.sweep — retire facts unseen past ttl_days, reversible)

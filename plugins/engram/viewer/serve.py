@@ -197,6 +197,7 @@ PAGE = """<!doctype html>
     <span class="svc" id="svc-emb">emb <b>…</b><span class="d"></span></span>
     <span class="svc" id="svc-dist">dist <b>…</b><span class="d"></span></span>
     <span class="svc" id="svc-scan">scan <b>…</b><span class="d"></span></span>
+    <span id="svc-extra"></span>
     <span id="live" class="off"><span class="dot"></span><span id="live-label">connecting…</span></span>
   </div>
 </header>
@@ -568,6 +569,17 @@ async function loadHealth() {
     svcChip($('#svc-emb'), 'emb', h.embedding);
     svcChip($('#svc-dist'), 'dist', h.distiller);
     svcChip($('#svc-scan'), 'scan', h.scan);
+    // The detached side (store lock, capture, consolidation, errors, WAL) shows a chip only when it warns.
+    const extra = $('#svc-extra');
+    if (extra) {
+      extra.innerHTML = '';
+      for (const [name, s] of Object.entries(h)) {
+        if (['queue', 'embedding', 'distiller', 'scan'].includes(name) || s.state !== 'warn') continue;
+        const el = document.createElement('span');
+        svcChip(el, name, s);
+        extra.appendChild(el);
+      }
+    }
   } catch (e) { /* fail-open: leave the last-known chips */ }
 }
 

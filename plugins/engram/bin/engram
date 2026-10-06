@@ -94,7 +94,7 @@ def cmd_doctor(args) -> int:
         f"min_chars={cfg.episodic_min_chars}  ttl={cfg.episodic_ttl_days or 'off'}d  cap={cfg.episodic_max_chunks or 'off'}"
     )
     for check in health.checks(cfg, store):  # the same checks the viewer's header shows
-        print(f"health      : {check.state:<4}  {check.name:<9} {check.backend} — {check.detail}")
+        print(f"health      : {check.state:<4}  {check.name:<13} {check.backend} — {check.detail}")
     store.close()
     return 0
 

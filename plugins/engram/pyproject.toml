@@ -64,3 +64,9 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["core"]
+# tests/_harness.py sets sys.path (bin/ hook modules) and installs the test guards, so it must
+# precede every import it enables — its own section, ahead of third-party, puts it there.
+section-order = ["future", "standard-library", "harness", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.lint.isort.sections]
+harness = ["_harness"]

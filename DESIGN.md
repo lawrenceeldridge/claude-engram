@@ -363,7 +363,10 @@ transient, `Config`-tunable *control processes* over them.
 
 **Active Systems Consolidation Hypothesis + the Sequential Hypothesis** — an offline
 "sleep" pass (`core/consolidation/`) runs at session checkpoints (not every turn, like
-sleep itself), orchestrated by `consolidate()` and exposed as `engram consolidate`. Its
+sleep itself), orchestrated by `consolidate()` and exposed as `engram consolidate`. It runs in
+the detached capture worker *after* the capture lock is released, under its own single-flight
+lock, and each stage is deadline-bounded (`STAGE_DEADLINE_SECONDS`, rolled back and retried next
+pass if hit) — so a slow pass can delay the next consolidation, never a capture. Its
 stages run in order `replay → mature → displace → integrate → refine → invalidate → purge →
 forget` (the order `consolidate()` runs them); each maps to a mechanism and is individually gated
 — every stage but purge and forget archives reversibly:
@@ -442,7 +445,7 @@ choices, called out so the mapping isn't over-claimed:
   corrected above.
 
 Full design + the durable `WorkQueue` (it carries the `rescue` and `exchange_format` Commands;
-consolidation itself runs inline at the checkpoint):
+consolidation itself runs at the checkpoint in the capture worker, under its own lock):
 [`docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md`](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
 
 ## Cross-project
@@ -484,6 +487,10 @@ consolidate upward. In both modes an explicit `.engram-root` sentinel overrides 
 | Verbatim storage keeps secrets a distiller would drop | exchanges are redacted before storage (credentials, auth headers, token shapes, private keys, emails, non-project paths); local-only store; retention horizon; `episodic_enabled=false` turns the layer off |
 | Over-eager supersession retires a distinct fact | conservative default threshold (0.85); superseded rows are archived (reversible), not deleted |
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
+| A long-lived process holds the write lock (13 h on 2026-10-05) | every `Store` write commits or rolls back (`with self.db`); the MCP server and daemon roll back any stray transaction after each request and log it; interactive hooks never wait on a writer (`INTERACTIVE_BUSY_MS`) and open a current store without the write lock; doctor / the SessionStart notice report a write-locked store |
+| A slow consolidation stage stalls capture (a 13.5 h `refine`, #67) | consolidation holds its own lock, never the capture lock; each stage is deadline-bounded; a per-stage scale test fails any stage that issues SQL per fact |
+| A detached failure goes unseen | the bounded `errors.log`; `core/health` checks (store lock, capture progress, consolidation, errors, WAL) in doctor, the viewer and the SessionStart notice |
+| Hook output silently ignored | every hook emits through `_bootstrap.emit` (the documented envelope); tests parse the real hooks' output |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
 | Durable queue becomes a de-facto dependency | `WorkQueue` is a stdlib-only SQLite queue behind a Separated Interface; no external backend or broker; core stays importable with the standard library alone |
 | Consolidation prunes a still-useful fact | only `refine_keep_max` (a generous idempotent ceiling) ships on; the forgetting levers `refine_prune_percentile` and `refine_min_retention` are default-off; archival is a reversible status flip, not a delete; purge is default-off and only removes rows past a long cold horizon. (`engram eval` is recall-only, so it can't measure these — they're unit-tested instead.) |

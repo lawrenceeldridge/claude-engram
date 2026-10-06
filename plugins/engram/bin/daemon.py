@@ -24,59 +24,19 @@ reexec_if_pinned()
 plugin_root()
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _acquire_lock(lock: Path) -> bool:
-    """Single-flight: only one daemon runs at a time (a dead holder is stolen).
-
-    ensure_daemon pings-then-spawns, but the daemon takes seconds to boot (venv re-exec
-    + embedding-model load); several concurrent SessionStarts would each spawn one, and
-    serve() unlinks-and-rebinds the socket so none fail on bind — leaving orphaned daemons
-    that each pin a warm model in RAM forever. Grabbing this lock BEFORE loading the model
-    means the racers exit cheaply and exactly one daemon survives.
-    """
-    try:
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        try:
-            holder = int(lock.read_text().strip() or 0)
-        except (OSError, ValueError):
-            holder = 0
-        if holder and _alive(holder):
-            return False
-        try:
-            lock.unlink()
-        except OSError:
-            return False
-        return _acquire_lock(lock)
-
-
 def serve() -> None:
+    from core import singleflight
     from core.config import get_config
 
     cfg = get_config()
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    lock = Path(cfg.data_dir) / ".daemon.lock"
-    if not _acquire_lock(lock):
-        return  # another live daemon already owns the socket + warm model
-    try:
-        _serve(cfg, lock)
-    finally:
-        try:
-            lock.unlink()
-        except OSError:
-            pass
+    # ensure_daemon pings-then-spawns, but a daemon takes seconds to boot (venv re-exec + model
+    # load); several concurrent SessionStarts would each spawn one, and serve() unlinks-and-rebinds
+    # the socket so none fail on bind — leaving orphans that each pin a warm model in RAM. Taking
+    # the lock BEFORE loading the model means the racers exit cheaply and exactly one survives.
+    with singleflight.held(Path(cfg.data_dir) / ".daemon.lock") as mine:
+        if mine:
+            _serve(cfg)
 
 
 def _project_from_req(req: dict, cfg, resolve_project):
@@ -94,11 +54,12 @@ def _project_from_req(req: dict, cfg, resolve_project):
     return resolve_project(req.get("cwd"), cfg.markers, identity=cfg.identity, project_dir=req.get("project_dir"))
 
 
-def _serve(cfg, lock: Path) -> None:
+def _serve(cfg) -> None:
+    from core import errlog
     from core.ports.embedding import get_embedder
     from core.project import resolve_project
     from core.service import recall_core_block, recall_prompt_block, recall_structured
-    from core.store import Store
+    from core.store import INTERACTIVE_BUSY_MS, Store
 
     sock_path = str(cfg.sock_path)
     try:
@@ -106,7 +67,8 @@ def _serve(cfg, lock: Path) -> None:
     except OSError:
         pass
 
-    store = Store(cfg.db_path)
+    # It serves only the interactive recall hooks: their ledger writes fail fast, never stall a prompt.
+    store = Store(cfg.db_path, busy_timeout_ms=INTERACTIVE_BUSY_MS)
     embedder = get_embedder(cfg)
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -120,6 +82,7 @@ def _serve(cfg, lock: Path) -> None:
             line = reader.readline()
             if not line:
                 continue
+            op = None  # named in the stray-transaction record, whatever the request was
             try:
                 req = json.loads(line)
                 op = req.get("op")
@@ -139,6 +102,8 @@ def _serve(cfg, lock: Path) -> None:
                     resp = {"error": f"unknown op {op!r}"}
             except Exception as exc:
                 resp = {"error": str(exc)}
+            if store.end_stray_transaction():
+                errlog.record(cfg.data_dir, "daemon", f"op {op!r} left a write transaction open — rolled back")
             conn.sendall((json.dumps(resp) + "\n").encode())
 
 

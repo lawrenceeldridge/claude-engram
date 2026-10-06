@@ -54,7 +54,9 @@ core to Claude Code.
 | `adapters/llm_distillers.py` | The LLM transports behind `LLMDistiller` — `ClaudeCliDistiller` (headless `claude -p`, Haiku, the shipped default, inside its tool/MCP isolation envelope) and `HTTPDistiller` (any OpenAI-compatible endpoint). Only the I/O; stdlib. |
 | `adapters/numpy_scorer.py` | Vectorised (numpy) cosine scan — the fast `VectorScorer` for large stores, behind `ports/scorer.py`. |
 | `ports/scorer.py` | `VectorScorer` port + the stdlib pure-Python default (`get_scorer` picks numpy when present). |
-| `health.py` | Service health — one list of `Check`s (queue, embedding, distiller, recall scan) rendered by `engram doctor`, the viewer's `/api/health` and `engram import`; `scan_check` warns when a numpy-less project's estimated pure-Python scan (`PY_SCAN_NS_PER_ELEMENT` × facts × dim) nears the hook's ceiling. |
+| `health.py` | Service health — one list of `Check`s rendered by `engram doctor`, the viewer's `/api/health` (warn-only chips for the detached side) and `engram import`: queue / embedding / distiller / recall scan (`scan_check` warns when a numpy-less project's estimated pure-Python scan nears the hook ceiling), then store write lock, capture progress (`.capture-requested` marker vs cursor progress), consolidation, last error, WAL size. `session_warnings` → the SessionStart `systemMessage`. |
+| `errlog.py` | Fail open, but leave a record — a bounded, rotating JSON-lines `errors.log` in the data dir (`record`, never raises; `last`). Written by the capture worker, consolidation's stage deadline and the long-lived processes' stray-transaction guard. |
+| `singleflight.py` | One pid-lock implementation (`held`, `acquire`, `release`, `holder`) for capture, consolidation, the indexer, the edit drain and the daemon; a dead holder's lock is reclaimed. |
 | `domain/episodes.py` | Pure episodic pipeline: `exchange_units` (user turn + the assistant turns answering it, verbatim, ~800-char split; its tool actions folded into one `action_footer` on the first part — grouped by verb, capped at 1,024 chars; an exchange of actions alone forms no unit), `should_keep_exchange` (length gate), `prepare_exchanges` (redact → gate; shared by capture and the LongMemEval bench), `refold_exchanges` / `legacy_turns` (the one-off rewrite of pre-footer exchanges), `episode_key` (the `<session>:<delta start>` key shared by a delta's exchanges and the `facts.episode` provenance link). |
 | `domain/temporal.py` | Pure `TimeWindow` VO (epoch bounds, either open) with `distance` / `boost` (×1.4 inside, halving every 7 days outside) and `boost_by_window` (re-scores fused results; never adds or drops one) — `search_history`'s `after` / `before`, parsed from ISO dates in `bin/mcp_server.py`. |
 | `domain/sensory.py` | Pure sensory-register decisions (attention gate, promotion) for the one modality-columned register. |
@@ -80,7 +82,7 @@ core to Claude Code.
 ### Consolidation (the sleep pass) and durable work
 | File | Role |
 |---|---|
-| `consolidation/__init__.py` | `consolidate()` — the checkpoint pass, in order: replay → mature → displace → integrate → refine → invalidate → purge → forget (exchanges). |
+| `consolidation/__init__.py` | `consolidate()` — the checkpoint pass, in order: replay → mature → displace → integrate → refine → invalidate → purge → forget (exchanges). `stages()` is the one stage table (consolidate runs it, the scale test measures it); each stage runs under `STAGE_DEADLINE_SECONDS` (`Store.deadline`). |
 | `consolidation/replay.py` / `mature.py` | Rehearsed STM facts graduate (NREM replay); age-based STM→LTM transfer. |
 | `consolidation/integrate.py` / `refine.py` / `invalidate.py` | Collapse near-duplicates (opt-in LLM merge); SHY-style pruning of low-importance facts; retire anti-patterns whose files are gone. |
 | `consolidation/scoring.py` | Retention score — how important a fact is, for the sleep pass. |
@@ -113,11 +115,11 @@ core to Claude Code.
 | `mark_consulted.py` | PostToolUse — records that an engram lookup ran (enables ordering). |
 | `index_docs.py` | SessionStart — auto-index the project (single-flight, file-capped). |
 | `index_edit.py` | PostToolUse — re-index each Edited/Written file. |
-| `capture.py` | Stop / SessionEnd / PreCompact — detached capture + throttled summary. |
-| `mcp_server.py` | `engram-memory` MCP server (`recall`, `search_code`, `get_symbol`, `code_outline`, `search_docs`, `get_doc_section`, `doc_outline`, `search_history`, `index_docs`, `list_projects`, `invalidate_memory`, `review_memory`); `TOOLS` is the one registry — dispatch is by name to the `_Engine` method. |
-| `daemon.py` | Optional resident embedder (keeps the model warm). |
+| `capture.py` | Stop / SessionEnd / PreCompact — detached capture under `.capture.lock`, then (checkpoints) consolidation under its own `.consolidate.lock`; every best-effort step recorded via `errlog`. |
+| `mcp_server.py` | `engram-memory` MCP server (`recall`, `search_code`, `get_symbol`, `code_outline`, `search_docs`, `get_doc_section`, `doc_outline`, `search_history`, `index_docs`, `list_projects`, `invalidate_memory`, `review_memory`); `TOOLS` is the one registry — dispatch is by name to the `_Engine` method. After every request `_Engine.settle()` rolls back a stray transaction and logs it. |
+| `daemon.py` | Optional resident embedder (keeps the model warm); serves only the interactive recall hooks, so its Store uses `INTERACTIVE_BUSY_MS`; rolls back a stray transaction after each op. |
 | `engram` | The CLI — `doctor`, `capture`, `recall`, `core`, `projects`, `prune`, `sweep`, `setup`, `daemon`, `viewer`, `stats`, `drift`, `eval`, `demo`. |
-| `_bootstrap.py` | Shared path/interpreter bootstrap for the entry points. |
+| `_bootstrap.py` | Shared path/interpreter bootstrap for the entry points; `emit` — the one hook-output envelope (`hookSpecificOutput` + `hookEventName`, top-level `systemMessage`). |
 
 ---
 

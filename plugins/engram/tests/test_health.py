@@ -94,7 +94,10 @@ class ScanCheckTests(unittest.TestCase):
     def test_runs_against_a_real_store(self):
         store = Store(get_config().db_path)
         self.addCleanup(store.close)
-        self.assertEqual(health.checks(self.python_cfg, store)[-1].name, "scan")
+        names = [check.name for check in health.checks(self.python_cfg, store)]
+        self.assertEqual(
+            names, ["queue", "embedding", "distiller", "scan", "store", "capture", "consolidation", "errors", "wal"]
+        )
 
 
 if __name__ == "__main__":

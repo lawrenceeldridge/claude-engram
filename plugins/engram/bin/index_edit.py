@@ -27,38 +27,8 @@ def _paths(data_dir) -> tuple[Path, Path]:
     return Path(data_dir) / ".index-dirty", Path(data_dir) / ".index-edit.lock"
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _acquire(lock: Path) -> bool:
-    """Single-flight: one drain worker at a time (a dead holder is stolen)."""
-    try:
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        try:
-            holder = int(lock.read_text().strip() or 0)
-        except (OSError, ValueError):
-            holder = 0
-        if holder and _alive(holder):
-            return False
-        try:
-            lock.unlink()
-        except OSError:
-            return False
-        return _acquire(lock)
-
-
 def _run_worker() -> None:
+    from core import singleflight
     from core.config import get_config
     from core.index.indexer import index_file
     from core.ports.embedding import get_embedder
@@ -67,43 +37,39 @@ def _run_worker() -> None:
 
     cfg = get_config()
     dirty, lock = _paths(cfg.data_dir)
-    if not _acquire(lock):
-        return  # another worker is draining; our appended entries are in its queue
-
-    store = embedder = None
-    try:
-        proc = Path(str(dirty) + ".proc")
-        while True:
-            try:
-                os.replace(dirty, proc)  # atomically claim the batch; new edits append to a fresh list
-            except OSError:
-                break  # nothing pending
-            files, seen = [], set()
-            for line in proc.read_text(encoding="utf-8", errors="ignore").splitlines():
-                p = line.strip()
-                if p and p not in seen:
-                    seen.add(p)
-                    files.append(p)
-            proc.unlink(missing_ok=True)
-            if not files:
-                continue
-            if store is None:
-                store, embedder = Store(cfg.db_path), get_embedder(cfg)  # loaded once per burst
-            for fp in files:
-                try:
-                    project = resolve_project(
-                        str(Path(fp).parent), cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir
-                    )
-                    index_file(store, embedder, cfg, project, fp)
-                except Exception:
-                    pass  # fail-open per file — one bad edit can't stall the rest
-    finally:
-        if store is not None:
-            store.close()
+    with singleflight.held(lock) as mine:
+        if not mine:
+            return  # another worker is draining; our appended entries are in its queue
+        store = embedder = None
         try:
-            lock.unlink()
-        except OSError:
-            pass
+            proc = Path(str(dirty) + ".proc")
+            while True:
+                try:
+                    os.replace(dirty, proc)  # atomically claim the batch; new edits append to a fresh list
+                except OSError:
+                    break  # nothing pending
+                files, seen = [], set()
+                for line in proc.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    p = line.strip()
+                    if p and p not in seen:
+                        seen.add(p)
+                        files.append(p)
+                proc.unlink(missing_ok=True)
+                if not files:
+                    continue
+                if store is None:
+                    store, embedder = Store(cfg.db_path), get_embedder(cfg)  # loaded once per burst
+                for fp in files:
+                    try:
+                        project = resolve_project(
+                            str(Path(fp).parent), cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir
+                        )
+                        index_file(store, embedder, cfg, project, fp)
+                    except Exception:
+                        pass  # fail-open per file — one bad edit can't stall the rest
+        finally:
+            if store is not None:
+                store.close()
 
 
 def main() -> int:

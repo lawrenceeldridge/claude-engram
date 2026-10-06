@@ -18,6 +18,8 @@ from unittest import mock
 import _harness
 from _harness import ROOT, LiveStoreInTest, LLMCallInTest, allow_llm_transport, scoped_env, temp_data_dir
 
+_STDLIB = sys.stdlib_module_names | {"__future__"}
+
 
 class LLMGuardTests(unittest.TestCase):
     def test_claude_spawn_is_refused_however_it_is_named(self):
@@ -75,7 +77,9 @@ class LLMGuardTests(unittest.TestCase):
 class HermeticEnvTests(unittest.TestCase):
     def test_only_the_harness_settings_remain(self):
         engram = {k for k in os.environ if k.startswith(("ENGRAM_", "CLAUDE_PLUGIN_"))}
-        self.assertEqual(engram, {"ENGRAM_DATA_DIR", "ENGRAM_DISTILLER"})  # a leaked test env shows up here
+        self.assertEqual(
+            engram, {"ENGRAM_DATA_DIR", "ENGRAM_DISTILLER", "ENGRAM_VIEWER_AUTOSTART"}
+        )  # a leak shows up here
         self.assertEqual(os.environ["ENGRAM_DISTILLER"], "heuristic")
         self.assertNotIn("CLAUDE_PROJECT_DIR", os.environ)
         self.assertNotIn("CLAUDE_MEM_DATA_DIR", os.environ)
@@ -165,8 +169,8 @@ class EveryModuleInstallsTheHarnessTests(unittest.TestCase):
                 names = [n.module if isinstance(n, ast.ImportFrom) else n.names[0].name for n in imports]
                 self.assertIn("_harness", names, "add `import _harness  # noqa: F401` (or `from _harness import …`)")
                 first_harness = names.index("_harness")
-                local = [i for i, name in enumerate(names) if name and name.split(".")[0] == "core"]
-                self.assertTrue(all(first_harness < i for i in local), "import _harness before `core`")
+                before = [name for name in names[:first_harness] if name and name.split(".")[0] not in _STDLIB]
+                self.assertEqual(before, [], "only the standard library may be imported before _harness")
 
     def test_no_module_edits_sys_path_itself(self):
         for path in sorted((ROOT / "tests").glob("test_*.py")):

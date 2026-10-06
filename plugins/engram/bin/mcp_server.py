@@ -383,6 +383,13 @@ class _Engine:
         self.embedder = get_embedder(self.cfg)
         self._ready = True
 
+    def settle(self) -> None:
+        """After each request: roll back anything left open on the shared connection, and say so."""
+        if self._ready and self.store.end_stray_transaction():
+            from core import errlog
+
+            errlog.record(self.cfg.data_dir, "mcp_server", "a request left a write transaction open — rolled back")
+
     def _cache_get(self, key: tuple) -> dict | None:
         version = self.store.data_version()
         if version != self._cache_version:
@@ -671,6 +678,7 @@ def main() -> int:
             }
             if request.get("id") is None:
                 response = None
+        ENGINE.settle()
         if response is not None:
             _write(response)
     return 0

@@ -7,8 +7,9 @@ Installed once per process, before any test runs:
    ``sys.path`` — the one copy of the bootstrap every module used to repeat.
 2. **A hermetic environment.** The developer's own engram settings (``ENGRAM_*``,
    ``CLAUDE_PLUGIN_*``, ``CLAUDE_PROJECT_DIR``, ``CLAUDE_MEM_DATA_DIR``) are cleared, so tests run on the shipped
-   defaults whatever the shell exports. Then ``ENGRAM_DISTILLER=heuristic`` and
-   ``ENGRAM_DATA_DIR`` = a per-process temp dir are set; spawned hooks and servers inherit both.
+   defaults whatever the shell exports. Then ``ENGRAM_DISTILLER=heuristic``,
+   ``ENGRAM_VIEWER_AUTOSTART=false`` and ``ENGRAM_DATA_DIR`` = a per-process temp dir are set;
+   spawned hooks and servers inherit them (no LLM, no live store, no stray viewer process).
 3. **No real LLM.** Spawning ``claude`` or calling ``urllib.request.urlopen`` (the HTTP
    distiller's transport — a local Ollama is an LLM too, and tests make no network calls)
    raises :class:`LLMCallInTest`. It is a ``BaseException`` so the distillers' fail-open
@@ -146,6 +147,7 @@ def _install() -> None:
     atexit.register(shutil.rmtree, data_dir, ignore_errors=True)
     os.environ["ENGRAM_DATA_DIR"] = data_dir
     os.environ["ENGRAM_DISTILLER"] = "heuristic"
+    os.environ["ENGRAM_VIEWER_AUTOSTART"] = "false"  # a SessionStart hook under test must not spawn a viewer
 
     real_popen_init = subprocess.Popen.__init__
 

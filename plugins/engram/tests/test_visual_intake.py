@@ -17,8 +17,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-import index_snapshot as hook
 from _harness import ROOT
+
+import index_snapshot as hook
 
 from core.config import get_config
 from core.domain.sensory import normalize_url

@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import shutil
 import socket
+import sqlite3
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
+from core import errlog, singleflight
 from core.config import Config
 from core.ports.scorer import PurePythonScorer, get_scorer
 from core.store import Store
@@ -120,9 +124,125 @@ def scan_check(cfg: Config, store: Store, project_key: str | None = None) -> Che
     )
 
 
+# Operational thresholds — when a detached job's silence means trouble rather than "nothing to do".
+CAPTURE_STALL_SECONDS = 2 * 3600  # captures requested this long past the newest progress
+CAPTURE_STUCK_SECONDS = 30 * 60  # one capture worker holding its lock this long
+CONSOLIDATION_STUCK_SECONDS = 15 * 60  # 8 deadline-bounded stages take minutes at worst
+ERROR_WINDOW_SECONDS = 24 * 3600
+WAL_WARN_BYTES = 512 * 1024 * 1024
+LOCK_PROBE_SECONDS = 0.1
+# The marker the capture worker touches on every start (before its lock): "a capture was attempted".
+CAPTURE_REQUESTED = ".capture-requested"
+
+
+def _ago(seconds: float) -> str:
+    if seconds < 90:
+        return f"{seconds:.0f} s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} min"
+    return f"{seconds / 3600:.1f} h"
+
+
+def store_check(cfg: Config) -> Check:
+    """Can a writer take the store's write lock right now? A held lock stalls every capture."""
+    try:
+        conn = sqlite3.connect(cfg.db_path, timeout=LOCK_PROBE_SECONDS)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.rollback()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc) or "busy" in str(exc):
+            return Check("store", "sqlite", "warn", "write-locked by another connection — captures cannot land")
+        return Check("store", "sqlite", "warn", f"unwritable: {exc}")
+    return Check("store", "sqlite", "ok", "writable")
+
+
+def capture_check(cfg: Config, store: Store, now: float | None = None) -> Check:
+    """Are captures landing? Requests (the worker's start marker) outrunning the newest cursor
+    progress by hours means captures are failing or blocked; a worker holding its lock for long
+    is stuck (e.g. suspended)."""
+    now = time.time() if now is None else now
+    data_dir = Path(cfg.data_dir)
+    held = singleflight.holder(data_dir / ".capture.lock", now)
+    if held and held[1] >= CAPTURE_STUCK_SECONDS:
+        return Check("capture", "worker", "warn", f"pid {held[0]} has held the capture lock for {_ago(held[1])}")
+    progress = store.newest_capture_progress()
+    try:
+        requested = (data_dir / CAPTURE_REQUESTED).stat().st_mtime
+    except OSError:
+        requested = None
+    if requested is None or progress is None:
+        return Check(
+            "capture",
+            "worker",
+            "ok",
+            "no captures yet" if progress is None else f"last progress {_ago(now - progress)} ago",
+        )
+    if requested - progress >= CAPTURE_STALL_SECONDS:
+        return Check(
+            "capture",
+            "worker",
+            "warn",
+            f"captures stalled — requested for {_ago(requested - progress)} without progress",
+        )
+    return Check("capture", "worker", "ok", f"last progress {_ago(now - progress)} ago")
+
+
+def consolidation_check(cfg: Config, now: float | None = None) -> Check:
+    held = singleflight.holder(Path(cfg.data_dir) / ".consolidate.lock", now)
+    if held and held[1] >= CONSOLIDATION_STUCK_SECONDS:
+        return Check("consolidation", "sleep pass", "warn", f"pid {held[0]} has been consolidating for {_ago(held[1])}")
+    return Check("consolidation", "sleep pass", "ok", f"running for {_ago(held[1])}" if held else "idle")
+
+
+def errors_check(cfg: Config, now: float | None = None) -> Check:
+    """The newest entry in the error log (``core.errlog``), if it is recent."""
+    now = time.time() if now is None else now
+    event = errlog.last(cfg.data_dir)
+    if event and now - event.get("ts", 0) < ERROR_WINDOW_SECONDS:
+        when = _ago(now - event["ts"])
+        return Check("errors", "errors.log", "warn", f"{when} ago — {event.get('source')}: {event.get('message')}")
+    return Check("errors", "errors.log", "ok", f"none in the last {ERROR_WINDOW_SECONDS // 3600} h")
+
+
+def wal_check(cfg: Config) -> Check:
+    try:
+        size = Path(str(cfg.db_path) + "-wal").stat().st_size
+    except OSError:
+        size = 0
+    state = "warn" if size >= WAL_WARN_BYTES else "ok"
+    detail = f"{size / 1e6:.0f} MB" + (" — checkpoints are not keeping up" if state == "warn" else "")
+    return Check("wal", "sqlite", state, detail)
+
+
+def session_warnings(cfg: Config, store: Store) -> list[str]:
+    """What the SessionStart hook tells the user (a ``systemMessage``, never model context): the
+    store is write-locked, captures have stalled, or a worker failed in the last day. Empty when
+    healthy — so a healthy session starts exactly as before."""
+    out = []
+    for check in (store_check, lambda c: capture_check(c, store), errors_check):
+        try:
+            result = check(cfg)
+        except Exception:
+            continue  # fail open: a probe that breaks says nothing
+        if result.state != "ok":
+            out.append(f"{result.name} — {result.detail}")
+    return out
+
+
 def checks(cfg: Config, store: Store | None = None) -> list[Check]:
-    """Every subsystem check (the scan check needs a store)."""
+    """Every subsystem check — the service backends, then (with a store) the recall scan and the
+    health of the detached capture / consolidation side."""
     out = [queue_check(), embedding_check(cfg), distiller_check(cfg)]
     if store is not None:
-        out.append(scan_check(cfg, store))
+        out += [
+            scan_check(cfg, store),
+            store_check(cfg),
+            capture_check(cfg, store),
+            consolidation_check(cfg),
+            errors_check(cfg),
+            wal_check(cfg),
+        ]
     return out

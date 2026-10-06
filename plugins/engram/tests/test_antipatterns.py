@@ -19,8 +19,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-import prefer_memory  # PreToolUse guard — Phase 3 anti-pattern warning
 from _harness import ROOT, scoped_env, temp_data_dir
+
+import prefer_memory  # PreToolUse guard — Phase 3 anti-pattern warning
 
 from core import service
 from core.config import get_config

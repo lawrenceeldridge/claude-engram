@@ -14,7 +14,7 @@ import json
 import os
 import sys
 
-from _bootstrap import plugin_root, reexec_if_pinned
+from _bootstrap import emit, plugin_root, reexec_if_pinned
 
 reexec_if_pinned()
 plugin_root()
@@ -41,7 +41,7 @@ def main() -> int:
         from core.ports.embedding import get_embedder
         from core.project import resolve_project
         from core.service import recall_prompt_block
-        from core.store import Store
+        from core.store import INTERACTIVE_BUSY_MS, Store
 
         cfg = get_config()
         project = resolve_project(cwd, cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
@@ -55,12 +55,11 @@ def main() -> int:
             block = resp["block"]
 
         if block is None:
-            store = Store(cfg.db_path)
+            store = Store(cfg.db_path, busy_timeout_ms=INTERACTIVE_BUSY_MS)
             block = recall_prompt_block(store, get_embedder(cfg), cfg, project, prompt)
             store.close()
 
-        if block:
-            print(json.dumps({"additionalContext": block}))
+        emit("UserPromptSubmit", additionalContext=block)
     except Exception as exc:  # fail-open backstop
         print(f"[engram] recall skipped: {exc}", file=sys.stderr)
     return 0

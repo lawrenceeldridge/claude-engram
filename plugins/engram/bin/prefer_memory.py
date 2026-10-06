@@ -95,21 +95,15 @@ def _consulted(session: str) -> bool:
 
 
 def _emit_context(msg: str) -> None:
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg}}))
+    from _bootstrap import emit
+
+    emit("PreToolUse", additionalContext=msg)
 
 
 def _emit_deny(msg: str) -> None:
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": msg,
-                }
-            }
-        )
-    )
+    from _bootstrap import emit
+
+    emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=msg)
 
 
 def _is_indexed(file_path: str) -> bool:
@@ -120,7 +114,7 @@ def _is_indexed(file_path: str) -> bool:
         plugin_root()
         from core.config import get_config
         from core.project import resolve_project
-        from core.store import Store
+        from core.store import INTERACTIVE_BUSY_MS, Store
 
         cfg = get_config()
         path = Path(file_path).resolve()  # match index_file's resolved source paths (symlink-safe)
@@ -128,7 +122,7 @@ def _is_indexed(file_path: str) -> bool:
         root = Path(project["path"]).resolve() if project.get("path") else path.parent
         if not path.is_relative_to(root):
             return False
-        store = Store(cfg.db_path)
+        store = Store(cfg.db_path, busy_timeout_ms=INTERACTIVE_BUSY_MS)
         try:
             return store.source_state(project["key"], str(path.relative_to(root))) is not None
         finally:
@@ -194,7 +188,7 @@ def _antipattern_warning(session: str, tool: str, tool_input: dict) -> str | Non
         from core.config import get_config
         from core.domain.lexical import token_set
         from core.project import GLOBAL_PROJECT_KEY, resolve_project
-        from core.store import Store
+        from core.store import INTERACTIVE_BUSY_MS, Store
 
         cfg = get_config()
         if not cfg.antipatterns:
@@ -203,7 +197,7 @@ def _antipattern_warning(session: str, tool: str, tool_input: dict) -> str | Non
         if not qtokens:
             return None
         project = resolve_project(os.getcwd(), cfg.markers, identity=cfg.identity, project_dir=cfg.project_dir)
-        store = Store(cfg.db_path)
+        store = Store(cfg.db_path, busy_timeout_ms=INTERACTIVE_BUSY_MS)
         try:
             rows = store.active_antipatterns(project["key"]) + store.active_antipatterns(GLOBAL_PROJECT_KEY)
         finally:

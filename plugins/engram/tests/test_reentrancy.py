@@ -19,8 +19,9 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
-from _bootstrap import hooks_disabled
 from _harness import ROOT, scoped_env, temp_data_dir
+
+from _bootstrap import hooks_disabled
 
 from core import service
 from core.adapters import llm_distillers

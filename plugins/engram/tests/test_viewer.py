@@ -56,10 +56,13 @@ class PageScriptTests(unittest.TestCase):
 
 
 class HealthPayloadTests(unittest.TestCase):
-    def test_api_health_keeps_its_shape_and_adds_the_scan_chip(self):
+    def test_api_health_keeps_its_shape_and_carries_every_check(self):
         temp_data_dir(self)
         payload = _health_payload(replace(get_config(), embedding="hash", distiller="heuristic"))
-        self.assertEqual(set(payload), {"queue", "embedding", "distiller", "scan"})
+        self.assertEqual(
+            set(payload),
+            {"queue", "embedding", "distiller", "scan", "store", "capture", "consolidation", "errors", "wal"},
+        )
         for chip in payload.values():
             self.assertEqual(set(chip), {"backend", "state", "detail"})
 

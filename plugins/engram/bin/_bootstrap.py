@@ -82,3 +82,21 @@ def plugin_root() -> Path:
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     return root
+
+
+def emit(event: str, *, system_message: str = "", **fields) -> None:
+    """Print a hook's JSON output in the shape Claude Code reads: event fields (``additionalContext``,
+    ``permissionDecision``, …) under ``hookSpecificOutput`` with its ``hookEventName``, and
+    ``systemMessage`` — a notice shown to the user, never model context — at the top level. A
+    top-level ``additionalContext`` is not read: engram's recall hooks printed that for months, and
+    none of it reached the model. Prints nothing when there is nothing to say."""
+    import json
+
+    out: dict = {}
+    specific = {name: value for name, value in fields.items() if value}
+    if specific:
+        out["hookSpecificOutput"] = {"hookEventName": event, **specific}
+    if system_message:
+        out["systemMessage"] = system_message
+    if out:
+        print(json.dumps(out))
