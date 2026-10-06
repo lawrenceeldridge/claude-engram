@@ -89,7 +89,9 @@ and to quantisation — exactly what the Repository keeps out.
   `Store.active_rows_for_project(...)`, `Store.fts_search(...)`, `Store.chunk_outline(...)`.
 - **No** `def save(self)` / `def find(cls, …)` on any row or dataclass type.
 - Raw SQL lives **only** inside `store.py` (including FTS5 `MATCH` and the migration
-  ladder). Callers never see a SQL string or a cursor.
+  ladder). Callers never see a SQL string or a cursor. The ladder resumes from the store's
+  `user_version` stamp. Its steps are idempotent, a step that must re-run gets a new slot, and a
+  released slot never changes.
 - Idempotency is a Data-Source concern here: `Store.fact_id(project_key, text)` is a
   content hash, and `Store.exists()` / `Store.reinforce()` make re-capture a no-op-or-boost
   rather than a duplicate (see § Offline Concurrency).

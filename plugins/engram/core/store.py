@@ -144,6 +144,8 @@ END;
 # mixed into `facts`, so recall of learned memory is never polluted by raw source
 # chunks. Vectors live inline (dim/scale/vec_int8) exactly as facts store them, and
 # `chunk_sources` records a per-file hash+mtime so re-indexing skips unchanged files.
+# Run only by _v7_index (a released slot, so left as written); _v21 adds the (project_key, kind) and
+# (project_key, anchor) lookup indexes.
 _CHUNK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
   id            TEXT PRIMARY KEY,
@@ -524,10 +526,26 @@ def _v20_exchange_format(db: sqlite3.Connection) -> None:
     )
 
 
-# Ordered schema migrations. user_version marks how many have run; every step is
-# also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
-# EXISTS, rebuild only on first creation), so a database at any prior version —
-# including the legacy FTS flag of 1 — converges by running the rest as no-ops.
+def _v21_chunk_lookup_indexes(db: sqlite3.Connection) -> None:
+    # Covering indexes for the chunk reads that filter past the project: the kind-scoped index
+    # searches (search_code / search_docs prefilter their FTS match and load their rows by
+    # (project_key, kind)) and get_chunk's anchor fallback (get_symbol by name). Measured at 40k
+    # chunks: search_code / search_docs ~160 → ~125 ms, an anchor lookup 12 → 0.03 ms; they build
+    # in ~0.2 s. idx_chunks_project (_v7) stays although both lead with project_key: the hook's
+    # unscoped index prefilter reads it, and without it the planner picks the wider anchor index
+    # (+4 ms a prompt at 40k chunks). Idempotent.
+    db.executescript(
+        "CREATE INDEX IF NOT EXISTS idx_chunks_kind ON chunks(project_key, kind);"
+        "CREATE INDEX IF NOT EXISTS idx_chunks_anchor ON chunks(project_key, anchor);"
+    )
+
+
+# Ordered schema migrations. user_version marks how many have run — it is stamped only after the
+# whole ladder has, so a store stamped N has run steps 1…N and an upgrade runs only the rest. Every
+# step is also individually idempotent (ADD COLUMN only if missing, CREATE … IF NOT EXISTS, rebuild
+# only on first creation), so a store below _LADDER_FLOOR — fresh, or the legacy FTS flag of 1 that
+# predates the ladder — converges by replaying every step. A step that must re-run on stores already
+# stamped past it gets a new slot of its own (see _v17_sensory_schema); a released slot never changes.
 _MIGRATIONS = [
     _v1_lifecycle,
     _v2_structured,
@@ -549,8 +567,10 @@ _MIGRATIONS = [
     _v18_facts_browse_index,
     _v19_fact_episode,
     _v20_exchange_format,
+    _v21_chunk_lookup_indexes,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
+_LADDER_FLOOR = 2  # below this, user_version doesn't say which steps ran (0 = fresh, 1 = legacy FTS flag)
 # Every table / index / trigger the base schema declares — a store missing one isn't current.
 _SCHEMA_OBJECTS = frozenset(
     re.findall(r"CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(\w+)", _SCHEMA, re.I)
@@ -591,13 +611,18 @@ class Store:
     def _migrate(self) -> None:
         """Run the schema-migration ladder up to _SCHEMA_VERSION, then stamp it.
 
-        user_version is the fast path: once stamped, opens are a single PRAGMA read.
-        Below the head we replay every step — cheap because each is idempotent — so
-        a fresh, partial, or legacy database all converge to the same schema.
+        user_version is the fast path: once stamped, opens are a single PRAGMA read. A store stamped
+        below the head runs only the steps after its stamp, so a schema bump costs its own step —
+        replaying the whole ladder took ~8 s at 10⁵ facts (_v6 rebuilds facts_fts on every run), on
+        whichever process opened the store first after an upgrade, often the prompt hook. A store
+        below _LADDER_FLOOR, or stamped past the head by newer code, replays every step instead —
+        each is idempotent — so fresh, legacy and downgraded databases converge to the same schema.
         """
-        if self.db.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION:
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version == _SCHEMA_VERSION:
             return
-        for step in _MIGRATIONS:
+        steps = _MIGRATIONS[version:] if _LADDER_FLOOR <= version < _SCHEMA_VERSION else _MIGRATIONS
+        for step in steps:
             step(self.db)
         self.db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self.db.commit()

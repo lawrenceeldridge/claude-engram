@@ -18,7 +18,7 @@ from core import service
 from core.config import get_config
 from core.ports.embedding import HashEmbedding
 from core.recall import render_block, search
-from core.store import Store
+from core.store import _MIGRATIONS, Store
 
 
 class StmTierTests(unittest.TestCase):
@@ -64,6 +64,8 @@ class StmTierTests(unittest.TestCase):
             "dim INTEGER, scale REAL, vec_int8 BLOB, vec_bits BLOB, importance REAL DEFAULT 0, "
             "frequency INTEGER DEFAULT 1, status TEXT DEFAULT 'active', superseded_by TEXT);"
         )
+        for step in _MIGRATIONS[:8]:  # a store stamped 8 has run steps 1–8 (the stamp follows the ladder)
+            step(con)
         con.execute(
             "INSERT INTO facts (id, project_key, text, status, created_at, last_seen, frequency) "
             "VALUES ('x', 'test', 'legacy fact', 'active', 1.0, 1.0, 1)"

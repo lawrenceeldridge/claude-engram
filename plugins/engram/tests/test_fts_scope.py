@@ -206,9 +206,9 @@ class ScopedFtsPlanTests(_ScopedFixture):
 
     def test_chunk_search_scopes_before_it_ranks(self):
         for kind, source, index in (
-            (None, None, "idx_chunks_project"),
-            ("code_symbol", None, "idx_chunks_project"),
-            (None, "docs/deploy.md", "idx_chunks_source"),
+            (None, None, "COVERING INDEX idx_chunks_project"),  # the narrowest: the hook's prefilter
+            ("code_symbol", None, "COVERING INDEX idx_chunks_kind"),
+            (None, "docs/deploy.md", "COVERING INDEX idx_chunks_source"),
         ):
             with self.subTest(kind=kind, source=source):
                 sql = self._traced(
@@ -259,6 +259,17 @@ class GetChunkTests(_ScopedFixture):
         (statement,) = statements  # found by id: the anchor fallback never runs
         plan = [row[3] for row in self.store.db.execute("EXPLAIN QUERY PLAN " + statement)]
         self.assertEqual(plan, ["SEARCH chunks USING INDEX sqlite_autoindex_chunks_1 (id=?)"])
+
+    def test_an_anchor_is_fetched_through_its_index_in_rowid_order(self):
+        statements: list[str] = []
+        self.store.db.set_trace_callback(statements.append)
+        try:
+            self.assertIsNotNone(self.store.get_chunk("alpha", "Deploy.run"))
+        finally:
+            self.store.db.set_trace_callback(None)
+        fallback = statements[-1]  # the id lookup missed; the anchor lookup answered
+        plan = [row[3] for row in self.store.db.execute("EXPLAIN QUERY PLAN " + fallback)]
+        self.assertEqual(plan, ["SEARCH chunks USING INDEX idx_chunks_anchor (project_key=? AND anchor=?)"])
 
     def test_an_id_from_another_project_is_not_returned(self):
         self.assertIsNone(self.store.get_chunk("beta", self.store.chunk_id("alpha", "src/widget.py", "Deploy.run")))

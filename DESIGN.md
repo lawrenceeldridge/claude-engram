@@ -508,6 +508,7 @@ consolidate upward. In both modes an explicit `.engram-root` sentinel overrides 
 | Hook error breaks a turn | every hook exits 0 on any error, injects nothing |
 | Irrelevant recall pollutes context | `min_sim` threshold + `top_k` + `max_chars` cap + project scoping |
 | Cross-project leakage | project-scoped by default; fallback penalised and opt-in |
+| A schema upgrade stalls the first hook on a large store | the migration ladder resumes from the store's `user_version` stamp, so a bump runs only its own step (0.17 s at 213k facts, where replaying all 21 steps took 7.7 s); every step is idempotent, a step that must re-run gets a new slot, and a released slot never changes |
 | Store growth / stale facts | recency decay + supersession de-rank/retire old facts; idempotent capture; viewer prune; verbatim exchanges bounded by `episodic_ttl_days` + `episodic_max_chunks` (reported by `engram doctor`) |
 | Verbatim storage keeps secrets a distiller would drop | exchanges are redacted before storage (credentials, auth headers, token shapes, private keys, emails, non-project paths); local-only store; retention horizon; `episodic_enabled=false` turns the layer off |
 | Over-eager supersession retires a distinct fact | conservative default threshold (0.85); superseded rows are archived (reversible), not deleted |
