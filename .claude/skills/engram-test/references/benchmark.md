@@ -32,10 +32,11 @@ python3 bin/engram eval --backends "hash,fastembed" --confidence  # recall-verdi
 ```
 
 `bin/engram eval` and `bench/run_eval.py` share one flag definition
-(`run_eval.add_eval_arguments`), so every scenario flag works from both: `--stm`,
+(`bench/cli_args.add_eval_arguments`), so every scenario flag works from both: `--stm`,
 `--antipatterns`, `--integrate`, `--confidence` (+ `--ok-precision`), `--aged`, `--longmemeval`
-(+ `--lme-path` / `--lme-download` / `--lme-split` / `--lme-limit` / `--lme-out` / `--lme-shipped` / `--lme-llm`); `--distractors`,
-`--distractor-project`, `--distractor-db` pad the store for `--confidence` / `--aged`.
+(+ `--lme-path` / `--lme-download` / `--lme-split` / `--lme-limit` / `--lme-out` / `--lme-shipped` / `--lme-llm`); `--latency` / `--latency-consolidation` (+ `--latency-n` / `--latency-python-n` / `--latency-out`);
+`--distractors` pads the store for `--confidence` / `--aged`; `--store-project` / `--store-db` name the
+real store that `--distractors` mines and `--latency` times (always on a snapshot).
 
 ### Backend spec: `name[@model][%dim][+float]`
 
@@ -146,11 +147,45 @@ identified at this sample size (a held-out re-check found half-size fits spread 
 0.39–0.90 while `z*` stayed centred on the shipped 4.52).
 
 Density matters (the failure mode is many near-neighbours), so `--distractors N
---distractor-project <key|label>` pads the store with facts mined **at runtime** from a
+--store-project <key|label>` pads the store with facts mined **at runtime** from a
 snapshot of a real engram DB (`bench/distractors.py`, `bench/snapshot.py`) — never written
 to the repo; contamination/privacy-flagged and dataset-near-duplicate facts are dropped.
 `bench/replay_ledger.py` is the unlabelled reality check: it replays the last N real ledger
 queries on a snapshot of the live store.
+
+
+## Recall latency (`--latency`, `--latency-consolidation`)
+
+The labelled set measures *quality* on a few hundred facts; `--latency` measures *cost* at the
+size real stores reach (10⁵ facts), where recall is scan-bound (`bench/latency_eval.py`):
+
+```bash
+python3 bin/engram eval --backends fastembed --latency [--latency-consolidation] \
+  --store-project <key|label> [--store-db <frozen copy>] [--latency-n 40] [--latency-python-n 3] \
+  [--latency-out run.json]
+```
+
+- **What runs:** the project's last `--latency-n` distinct answered ledger questions, on a snapshot,
+  through the two production read paths — the hook's `search` and the `recall` tool's
+  `search_fused_with_stats` at `activated_k` — with the numpy scorer and (on the first
+  `--latency-python-n`) the pure-Python one. Query embedding is done once up front and excluded;
+  `now` is pinned to the snapshot's newest fact, so the run is deterministic. A backend whose
+  dim isn't in the store (`stored_dims`) or a `+float` spec is skipped.
+- **What it reports:** per path × scorer, p50 / p90 / max ms per query (clean runs); the median
+  per-stage ms (load / scan / lexical / FTS / pool / fusion / other) from a separate instrumented
+  pass that wraps the production callables listed in `STAGES` (update that table, not the
+  harness, when a hot-path refactor renames a stage); and a **parity digest** — a hash of every
+  query's ranked ids, exact score `repr`s and pool.
+- **Proving a refactor is exact:** freeze one copy of the store (`sqlite3` online backup) and pass it
+  as `--store-db` to both the before and the after run; equal digests per path × scorer mean
+  byte-identical rankings (and so an unchanged calibrated confidence). The live DB changes with
+  every capture, so two runs against it are not comparable.
+- **`--latency-consolidation`** times one `consolidate()` pass per stage (`CONSOLIDATION_STAGES`,
+  with each stage's changed-row count) on its own snapshot — consolidation writes. The whole run
+  pins `distiller="heuristic"`: integrate's LLM tier would otherwise call `claude -p` per cluster,
+  so the timings are the store-side cost only.
+- Run it with the interpreter that serves recall (the managed fastembed venv), so numpy and the
+  store's embedding model are present.
 
 
 ## Age-aware ranking (`--aged`)

@@ -126,16 +126,16 @@ class RankerAndEvalTests(unittest.TestCase):
 
 class LoadDistractorsTests(unittest.TestCase):
     def test_zero_requested_mines_nothing(self):
-        args = argparse.Namespace(distractors=0, distractor_project=None, distractor_db=None)
+        args = argparse.Namespace(distractors=0, store_project=None, store_db=None)
         self.assertEqual(load_distractors(args, get_config(), exclude=[]), [])
 
     def test_padding_without_a_source_project_is_refused(self):
-        args = argparse.Namespace(distractors=10, distractor_project=None, distractor_db=None)
+        args = argparse.Namespace(distractors=10, store_project=None, store_db=None)
         self.assertIsNone(load_distractors(args, get_config(), exclude=[]))
 
     def test_a_missing_source_db_is_refused_not_a_traceback(self):
         with tempfile.TemporaryDirectory() as tmp:
-            args = argparse.Namespace(distractors=10, distractor_project="p", distractor_db=str(Path(tmp) / "none.db"))
+            args = argparse.Namespace(distractors=10, store_project="p", store_db=str(Path(tmp) / "none.db"))
             self.assertIsNone(load_distractors(args, get_config(), exclude=[]))
 
 

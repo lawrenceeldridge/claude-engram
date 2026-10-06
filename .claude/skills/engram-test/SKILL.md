@@ -135,10 +135,11 @@ cd plugins/engram
 python3 bin/engram eval --backends hash                                   # zero-dep default
 python3 bin/engram eval --backends "hash,fastembed"                       # A/B the stub vs real model
 python3 bin/engram eval --backends "fastembed,fastembed+float"            # isolate int8 quantization loss
+python3 bin/engram eval --backends fastembed --latency --store-project <key|label>   # hot-path cost on a real store
 ```
 
 Reports Recall@1, Recall@3, MRR@10, and bytes/fact over the bundled labelled set
-(18 facts, 14 paraphrased queries) through the real quantised store path. The
+(297 facts, 244 paraphrased queries) through the real quantised store path. The
 `+float` twin ranks on raw vectors, so the gap to it is exactly the int8 loss.
 **The rule:** any change to embeddings, ranking, quantisation, fusion, or
 distillation is A/B'd here before it ships — see
@@ -210,8 +211,8 @@ Read on demand based on mode and depth. Each is small and focused.
   eight deletion/merge heuristics, `subTest`/property alternatives, the "what NOT
   to delete" allowlist.
 - [`references/benchmark.md`](references/benchmark.md) — `engram eval` in depth:
-  dataset shape, metrics, backend spec, the int8-loss A/B, and the
-  measure-before-shipping rule (plus the optional CI eval smoke).
+  dataset shape, metrics, backend spec, the int8-loss A/B, the `--latency` cost harness and
+  its parity digest, and the measure-before-shipping rule (plus the optional CI eval smoke).
 
 ---
 

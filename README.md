@@ -491,10 +491,15 @@ facts contain the answer": the answerable queries plus 89 unanswerable, near-top
 run through the real on-demand recall path, and each candidate confidence score is
 reported for discrimination (AUROC), calibration (Brier/ECE) and `ok` precision/recall —
 Platt fitted on a fixed dev half of the queries, every metric scored on the other half.
-`--distractors N --distractor-project <key|label>` pads the store with facts mined at
+`--distractors N --store-project <key|label>` pads the store with facts mined at
 runtime from a snapshot of a real store (filtered, never written to the repo) to
 reproduce real density; `bench/replay_ledger.py` replays real recall-ledger queries on a
-snapshot of the live store.
+snapshot of the live store. `--latency --store-project <key|label>` measures *cost* rather than
+quality: it re-asks that project's own recent ledger questions on a snapshot through the hook's
+and the `recall` tool's search paths, with the numpy and the pure-Python scorer (query embedding
+excluded), and prints per-query p50/p90/max, a per-stage breakdown and a parity digest that
+proves a hot-path refactor left rankings byte-identical; `--latency-consolidation` times one
+consolidation pass per stage on its own snapshot.
 
 Measured on the bundled set (297 facts, 244 paraphrased queries — mined from real
 sessions, with 58 untargeted hard-negative facts; the earlier 64/77 set is frozen as

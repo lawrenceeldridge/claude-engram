@@ -195,7 +195,7 @@ barely moves between embedding models. Measured on `engram eval --confidence` (f
   is well determined; `a` and `b` individually are not (half-size fits spread `a` over 0.39–0.90).
 
 Reproduce: `engram eval --backends hash,fastembed --confidence [--distractors N
---distractor-project <key>] --confidence-out obs.jsonl` — Platt is fitted on the dev half (the
+--store-project <key>] --confidence-out obs.jsonl` — Platt is fitted on the dev half (the
 `platt (a, b) [dev]` column) and every other column is scored on the test half;
 `bench/replay_ledger.py` replays real ledger queries unlabelled.
 

@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import argparse
 import random
-from pathlib import Path
 
 from bench.mine_corpus import contamination_hit
-from bench.snapshot import snapshot_db
+from bench.snapshot import snapshot_project, store_source
 from core.domain.lexical import token_set
 from core.domain.privacy import privacy_flags
 from core.project import Project
@@ -26,14 +25,6 @@ from core.store import Store
 
 MIN_LEN = 40  # same floor as mine_corpus: short fragments aren't facts
 NEAR_DUP_JACCARD = 0.6  # a distractor this close to a dataset fact could answer its queries
-
-
-def find_project(store: Store, ref: str) -> Project | None:
-    """The project whose key or label equals ``ref`` exactly."""
-    for row in store.projects():
-        if ref in (row["project_key"], row["project_label"]):
-            return store.project_meta(row["project_key"])
-    return None
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -69,25 +60,17 @@ def mine_distractors(
 
 
 def load_distractors(args: argparse.Namespace, cfg, exclude: list[str]) -> list[tuple[str, float]] | None:
-    """Mine ``--distractors`` from a snapshot of ``--distractor-db``; ``None`` on a bad request."""
+    """Mine ``--distractors`` from a snapshot of ``--store-db``; ``None`` on a bad request."""
     if args.distractors <= 0:
         return []
-    if not args.distractor_project:
-        print("[distractors] --distractors needs --distractor-project (a project key or label)")
+    source = store_source(args, cfg, "distractors")
+    if source is None:
         return None
-    source = args.distractor_db or cfg.db_path
-    if not Path(source).is_file():
-        print(f"[distractors] no engram DB at {source} (pass --distractor-db)")
-        return None
-    with snapshot_db(source) as snapshot:
-        store = Store(snapshot)
-        try:
-            project = find_project(store, args.distractor_project)
-            if project is None:
-                print(f"[distractors] no project {args.distractor_project!r} in {source}")
-                return None
+    try:
+        with snapshot_project(source, args.store_project) as (store, project):
             mined = mine_distractors(store, project, args.distractors, exclude)
-        finally:
-            store.close()
+    except LookupError as exc:
+        print(f"[distractors] {exc}")
+        return None
     print(f"distractors: {len(mined)} mined from {project['label']} (requested {args.distractors})")
     return mined

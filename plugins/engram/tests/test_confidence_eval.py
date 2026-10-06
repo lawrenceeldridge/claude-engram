@@ -33,9 +33,9 @@ from bench.confidence_eval import (
     summarise,
     write_observations,
 )
-from bench.distractors import find_project, mine_distractors
+from bench.distractors import mine_distractors
 from bench.replay_ledger import replay
-from bench.snapshot import snapshot_db
+from bench.snapshot import find_project, snapshot_db
 from bench.stores import build_store
 from core import service
 from core.config import get_config
