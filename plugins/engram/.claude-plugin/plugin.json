@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "displayName": "Long-Term Memory",
-  "version": "0.32.1",
+  "version": "0.33.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — memory stays on your machine, no API key, no telemetry; set distiller=heuristic to keep it fully offline.",
   "author": {
     "name": "Lawrence Eldridge"
