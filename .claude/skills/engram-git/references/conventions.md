@@ -239,6 +239,9 @@ Steps:
    [`plugins/engram/.claude-plugin/plugin.json`](../../../../plugins/engram/.claude-plugin/plugin.json)
    and [`.claude-plugin/marketplace.json`](../../../../.claude-plugin/marketplace.json),
    kept in sync (semver: `feat` → minor, `fix`/`perf` → patch, breaking → major).
+   `plugins/engram/pyproject.toml` has **no** version of its own: hatchling reads it from
+   `plugin.json` (`[tool.hatch.version]`), so never add one there — a hand-set copy sat
+   stale at `0.13.1` (and the name at `ltm`) for 20 releases.
    ⚠️ **Edit these JSON files by hand — never `ruff format` them.** `ruff format`
    rewrites JSON with trailing commas, producing invalid JSON. `ruff format --check .`
    will also *report* the manifests as "would reformat"; that is a false positive, not
