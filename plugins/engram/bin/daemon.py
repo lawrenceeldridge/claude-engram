@@ -3,11 +3,12 @@
 
 Short-lived hook processes would otherwise reload the embedding model on every
 turn (seconds, with a real ONNX model). The daemon holds it warm and answers
-recall over a Unix socket. Single-threaded on purpose: recall is sub-10ms and a
-serial loop sidesteps SQLite's per-thread connection rule.
+recall over a Unix socket. Single-threaded on purpose: one recall takes ~10 ms on a
+personal project (~0.5 s at 10⁵ facts) and a serial loop sidesteps SQLite's per-thread
+connection rule.
 
-Run manually (``engram daemon``) and set ``ENGRAM_DAEMON=1`` so the recall hook uses it;
-if it is not running, the hook silently falls back to in-process recall.
+SessionStart starts it when fastembed is provisioned (``engram daemon`` runs one by hand); the
+recall hooks use it when it answers and silently fall back to in-process recall when not.
 """
 
 from __future__ import annotations

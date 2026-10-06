@@ -102,12 +102,34 @@ This is why recall is a **hybrid**: cache-friendly core + relevance-driven JIT.
 
 ## Latency efficiency
 
-- Capture is fully **detached** — the hook spawns a worker and returns.
-- Recall is brute-force cosine over **int8** vectors — sub-10ms for a personal
-  store; no ANN index needed until ~500k facts.
+- Capture is fully **detached** — the hook spawns a worker and returns; consolidation runs in
+  that worker under its own lock, so it never delays a capture either.
+- Recall is an **exact** brute-force cosine over **int8** vectors (numpy-vectorised; the
+  calibrated confidence is defined over the whole scanned pool, so it stays exact — no ANN).
+  Measured with `engram eval --latency` (fastembed bge-base + numpy, real ledger questions,
+  query embedding excluded, median per query):
+
+  | store (active facts) | hook (`search`) | `recall` tool (`search_fused_with_stats`) |
+  |---|---|---|
+  | 2.8k (a personal project) | **11 ms** | 342 ms |
+  | 55k | 186 ms | 687 ms |
+  | 144k (a 10⁵ `engram import`) | **496 ms** | 1,432 ms (p90 2.1 s) |
+
+  Cost is linear in the project's facts: lean scan rows (`Store.scan_rows`, full rows re-read
+  only for the hits), an exact bounded top-k for the hook (`scoring.top_by_priority`), exact
+  lexical overlap (`lexical.overlap_counts`) and top-k fusion (`fuse(limit=)`) took the 144k
+  hook from 1.28 s and the tool from 2.68 s with byte-identical rankings (parity digests). The
+  tool's keyword channel is the remaining floor: `facts_fts` is not project-scoped, so each
+  `MATCH` scores the whole store's matches (~0.2–0.4 s at any project size).
+- Without numpy (a `hash` install on a bare interpreter) the scan is pure Python, ~106 ns per
+  vector element — 11.6 s at 144k × 768 dims, past the 5 s hook ceiling; `engram doctor`, the
+  viewer and `engram import` warn once the estimate reaches 2 s (`core/health.py`).
 - Hooks are **short-lived processes**, so a real embedding model would reload
   every turn. The optional **resident daemon** holds it warm; the hook is a thin
   client that **falls back to in-process** on any failure (fail-open).
+- An interactive hook never waits on another writer: a current store opens without the write
+  lock and its telemetry writes give up after 250 ms (`INTERACTIVE_BUSY_MS`) — when every open
+  took the write lock, a contended store cancelled the prompt hook at its 5 s ceiling.
 
 ## Embedding backend — measured, not assumed
 

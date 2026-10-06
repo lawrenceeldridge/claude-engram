@@ -155,7 +155,7 @@ cached prefix). See [DESIGN.md Cache efficiency](../../../../DESIGN.md).
 
 | Operation | On interactive path | Detached / daemon | Fail-open |
 |-----------|---------------------|-------------------|-----------|
-| Query embed + cosine search | Yes (must be <10ms / 5s ceiling) | daemon warms model | falls back in-process |
+| Query embed + cosine search | Yes (5s ceiling; ~11 ms personal, ~0.5 s at 10⁵ facts — `engram eval --latency`) | daemon warms model | falls back in-process |
 | Distillation + capture | No | spawned worker | heuristic fallback |
 
 #### Benchmark Requirement

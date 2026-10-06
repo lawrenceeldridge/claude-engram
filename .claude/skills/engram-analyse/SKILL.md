@@ -209,8 +209,10 @@ ranking.
    every later turn); `UserPromptSubmit` injection sits at the tail (never a same-turn
    cache hit). Putting per-turn-varying content at `SessionStart` busts the prefix.
    See [DESIGN.md § Cache efficiency](../../../DESIGN.md).
-3. **Latency budget (hot path)** — Recall is brute-force cosine over int8 vectors,
-   sub-10ms. Is any embedding/distillation on the interactive path? It must be
+3. **Latency budget (hot path)** — Recall is an exact brute-force cosine over int8 vectors:
+   ~11 ms per prompt on a personal project, ~0.5 s at 10⁵ facts (`engram eval --latency` —
+   compare before/after on one frozen store; its parity digest proves rankings unchanged).
+   Is any embedding/distillation on the interactive path, or does the hook wait on a writer? It must be
    **detached** (capture worker) or served by the resident daemon; the hook must fall
    back in-process and respect the 5s ceiling.
 4. **Measure it** — Any change to embeddings, ranking, quantisation, fusion, or
@@ -343,7 +345,7 @@ hot-path, recall, or capture change.
 | Tests / bench / viewer | `plugins/engram/tests`, `bench`, `viewer` | stdlib suite, `engram eval` benchmark, localhost browser |
 
 **The two budgets:** interactive **tokens** (recall injection — gated + capped) and
-hot-path **latency** (embed + search — sub-10ms, capture detached). Every change
+hot-path **latency** (embed + search — ~11 ms on a personal project, ~0.5 s at 10⁵ facts; capture detached). Every change
 states which it touches.
 
 **Key contracts:** core imports the standard library only (`fastembed` is an opt-in

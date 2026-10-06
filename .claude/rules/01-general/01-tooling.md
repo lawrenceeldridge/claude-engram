@@ -8,7 +8,8 @@ alwaysApply: true
 
 Python 3 with full type hints, `ruff` for linting/formatting, `unittest`/`pytest`
 for tests. No async requirement — hooks are short-lived processes and recall is a
-synchronous, sub-10ms cosine scan.
+synchronous, exact cosine scan (~11 ms per prompt on a personal project, ~0.5 s at 10⁵ facts —
+measure with `engram eval --latency`).
 
 ## The stdlib-first dependency contract
 

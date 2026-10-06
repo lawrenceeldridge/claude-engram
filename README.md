@@ -23,11 +23,13 @@ Two budgets are optimised separately (see [DESIGN.md](DESIGN.md)):
   The index returns outlines (qualname + signature + anchor), not file contents —
   you fetch one symbol's body on demand instead of reading whole files.
 - **Latency** — capture (and any LLM distillation) is fully detached: zero
-  interactive cost. Recall is a brute-force cosine over quantised (int8) vectors —
-  sub-10ms for a personal store, and **numpy-vectorised** (numpy ships with the
-  `fastembed` extra) so it stays within the recall hook's budget even on a 10⁵-fact
-  store; it falls back to a pure-Python scan when numpy is absent. An optional
-  resident daemon keeps the embedding model warm across the short-lived hook processes.
+  interactive cost. Recall is an exact brute-force cosine over quantised (int8) vectors,
+  **numpy-vectorised** (numpy ships with the `fastembed` extra): the per-prompt hook takes
+  ~11 ms on a 2.8k-fact project and ~0.5 s on a 144k-fact one (measured with
+  `engram eval --latency`), well inside the hook's 5 s budget. Without numpy the scan is pure
+  Python — fine for a few thousand facts; `engram doctor` warns when a project outgrows it.
+  An optional resident daemon keeps the embedding model warm across the short-lived hook
+  processes, and an interactive hook never waits on another writer.
 
 ## How memory behaves (cognitive model)
 
@@ -334,7 +336,6 @@ Env-only knobs (no `userConfig` entry):
 | Env var | Default | Meaning |
 |---|---|---|
 | `ENGRAM_ENFORCE` | `advisory` | memory-first guard strength — `off` / `advisory` / `strict` (see above) |
-| `ENGRAM_DAEMON` | *(unset)* | `1` makes the recall hook use the resident daemon instead of loading the model in-process |
 | `ENGRAM_PYTHON` / `python` userConfig | *(blank)* | pin an interpreter that already has fastembed; blank = auto-provisioned managed venv |
 
 Advanced ranking weights (`w_sim`, `w_recency`, `w_freq`) are tunable via `ENGRAM_*`
@@ -434,9 +435,10 @@ private venv** under the plugin data dir and downloads the model once — no man
 short-lived hook processes:
 
 ```bash
-python3 bin/engram daemon                 # keep the model warm
-export ENGRAM_DAEMON=1                     # recall hook uses the daemon, else in-process
+python3 bin/engram daemon                 # keep the model warm (SessionStart starts one when fastembed is provisioned)
 ```
+
+The recall hooks use a reachable daemon and fall back to in-process recall otherwise.
 
 ## Better distillation (atomic facts + explicit supersedes)
 

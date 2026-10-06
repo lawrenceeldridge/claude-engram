@@ -280,7 +280,7 @@ a smell.
 |---|---|---|
 | **Gateway** | ✅ default | `EmbeddingGateway` (embeddings), the `Distiller` interface (distillation) — the only doors to heavy/optional deps and subprocesses |
 | **Separated Interface** | ✅ default | `EmbeddingGateway(ABC)` in `core/ports/embedding.py`; `Distiller(ABC)` in `core/ports/distill.py`. Concrete impls (`core/adapters/fastembed_gw.py`; `core/adapters/llm_distillers.py` — `ClaudeCliDistiller`, `HTTPDistiller`) live behind them; the core imports the ABC, never the impl |
-| **Plugin** | ✅ default | `get_embedder(cfg)` / `get_distiller(cfg)` select the implementation from config at runtime; `ENGRAM_DAEMON` selects daemon-vs-in-process. This is Plugin selection, one place per Composition Root |
+| **Plugin** | ✅ default | `get_embedder(cfg)` / `get_distiller(cfg)` select the implementation from config at runtime; a reachable daemon serves recall, else it runs in-process. This is Plugin selection, one place per Composition Root |
 | **Service Stub** | ✅ default | `HashEmbedding` (lexical, zero-dep — the shipped embedding default) and `HeuristicDistiller` (line extraction, zero-dep — the fallback for the default `claude` distiller) are the always-available implementations **and** the test fakes — no network, no model download |
 | **Special Case / Null Object** | ✅ default | `render_block` returns `""` on empty recall — inject nothing, never a placeholder or an error. Irrelevant turns cost zero tokens |
 | **Value Object** | ✅ default | `DistilledFact`, `Observation`, `Hit`, and the frozen `Config` are immutable value carriers compared by content |
